@@ -43,6 +43,10 @@ cargo build --release --manifest-path server/Cargo.toml
 | `build/membw` | Host DRAM read bandwidth: N threads, AVX-512, 4 KiB vs 2 MiB pages |
 | `build/h2dbw` | Host→device bandwidth: pinned vs registered memory, expert-sized vs large copies, zero-copy kernel reads, with or without concurrent CPU reads |
 | `tools/cache_sim.py` | Expert-cache hit rate vs slots for LRU, decayed-LFU and Belady, over a routing trace |
+| `build/gguf_dump` | GGUF metadata and tensor directory, with bytes per type and per tensor group |
+| `build/route_trace` | Routing traces (top-k ids, router probabilities) from a llama.cpp run; needs `-DFLASHRT_LLAMA_DIR=<llama.cpp tree>` |
+| `tools/trace_stats.py` | Popularity skew, token-to-token reuse, verify-window expert unions, prefill chunk coverage |
+| `bench/p0/window_a.sh` | The first measurement window on the target box: all of the above plus a llama.cpp ubatch sweep |
 
 ## License
 
