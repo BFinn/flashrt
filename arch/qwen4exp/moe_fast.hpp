@@ -96,6 +96,14 @@ struct CacheStats {
 };
 CacheStats cache_manager_stats(const CacheManager* m);
 
+// The cache-hit experts of one token: yh[k] [n] = down_k(silu(gate_k x) * up_k x) for
+// k < *hit_n (device int), expert k in slot hit_slot[k]; rows k >= *hit_n are not written.
+// x [n] float; activations are quantized to int8 per 64 values inside. scratch holds
+// moe_hits_scratch_bytes(K, ff) bytes. Needs n % 512 == 0, ff % 64 == 0, ff <= 4096.
+size_t moe_hits_scratch_bytes(int K, int ff);
+void moe_hits(const uint8_t* slots, size_t slot_bytes, const int32_t* hit_slot, const int32_t* hit_n, int K, const float* x, int n,
+              int ff, void* scratch, float* yh, cudaStream_t stream);
+
 // One token: out [d_model] = routed experts (hits on the GPU, misses on the CPU) + gated shared
 // expert. Same math as moe_block.
 void moe_block_fast(const BlockCtx& c, int il, const float* x, const ExpertCache& cache, MoeFastHost& h, float* out);

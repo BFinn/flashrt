@@ -44,7 +44,6 @@ void ck(cudaError_t e, const char* what) {
     if (e != cudaSuccess) throw std::runtime_error(std::string(what) + ": " + cudaGetErrorString(e));
 }
 
-
 // Exclusive prefix count of flag over the block (blockDim.x a multiple of 32); *total = all.
 __device__ int block_scan_flags(bool flag, int* total) {
     __shared__ int warp_tot[32];
@@ -354,6 +353,21 @@ __global__ void k_swiglu_1(float* g, const float* u, int n) {
 }
 
 }  // namespace
+
+size_t moe_hits_scratch_bytes(int K, int ff) { return size_t(K) * (ff / kQB) * (8 + 64) + 256; }
+
+void moe_hits(const uint8_t* slots, size_t slot_bytes, const int32_t* hit_slot, const int32_t* hit_n, int K, const float* x, int n,
+              int ff, void* scratch, float* yh, cudaStream_t stream) {
+    if (n % 512 || ff % kQB || ff / kQB > 64 || K > kMaxK) throw std::runtime_error("moe_hits: unsupported expert shape");
+    const int nbh = ff / kQB;
+    float* hscale = static_cast<float*>(scratch);                               // [K][ff/64]
+    int32_t* hsum = reinterpret_cast<int32_t*>(hscale + size_t(K) * nbh);       // [K][ff/64]
+    uint32_t* hq = reinterpret_cast<uint32_t*>(hsum + size_t(K) * nbh);         // [K][16][ff/64]
+    const size_t smem_gu = size_t(n / kQB) * (16 * 4 + 8);
+    k_moe_gate_up<<<dim3(ff / kQB, K), 512, smem_gu, stream>>>(slots, slot_bytes, hit_slot, hit_n, x, n, ff, hq, hscale, hsum);
+    k_moe_down<<<dim3(n / 128, K), 512, 0, stream>>>(slots, slot_bytes, hit_slot, hit_n, hq, hscale, hsum, yh, n, ff);
+    ck(cudaGetLastError(), "moe_hits");
+}
 
 ExpertCache alloc_expert_cache(const Spec& s, int n_slots) {
     ExpertCache c;
@@ -712,13 +726,9 @@ void moe_block_fast(const BlockCtx& c, int il, const float* x, const ExpertCache
     int32_t* hit_slot = reinterpret_cast<int32_t*>(hit_w + kMaxK);     // [K]
     int32_t* route_dev = hit_slot + kMaxK;                              // [kRouteInts]
     int32_t* hit_n = route_dev + kRouteInts;                            // [1] (padded to 4)
-    const int nbh = ff / kQB;
-    float* hscale = reinterpret_cast<float*>(hit_n + 4);                // [K][ff/64]
-    int32_t* hsum = reinterpret_cast<int32_t*>(hscale + size_t(K) * nbh);   // [K][ff/64]
-    uint32_t* hq = reinterpret_cast<uint32_t*>(hsum + size_t(K) * nbh);    // [K][16][ff/64] int8 words
-    if (size_t(reinterpret_cast<float*>(hq + size_t(K) * 16 * nbh) - c.scratch.f32) > c.scratch.f32_elems)
+    float* hits_scratch = reinterpret_cast<float*>(hit_n + 4);          // moe_hits_scratch_bytes
+    if (size_t(hits_scratch - c.scratch.f32) * 4 + moe_hits_scratch_bytes(K, ff) > c.scratch.f32_elems * 4)
         throw std::runtime_error("moe_block_fast: scratch too small");
-    if (n % 512 || ff % kQB || nbh > 64 || n % 128) throw std::runtime_error("moe_block_fast: unsupported expert shape");
 
     // 1. routing, and the input for the CPU
     linear(c, c.w.layer(il, "ffn_gate_inp.weight"), x, logits, 1);
@@ -732,10 +742,7 @@ void moe_block_fast(const BlockCtx& c, int il, const float* x, const ExpertCache
     }
 
     // 2. GPU: cache hits (fused gate+up, then down) and the shared expert
-    const size_t smem_gu = size_t(n / kQB) * (16 * 4 + 8);
-    k_moe_gate_up<<<dim3(ff / kQB, K), 512, smem_gu, c.stream>>>(cache.slots, cache.slot_bytes, hit_slot, hit_n, x, n, ff, hq, hscale,
-                                                               hsum);
-    k_moe_down<<<dim3(n / 128, K), 512, 0, c.stream>>>(cache.slots, cache.slot_bytes, hit_slot, hit_n, hq, hscale, hsum, yh, n, ff);
+    moe_hits(cache.slots, cache.slot_bytes, hit_slot, hit_n, K, x, n, ff, hits_scratch, yh, c.stream);
     linear(c, c.w.layer(il, "ffn_gate_shexp.weight"), x, sg, 1);
     linear(c, c.w.layer(il, "ffn_up_shexp.weight"), x, su, 1);
     k_swiglu_1<<<(ffs + 255) / 256, 256, 0, c.stream>>>(sg, su, ffs);
