@@ -31,6 +31,8 @@ target_link_libraries(flashrt-engine PRIVATE flashrt_core)
 # ---- phase 0 probes
 add_executable(membw tools/membw.cpp)
 target_link_libraries(membw PRIVATE flashrt_core)
+add_executable(ssdrand tools/ssdrand.cpp)
+target_link_libraries(ssdrand PRIVATE Threads::Threads)
 add_executable(gguf_dump tools/gguf_dump.cpp)
 target_link_libraries(gguf_dump PRIVATE flashrt_core)
 
