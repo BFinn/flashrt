@@ -3,3 +3,4 @@ server/target/
 __pycache__/
 *.npy
 *.log
+CLAUDE.local.md
