@@ -40,6 +40,9 @@ struct MoeFastHost {
     cudaEvent_t routed = nullptr;
     // statistics
     long hits = 0, misses = 0;
+    double wait_s = 0, cpu_s = 0;     // host time waiting for the routing, and running the misses
+    double cpu_by_nm[17] = {};        // miss time by the layer's miss count
+    long layers_by_nm[17] = {};
 };
 MoeFastHost alloc_moe_fast_host(const Spec& s);
 void free_moe_fast_host(MoeFastHost& h);

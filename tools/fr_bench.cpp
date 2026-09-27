@@ -135,6 +135,18 @@ int main(int argc, char** argv) {
     if (!reference)
         std::printf("expert cache hit rate %.2f%% (%ld hits, %ld misses)\n", 100.0 * host.hits / std::max(1L, host.hits + host.misses),
                     host.hits, host.misses);
+    if (!reference)
+        std::printf("host per token: %.2f ms waiting for routing, %.2f ms running misses\n", 1e3 * host.wait_s / gen,
+                    1e3 * host.cpu_s / gen);
+    if (!reference) {
+        std::printf("misses per layer: count (share of layers) and mean host miss time\n");
+        long nl = 0;
+        for (long v : host.layers_by_nm) nl += v;
+        for (int m = 0; m <= 16; ++m)
+            if (host.layers_by_nm[m])
+                std::printf("  %2d%s: %5.1f%%  %6.1f us\n", m, m == 16 ? "+" : " ", 100.0 * host.layers_by_nm[m] / nl,
+                            1e6 * host.cpu_by_nm[m] / host.layers_by_nm[m]);
+    }
     std::printf("tokens:");
     for (int i = 0; i < std::min<int>(24, int(out.size())); ++i) std::printf(" %d", out[i]);
     std::printf("\n");

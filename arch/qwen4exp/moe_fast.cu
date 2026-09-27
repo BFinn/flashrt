@@ -5,6 +5,7 @@
 #include "quant/q2_0/moe_cpu.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <stdexcept>
 #include <string>
@@ -258,7 +259,9 @@ void moe_block_fast(const BlockCtx& c, int il, const float* x, const ExpertCache
     linear(c, c.w.layer(il, "ffn_gate_inp_shexp.weight"), x, gate, 1);
 
     // 3. CPU: the misses, while the GPU works
+    const auto t0 = std::chrono::steady_clock::now();
     ck(cudaEventSynchronize(h.routed), "wait routing");
+    const auto t1 = std::chrono::steady_clock::now();
     const int nh = h.route_host[0], nm = h.route_host[1];
     h.hits += nh;
     h.misses += nm;
@@ -276,6 +279,11 @@ void moe_block_fast(const BlockCtx& c, int il, const float* x, const ExpertCache
     } else {
         std::memset(h.cpu_out, 0, size_t(n) * 4);
     }
+    h.wait_s += std::chrono::duration<double>(t1 - t0).count();
+    const double dt = std::chrono::duration<double>(std::chrono::steady_clock::now() - t1).count();
+    h.cpu_s += dt;
+    h.cpu_by_nm[std::min(nm, 16)] += dt;
+    ++h.layers_by_nm[std::min(nm, 16)];
     ck(cudaMemcpyAsync(cpu_dev, h.cpu_out, size_t(n) * 4, cudaMemcpyHostToDevice, c.stream), "cpu result to device");
     k_moe_combine<<<(n + 255) / 256, 256, 0, c.stream>>>(out, yh, hit_w, K, cpu_dev, sh, gate, n);
     ck(cudaGetLastError(), "moe_block_fast");
