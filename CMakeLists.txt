@@ -16,6 +16,7 @@ endif()
 add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-Wall> $<$<COMPILE_LANGUAGE:CXX>:-Wextra>)
 
 find_package(Threads REQUIRED)
+enable_testing()
 
 # ---- core: platform services shared by the engine and the tools
 add_library(flashrt_core STATIC
@@ -90,10 +91,28 @@ if(FLASHRT_CUDA)
   set(CMAKE_CUDA_STANDARD 20)
   add_executable(h2dbw tools/h2dbw.cu)
   target_link_libraries(h2dbw PRIVATE flashrt_core CUDA::cudart)
+
+  # dense mat-vec over ggml's vendored CUDA kernels (MIT, third_party/ggml)
+  add_library(flashrt_gemv STATIC kernels/cuda/ggml_gemv.cu kernels/cuda/ggml_shim.cu)
+  target_include_directories(flashrt_gemv PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ggml
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ggml/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ggml/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ggml/src/ggml-cuda)
+  target_include_directories(flashrt_gemv PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+  target_compile_options(flashrt_gemv PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--use_fast_math --extended-lambda --expt-relaxed-constexpr -Xcudafe=--diag_suppress=177>)
+  target_link_libraries(flashrt_gemv PUBLIC CUDA::cudart)
+
+  if(FLASHRT_LLAMA_DIR)
+    add_executable(test_gemv tests/test_gemv.cpp)
+    target_include_directories(test_gemv PRIVATE ${FLASHRT_LLAMA_DIR}/ggml/include)
+    target_link_libraries(test_gemv PRIVATE flashrt_gemv ${GGML_BASE_LIB} ${GGML_LIB})
+    set_target_properties(test_gemv PROPERTIES BUILD_RPATH ${LLAMA_LIB_DIR})
+    add_test(NAME gemv COMMAND test_gemv)
+  endif()
 endif()
 
 # ---- tests
-enable_testing()
 add_executable(test_q2_0 tests/test_q2_0.cpp)
 target_link_libraries(test_q2_0 PRIVATE flashrt_q2_0)
 add_test(NAME q2_0 COMMAND test_q2_0)
