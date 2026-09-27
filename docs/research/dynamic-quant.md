@@ -111,8 +111,47 @@ uniform over experts.
   - In Strata's breakdown the CPU pool is 5.2 ms of a 19.6 ms round, against 10.9 ms of GPU
     wait [M].
   - Halving miss bytes shortens the CPU leg, but the dense GPU path stays the critical path.
-  - The bigger wins are prefill (transfer-bound, ∝ expert bytes), context headroom, and
-    turning today's 32K hit rate into 131K+ hit rate.
+- **Prefill barely moves (correction).** An earlier version of this note called prefill
+  transfer-bound. At the measured 45-55 GB/s host-to-device rate, Strata's 32K prefill
+  moved about 298 GB of expert blobs (215,293 × 1.38 MB) in about 6 s of its 47 s. The
+  rest is PLE stalls (21.6 s) and GPU compute. Smaller experts save at most about 1-1.5 s
+  per 32K prompt, and nothing if the DMA is overlapped [E].
+
+## Speed estimates in flashrt [E]
+
+- **The anchor** is Strata's measured 32K round (greedy, MTP, `2026-09-27-p0c`): 1.66 tokens
+  per round in 19.6 ms. That is:
+  - 10.9 ms of GPU wait, split by estimate as dense ≈ 8.6 and expert hits ≈ 2.3;
+  - 5.2 ms in the CPU miss pool, and 3.5 ms of other work;
+  - at 7,002 slots and 82.8% hits.
+- **Scaling rules:**
+  - the dense term scales with dense bytes read;
+  - the hit term with hit rate × blob size;
+  - the CPU term with miss rate × blob size.
+- **Miss rate vs slots** follows the wikitext 32K LRU simulation, scaled to Strata's
+  measured 17.2% at 7,002 slots. Beyond 9,000 slots it is extrapolated, as miss ∝ slots⁻².
+- **Held constant:** tokens per round. A quality drop that lowers draft acceptance would eat
+  into these numbers.
+
+| Option | Slots | Share of experts | Hit | Round | Greedy tok/s at 32K | vs now |
+|---|---:|---:|---:|---:|---:|---:|
+| Current Q2_0 (Strata-shaped anchor) | 7,002 | 28% | 82.8% | 19.6 ms | 85 | 1.00 |
+| Q2_0 with fp8 scales, plus dense fixes | 8,070 | 33% | 87% | 16.6 ms | 100 | 1.18 |
+| Mix at ~1.95, plus dense fixes | 8,800 | 36% | 89% | 15.6 ms | 106 | 1.26 |
+| Cold tier at ~1.75, plus dense fixes | 9,800 | 40% | 91% | 14.6 ms | 114 | 1.34 |
+| 1.5 (quality risk) | 11,440 | 47% | 94% | 13.6 ms | 122 | 1.44 |
+
+- **Roughly half of the second row's gain is the dense fixes.** Hyper-connection reads are
+  on the GPU critical path.
+- **Apply the ratio to whatever flashrt reaches.** It is not additive to the phase gates.
+  With the ~1.95 mix, the P2 gate (≥80 at 32K, t=1.0) would become about 100, and P4's ≥95
+  about 120. The background physics ceiling is about 140.
+- **Context:** all rows keep the native 262,144 with KV streaming (32K cells resident, about
+  0.4 GiB).
+  - Without streaming, 262K of KV costs 3.19 GiB of VRAM (13,056 B per cell): about 2,480
+    Q2_0 slots, or 3,180 at 1.75 bpw.
+  - The host arena shrinks from 34 GB to 26-29 GB, which leaves room for the host-side KV
+    (3.4 GB at 262K).
 
 ## What Unsloth's UD recipe actually is [Q]
 

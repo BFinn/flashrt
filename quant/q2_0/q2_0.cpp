@@ -98,19 +98,22 @@ Q8Act q8_view(void* mem, int n) {
     return a;
 }
 
+void quantize_q8_block(const float* x32, Q8Act& a, int i) {
+    float amax = 0.0f;
+    for (int j = 0; j < kQ8Block; ++j) amax = std::max(amax, std::fabs(x32[j]));
+    const float d = amax / 127.0f;
+    const float id = d != 0.0f ? 1.0f / d : 0.0f;
+    a.d[i] = fp16_to_fp32(fp32_to_fp16(d));   // ggml stores d as fp16 and reads it back
+    int8_t* q = a.qs + i * kQ8Block;
+    for (int j = 0; j < kQ8Block; ++j) q[j] = int8_t(std::roundf(x32[j] * id));
+    float* dv = a.dvec + (i / 2) * 16 + (i % 2) * 8;   // this half's 8 lanes of the 64-block vector
+    for (int l = 0; l < 8; ++l) dv[l] = a.d[i];
+    for (int k = 0; k < kQ8Block / 4; ++k)
+        a.negsum4[i * 8 + k] = -(q[4 * k] + q[4 * k + 1] + q[4 * k + 2] + q[4 * k + 3]);
+}
+
 void quantize_q8(const float* x, Q8Act& a) {
-    for (int i = 0; i < a.n / kQ8Block; ++i) {
-        float amax = 0.0f;
-        for (int j = 0; j < kQ8Block; ++j) amax = std::max(amax, std::fabs(x[i * kQ8Block + j]));
-        const float d = amax / 127.0f;
-        const float id = d != 0.0f ? 1.0f / d : 0.0f;
-        a.d[i] = fp16_to_fp32(fp32_to_fp16(d));   // ggml stores d as fp16 and reads it back
-        for (int j = 0; j < kQ8Block; ++j) a.qs[i * kQ8Block + j] = int8_t(std::roundf(x[i * kQ8Block + j] * id));
-    }
-    for (int b = 0; b < a.n / kBlock; ++b)
-        for (int l = 0; l < 16; ++l) a.dvec[b * 16 + l] = a.d[2 * b + (l >= 8)];
-    for (int i = 0; i < a.n / 4; ++i)
-        a.negsum4[i] = -(a.qs[4 * i] + a.qs[4 * i + 1] + a.qs[4 * i + 2] + a.qs[4 * i + 3]);
+    for (int i = 0; i < a.n / kQ8Block; ++i) quantize_q8_block(x + i * kQ8Block, a, i);
 }
 
 // Same arithmetic, in the same order, as ggml_vec_dot_q2_0_q8_0_generic.

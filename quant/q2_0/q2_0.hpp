@@ -68,6 +68,8 @@ struct Q8Act {
 size_t q8_bytes(int n);                  // for one activation vector, 64-byte aligned parts
 Q8Act q8_view(void* mem, int n);         // mem: q8_bytes(n), 64-byte aligned
 void quantize_q8(const float* x, Q8Act& a);
+// Quantizes one 32-value block i (x32 = its values), filling every per-block field.
+void quantize_q8_block(const float* x32, Q8Act& a, int i);
 
 // y[t * ldy + r] = row r of w . activation t, for r in [r0, r1) and t < n_tok (<= 4).
 void matvec_ref(const Mat& w, const Q8Act* a, int n_tok, int r0, int r1, float* y, int ldy);

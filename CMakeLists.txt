@@ -22,14 +22,16 @@ add_library(flashrt_core STATIC
   core/platform.cpp
   core/gguf.cpp
   core/expert_arena.cpp
-  core/row_reader.cpp)
+  core/row_reader.cpp
+  core/cpu_pool.cpp)
 target_include_directories(flashrt_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(flashrt_core PUBLIC Threads::Threads)
 
 # ---- quant packs
 add_library(flashrt_q2_0 STATIC
   quant/q2_0/q2_0.cpp
-  quant/q2_0/q2_0_avx512.cpp)
+  quant/q2_0/q2_0_avx512.cpp
+  quant/q2_0/moe_cpu.cpp)
 target_link_libraries(flashrt_q2_0 PUBLIC flashrt_core)
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
   set_source_files_properties(quant/q2_0/q2_0_avx512.cpp PROPERTIES
@@ -60,6 +62,8 @@ add_executable(fr_ple tools/fr_ple.cpp)
 target_link_libraries(fr_ple PRIVATE flashrt_qwen4exp)
 add_executable(fr_inspect tools/fr_inspect.cpp)
 target_link_libraries(fr_inspect PRIVATE flashrt_qwen4exp flashrt_q2_0)
+add_executable(bench_moe_cpu tools/bench_moe_cpu.cpp)
+target_link_libraries(bench_moe_cpu PRIVATE flashrt_q2_0)
 add_executable(gguf_dump tools/gguf_dump.cpp)
 target_link_libraries(gguf_dump PRIVATE flashrt_core)
 
@@ -93,3 +97,6 @@ enable_testing()
 add_executable(test_q2_0 tests/test_q2_0.cpp)
 target_link_libraries(test_q2_0 PRIVATE flashrt_q2_0)
 add_test(NAME q2_0 COMMAND test_q2_0)
+add_executable(test_moe_cpu tests/test_moe_cpu.cpp)
+target_link_libraries(test_moe_cpu PRIVATE flashrt_q2_0)
+add_test(NAME moe_cpu COMMAND test_moe_cpu)
