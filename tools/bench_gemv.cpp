@@ -5,11 +5,14 @@
 //   bench_gemv [--iters N]
 //
 // Weights are random bytes (timing only). Each case is timed with CUDA events over N calls
-// for 1 and 4 tokens; quantized cases include the Q8_1 activation quantization.
+// for 1 and 4 tokens; quantized cases include the Q8_1 activation quantization. Calls rotate
+// over enough copies of the matrix (>= 256 MB) that the 64 MB L2 cannot hold them, so the
+// numbers are VRAM reads, as in a real forward pass.
 #include "kernels/cuda/ggml_gemv.h"
 
 #include <cuda_runtime.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -58,11 +61,14 @@ int main(int argc, char** argv) {
         const size_t wbytes = size_t(flashrt::gemv::row_bytes(c.type, c.ncols)) * c.nrows;
         std::vector<uint64_t> host((wbytes + 7) / 8);
         for (auto& v : host) v = rng() & 0x3f3f3f3f3f3f3f3full;   // keep float/fp16 exponents finite-ish
-        void *w, *scratch;
+        const size_t slot = (wbytes + flashrt::gemv::kWeightTailPad + 255) & ~size_t(255);
+        const int copies = int(std::max<size_t>(1, (size_t(256) << 20) / slot + 1));
+        void* scratch;
+        char* w;
         float *x, *y;
-        cudaMalloc(&w, wbytes + flashrt::gemv::kWeightTailPad);
-        cudaMemset(w, 0, wbytes + flashrt::gemv::kWeightTailPad);
-        cudaMemcpy(w, host.data(), wbytes, cudaMemcpyHostToDevice);
+        cudaMalloc(reinterpret_cast<void**>(&w), slot * copies);
+        cudaMemset(w, 0, slot * copies);
+        for (int k = 0; k < copies; ++k) cudaMemcpy(w + slot * k, host.data(), wbytes, cudaMemcpyHostToDevice);
         cudaMalloc(&x, size_t(4) * c.ncols * 4);
         cudaMemset(x, 0, size_t(4) * c.ncols * 4);
         cudaMalloc(&y, size_t(4) * c.nrows * 4);
@@ -72,7 +78,8 @@ int main(int argc, char** argv) {
             const int nt = k == 0 ? 1 : 4;
             for (int i = 0; i < 10; ++i) flashrt::gemv::matvec(c.type, w, x, y, c.ncols, c.nrows, nt, scratch, st);
             cudaEventRecord(e0, st);
-            for (int i = 0; i < iters; ++i) flashrt::gemv::matvec(c.type, w, x, y, c.ncols, c.nrows, nt, scratch, st);
+            for (int i = 0; i < iters; ++i)
+                flashrt::gemv::matvec(c.type, w + slot * (i % copies), x, y, c.ncols, c.nrows, nt, scratch, st);
             cudaEventRecord(e1, st);
             cudaEventSynchronize(e1);
             float ms = 0;
