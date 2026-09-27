@@ -73,7 +73,6 @@ __global__ void k_route(const float* logits, const int32_t* table, int E, int K,
     if (mb) route_dev = reinterpret_cast<int32_t*>(mb + kMbRoute);
     __shared__ float p[1024];
     __shared__ float red_v[32];
-    __shared__ int red_i[32];
     __shared__ int sel[kMaxK];
     __shared__ float selp[kMaxK];
     const int e = threadIdx.x;
@@ -106,28 +105,21 @@ __global__ void k_route(const float* logits, const int32_t* table, int E, int K,
     __syncthreads();
     p[e] = e < E ? ex / total : -1.0f;
     __syncthreads();
-    // top-k: k rounds of block argmax (lowest index wins ties)
-    for (int k = 0; k < K; ++k) {
-        float v = p[e];
-        int idx = e;
-        for (int o = 16; o > 0; o >>= 1) {
-            const float v2 = __shfl_xor_sync(0xffffffff, v, o);
-            const int i2 = __shfl_xor_sync(0xffffffff, idx, o);
-            if (v2 > v || (v2 == v && i2 < idx)) { v = v2; idx = i2; }
+    // top-k by rank: expert e's rank is the number of experts ahead of it (higher probability,
+    // or equal and a lower index), so the order is that of k rounds of argmax, lowest index first
+    if (e < E) {
+        const float pe = p[e];
+        int rank = 0;
+        for (int j = 0; j < E; ++j) {
+            const float pj = p[j];
+            rank += (pj > pe) | ((pj == pe) & (j < e));
         }
-        if ((e & 31) == 0) { red_v[e >> 5] = v; red_i[e >> 5] = idx; }
-        __syncthreads();
-        if (e == 0) {
-            float bv = red_v[0];
-            int bi = red_i[0];
-            for (int w = 1; w < (blockDim.x + 31) / 32; ++w)
-                if (red_v[w] > bv || (red_v[w] == bv && red_i[w] < bi)) { bv = red_v[w]; bi = red_i[w]; }
-            sel[k] = bi;
-            selp[k] = bv;
-            p[bi] = -1.0f;
+        if (rank < K) {
+            sel[rank] = e;
+            selp[rank] = pe;
         }
-        __syncthreads();
     }
+    __syncthreads();
     if (e == 0) {
         float ws = 0.0f;
         for (int k = 0; k < K; ++k) ws += selp[k];

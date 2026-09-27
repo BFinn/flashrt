@@ -59,6 +59,17 @@ __global__ void k_scale_silu(float* x, int n, float scale) {
 }
 
 // mixed[t][i] = mean over s of xn[t][s][i] * sigmoid(gate[t][s][i])
+// As k_grouped_rms_norm for n % 4 == 0 and blockDim.x == n / 4: one float4 per thread, kept in
+// registers between the reduction and the write.
+__global__ void k_grouped_rms_norm_v4(const float* x, const float* w, float* y, int n, int hc, float eps) {
+    const int row = blockIdx.x, s = row % hc, i = threadIdx.x;
+    const float4 v = reinterpret_cast<const float4*>(x + size_t(row) * n)[i];
+    const float ss = block_sum(v.x * v.x + v.y * v.y + v.z * v.z + v.w * v.w);
+    const float inv = rsqrtf(ss / n + eps);
+    const float4 wv = reinterpret_cast<const float4*>(w + size_t(s) * n)[i];
+    reinterpret_cast<float4*>(y + size_t(row) * n)[i] = make_float4(v.x * inv * wv.x, v.y * inv * wv.y, v.z * inv * wv.z, v.w * inv * wv.w);
+}
+
 __global__ void k_gated_mean(const float* xn, const float* gate, float* mixed, int n, int hc, int T) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     const int t = blockIdx.y;
@@ -161,6 +172,64 @@ __global__ void k_gdn_delta(float* S, const float* conv_out, const float* g, con
     }
 }
 
+// The same delta rule with the state in registers: one block per (head, 32 columns), 32 x 8
+// threads; thread (x, y) holds S[j][i] for column i = 32 * blockIdx.y + x and rows
+// j = y * DK/8 .. +DK/8, so S is read and written once per call however many tokens it has.
+template <int DK>
+__global__ void k_gdn_delta_reg(float* S, const float* conv_out, const float* g, const float* beta, float* o, int T,
+                                int k_heads, int v_heads, int channels) {
+    constexpr int JG = 8, JPT = DK / JG;
+    __shared__ float qs[DK], ks[DK];
+    __shared__ float red[JG][33];
+    const int h = blockIdx.x, tx = threadIdx.x, ty = threadIdx.y, i = blockIdx.y * 32 + tx, hk = h % k_heads;
+    const int tid = ty * 32 + tx;
+    float* Sh = S + size_t(h) * DK * DK;
+    float st[JPT];
+#pragma unroll
+    for (int jj = 0; jj < JPT; ++jj) st[jj] = Sh[size_t(ty * JPT + jj) * DK + i];
+    const float scale = rsqrtf(float(DK));
+    for (int t = 0; t < T; ++t) {
+        const float* row = conv_out + size_t(t) * channels;
+        for (int j = tid; j < DK; j += 32 * JG) {
+            qs[j] = row[size_t(hk) * DK + j] * scale;
+            ks[j] = row[size_t(k_heads) * DK + size_t(hk) * DK + j];
+        }
+        __syncthreads();
+        const float decay = __expf(g[t * v_heads + h]);
+        float sk = 0.0f;
+#pragma unroll
+        for (int jj = 0; jj < JPT; ++jj) {
+            st[jj] *= decay;
+            sk += st[jj] * ks[ty * JPT + jj];
+        }
+        red[ty][tx] = sk;
+        __syncthreads();
+        float tot = 0.0f;
+#pragma unroll
+        for (int y = 0; y < JG; ++y) tot += red[y][tx];
+        const float vi = row[size_t(2 * k_heads) * DK + size_t(h) * DK + i];
+        const float d = beta[t * v_heads + h] * (vi - tot);
+        float oi = 0.0f;
+#pragma unroll
+        for (int jj = 0; jj < JPT; ++jj) {
+            st[jj] += d * ks[ty * JPT + jj];
+            oi += st[jj] * qs[ty * JPT + jj];
+        }
+        __syncthreads();
+        red[ty][tx] = oi;
+        __syncthreads();
+        if (ty == 0) {
+            float r = 0.0f;
+#pragma unroll
+            for (int y = 0; y < JG; ++y) r += red[y][tx];
+            o[(size_t(t) * v_heads + h) * DK + i] = r;
+        }
+        __syncthreads();
+    }
+#pragma unroll
+    for (int jj = 0; jj < JPT; ++jj) Sh[size_t(ty * JPT + jj) * DK + i] = st[jj];
+}
+
 // per (token, head): y = rms_norm(o) * w * sigmoid(z)
 __global__ void k_gated_rms_norm(const float* o, const float* w, const float* z, float* y, int dim, float eps) {
     const size_t base = size_t(blockIdx.x) * dim;
@@ -216,7 +285,10 @@ void hc_mix(const BlockCtx& c, int il, int which, const float* x, int T, float* 
     float* xn = xn_out ? xn_out : c.scratch.f32;                          // [T][hcd]
     float* lo = c.scratch.f32 + size_t(T) * hcd;                          // [T][rank]
     float* gate = lo + size_t(T) * s.hc_rank;                             // [T][hcd]
-    k_grouped_rms_norm<<<T * hc, 256, 0, c.stream>>>(x, static_cast<const float*>(w_norm.dev), xn, n, hc, float(s.rms_eps));
+    if (n % 4 == 0 && n / 4 <= 1024 && (n / 4) % 32 == 0)
+        k_grouped_rms_norm_v4<<<T * hc, n / 4, 0, c.stream>>>(x, static_cast<const float*>(w_norm.dev), xn, n, hc, float(s.rms_eps));
+    else
+        k_grouped_rms_norm<<<T * hc, 256, 0, c.stream>>>(x, static_cast<const float*>(w_norm.dev), xn, n, hc, float(s.rms_eps));
     linear(c, w_down, xn, lo, T);
     k_scale_silu<<<(T * s.hc_rank + 255) / 256, 256, 0, c.stream>>>(lo, T * s.hc_rank, 1.0f / hc);
     linear(c, w_up, lo, gate, T);
@@ -281,7 +353,8 @@ void gdn_mixer(const BlockCtx& c, int il, const float* x, int T, GdnState& st, f
     k_l2_norm<<<T * 2 * s.ssm_groups, 128, 0, c.stream>>>(conv, dk, ch, 2 * s.ssm_groups, float(s.rms_eps));
     k_gdn_gates<<<(T * H + 127) / 128, 128, 0, c.stream>>>(alpha, beta, static_cast<const float*>(c.w.layer(il, "ssm_dt.bias").dev),
                                                           static_cast<const float*>(c.w.layer(il, "ssm_a").dev), H, T);
-    k_gdn_delta<<<H, dk, size_t(2) * dk * 4, c.stream>>>(st.S, conv, alpha, beta, o, T, s.ssm_groups, H, dk, ch);
+    if (dk == 128) k_gdn_delta_reg<128><<<dim3(H, 128 / 32), dim3(32, 8), 0, c.stream>>>(st.S, conv, alpha, beta, o, T, s.ssm_groups, H, ch);
+    else k_gdn_delta<<<H, dk, size_t(2) * dk * 4, c.stream>>>(st.S, conv, alpha, beta, o, T, s.ssm_groups, H, dk, ch);
     if (o_inner) ck(cudaMemcpyAsync(o_inner, o, size_t(T) * inner * 4, cudaMemcpyDeviceToDevice, c.stream), "copy o");
     k_gated_rms_norm<<<T * H, 128, 0, c.stream>>>(o, static_cast<const float*>(c.w.layer(il, "ssm_norm.weight").dev), z, fin, dk,
                                                  float(s.rms_eps));
