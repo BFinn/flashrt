@@ -6,3 +6,7 @@ licensed under the Apache License, Version 2.0 (see LICENSE).
 
 Third-party code, when vendored, keeps its own license and notice in the
 directory it lives in (see docs/clean-room.md for what may be vendored).
+
+This product includes code from ggml / llama.cpp (https://github.com/ggml-org/llama.cpp),
+copyright (c) 2023-2026 The ggml authors, licensed under the MIT License. The vendored files
+are in third_party/ggml (unmodified; see third_party/ggml/VENDORED.md and its LICENSE).

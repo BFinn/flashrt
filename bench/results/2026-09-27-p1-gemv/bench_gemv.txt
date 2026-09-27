@@ -1,0 +1,13 @@
+bench_gemv on NVIDIA GeForce RTX 5080, 300 iterations per case
+case                         cols     rows          MB   us 1 tok       GB/s   us 4 tok
+attn_qkv (GDN)  IQ4_XS       2560    10240       13.93      17.80        782      20.62
+attn_gate       Q4_K         2560     6144        8.85      11.87        745      14.89
+ssm_out         Q5_K         6144     2560       10.81      14.21        761      15.14
+attn_q (QSA)    Q2_0         2560    12288        8.85      12.04        735      17.91
+attn_output     Q6_K         6144     2560       12.90      16.84        766      17.79
+hc_*_down       BF16        10240      320        6.55       8.99        729      11.21
+hc_*_up         BF16          320    10240        6.55      13.26        494      23.61
+ffn_gate_inp    BF16         2560      512        2.62       4.70        558       6.82
+ffn_up_shexp    Q3_K         2560      640        0.70       4.27        165       4.16
+ffn_down_shexp  Q4_0          640     2560        0.92       3.26        283       4.30
+output (head)   Q5_K         2560   248320      437.04     482.79        905     543.61
