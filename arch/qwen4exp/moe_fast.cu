@@ -279,7 +279,7 @@ struct MissServer {
         const int n = sp.d_model, K = sp.top_k;
         const q2_0::ExpertShape es{n, sp.d_ff_expert};
         std::vector<uint8_t> act_mem(q2_0::q8_bytes(n) + 64);
-        const q2_0::Q8Act act =
+        q2_0::Q8Act act =
             q2_0::q8_view(reinterpret_cast<void*>((reinterpret_cast<uintptr_t>(act_mem.data()) + 63) & ~uintptr_t(63)), n);
         std::vector<uint8_t> scratch(q2_0::moe_cpu_scratch_bytes(es, kMaxK, h->pool->size()));
         q2_0::Miss miss[kMaxK];
