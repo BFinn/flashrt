@@ -15,6 +15,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace flashrt {
@@ -49,10 +50,18 @@ public:
     // Greedy token from a logits row on the device (GPU argmax; 4 bytes come back).
     int32_t argmax(const float* logits_row_dev);
 
+    // Snapshot of the sequence state after a prefill (KV and pooled keys up to pos(), GDN and PLE
+    // states, pos(), routing counts), for benchmarks at depth without re-running the prefill.
+    // The file is only valid for the same model and the same kernels' numerics.
+    void save_state(const std::string& path);
+    void load_state(const std::string& path);
+
     int pos() const { return pos_; }
     cudaStream_t stream() const { return stream_; }
 
 private:
+    void state_file(const std::string& path, bool save);
+
     const Spec& s_;
     const GpuWeights& w_;
     Ple ple_;

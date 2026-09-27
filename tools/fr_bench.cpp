@@ -3,7 +3,7 @@
 //
 //   fr_bench MODEL.gguf --ids PROMPT.txt --n-prompt N --gen G [--slots S] [--reserve-mib R]
 //            [--reference] [--workers W] [--no-doorbell] [--spin-us U] [--windows N] [--trace FILE]
-//            [--static-cache] [--swap-budget B] [--pcie-frac F]
+//            [--static-cache] [--swap-budget B] [--pcie-frac F] [--save-state FILE | --load-state FILE]
 //
 // Prefills N prompt tokens in 64-token batches (reference path; its routing counts pick the
 // cache contents), fills the VRAM expert cache with the most-routed experts (S slots, or all
@@ -15,7 +15,9 @@
 // --trace writes the decode's routing, int16 [tokens][n_layer][top_k], for tools/cache_sim.py.
 // The expert cache adapts during decode (decayed LFU, up to B uploads in flight, default 8)
 // unless --static-cache. --pcie-frac F (default 0.5; 0 = off) lets the GPU read floor(F * misses)
-// of each layer's misses straight from host memory, up to 4 per layer.
+// of each layer's misses straight from host memory, up to 4 per layer. --save-state writes the
+// state after the prefill; --load-state restores it instead of prefilling (the prompt file is
+// still read, for the n-gram context): decode at 250K without the 35-minute prefill.
 #include "arch/qwen4exp/experts.hpp"
 #include "arch/qwen4exp/forward_ref.hpp"
 #include "arch/qwen4exp/gpu_weights.hpp"
@@ -47,7 +49,7 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "usage: fr_bench MODEL.gguf --ids PROMPT.txt --n-prompt N --gen G [--slots S] [--reserve-mib R] [--reference]\n");
         return 2;
     }
-    std::string ids_path, trace_path;
+    std::string ids_path, trace_path, save_state, load_state;
     int n_prompt = 1024, gen = 128, slots = 0, reserve_mib = 1024, workers = 8, windows = 1;
     bool reference = false, doorbell = true, adaptive = true;
     int swap_budget = 8;
@@ -70,6 +72,8 @@ int main(int argc, char** argv) {
         else if (a == "--static-cache") adaptive = false;
         else if (a == "--swap-budget") swap_budget = std::atoi(next());
         else if (a == "--pcie-frac") pcie_frac = float(std::atof(next()));
+        else if (a == "--save-state") save_state = next();
+        else if (a == "--load-state") load_state = next();
         else { std::fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
     }
     std::vector<int32_t> seq;
@@ -98,13 +102,29 @@ int main(int argc, char** argv) {
 
     // prefill
     const auto tp = Clock::now();
-    for (int p = 0; p < n_prompt; p += 64) {
-        const int T = std::min(64, n_prompt - p);
-        const bool last = p + T >= n_prompt;
-        fwd.forward(seq.data(), T, last ? T - 1 : T, last ? logits_dev : nullptr);
+    if (!load_state.empty()) {
+        // the state holds positions 0 .. n_prompt-2; the last prompt token runs now, for its logits
+        fwd.load_state(load_state);
+        if (fwd.pos() != n_prompt - 1) { std::fprintf(stderr, "state holds %d positions, expected %d\n", fwd.pos(), n_prompt - 1); return 1; }
+        fwd.forward(seq.data(), 1, 0, logits_dev);
+        std::printf("state: loaded %s (%d positions) in %.1f s\n", load_state.c_str(), n_prompt - 1,
+                    std::chrono::duration<double>(Clock::now() - tp).count());
+    } else {
+        for (int p = 0; p < n_prompt; p += 64) {
+            const int T = std::min(64, n_prompt - p);
+            const bool last = p + T >= n_prompt;
+            if (last && !save_state.empty()) {   // save before the last token, so a load can re-run it
+                if (T > 1) fwd.forward(seq.data(), T - 1, T - 1, nullptr);
+                fwd.save_state(save_state);
+                std::printf("state: saved %s (%d positions)\n", save_state.c_str(), fwd.pos());
+                fwd.forward(seq.data(), 1, 0, logits_dev);
+                break;
+            }
+            fwd.forward(seq.data(), T, last ? T - 1 : T, last ? logits_dev : nullptr);
+        }
+        const double prefill_s = std::chrono::duration<double>(Clock::now() - tp).count();
+        std::printf("prefill: %d tokens in %.1f s (%.1f tok/s, reference path)\n", n_prompt, prefill_s, n_prompt / prefill_s);
     }
-    const double prefill_s = std::chrono::duration<double>(Clock::now() - tp).count();
-    std::printf("prefill: %d tokens in %.1f s (%.1f tok/s, reference path)\n", n_prompt, prefill_s, n_prompt / prefill_s);
 
     // expert cache from the prompt's routing counts
     ExpertCache cache;

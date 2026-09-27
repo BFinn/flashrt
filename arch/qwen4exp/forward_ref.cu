@@ -4,6 +4,7 @@
 #include "core/gguf.hpp"
 #include "core/platform.hpp"
 
+#include <cstdio>
 #include <future>
 #include <set>
 #include <stdexcept>
@@ -64,6 +65,67 @@ ForwardRef::~ForwardRef() {
     cudaFree(argmax_dev_);
     cudaFreeHost(argmax_host_);
     cudaStreamDestroy(stream_);
+}
+
+namespace {
+// one device buffer to or from the file, through a host bounce buffer
+void state_io(FILE* f, void* dev, size_t bytes, bool save, std::vector<uint8_t>& bounce) {
+    bounce.resize(bytes);
+    if (save) {
+        ck(cudaMemcpy(bounce.data(), dev, bytes, cudaMemcpyDeviceToHost), "state to host");
+        if (std::fwrite(bounce.data(), 1, bytes, f) != bytes) throw std::runtime_error("state file write failed");
+    } else {
+        if (std::fread(bounce.data(), 1, bytes, f) != bytes) throw std::runtime_error("state file truncated");
+        ck(cudaMemcpy(dev, bounce.data(), bytes, cudaMemcpyHostToDevice), "state to device");
+    }
+}
+}  // namespace
+
+void ForwardRef::save_state(const std::string& path) { state_file(path, true); }
+void ForwardRef::load_state(const std::string& path) { state_file(path, false); }
+
+void ForwardRef::state_file(const std::string& path, bool save) {
+    ck(cudaStreamSynchronize(stream_), "state");
+    FILE* f = std::fopen(path.c_str(), save ? "wb" : "rb");
+    if (!f) throw std::runtime_error("cannot open state file " + path);
+    const Spec& s = s_;
+    const uint32_t magic = 0x46525354;   // "FRST"
+    int64_t hdr[4] = {magic, s.n_layer, pos_, int64_t(counts_.size())};
+    if (save) {
+        std::fwrite(hdr, sizeof(hdr), 1, f);
+    } else {
+        int64_t h[4];
+        if (std::fread(h, sizeof(h), 1, f) != 1 || h[0] != magic || h[1] != s.n_layer || h[3] != int64_t(counts_.size())) {
+            std::fclose(f);
+            throw std::runtime_error("state file does not match this model");
+        }
+        pos_ = int(h[2]);
+        if (pos_ > kv_[s.qsa_layers.front()].capacity) {
+            std::fclose(f);
+            throw std::runtime_error("state file holds more positions than the KV capacity");
+        }
+    }
+    std::vector<uint8_t> bounce;
+    const size_t kvrow = size_t(s.n_head_kv) * s.head_dim_k * 2;   // fp16 K or V of one cell
+    const int gch = 2 * s.ssm_groups * s.ssm_state + s.ssm_heads * s.ssm_state;
+    for (int il : s.gdn_layers) {
+        state_io(f, gdn_[il].S, size_t(s.ssm_heads) * s.ssm_state * s.ssm_state * 4, save, bounce);
+        state_io(f, gdn_[il].conv, size_t(s.ssm_conv - 1) * gch * 4, save, bounce);
+    }
+    for (int il : s.qsa_layers) {
+        state_io(f, kv_[il].K, size_t(pos_) * kvrow, save, bounce);
+        state_io(f, kv_[il].V, size_t(pos_) * kvrow, save, bounce);
+        state_io(f, kv_[il].idx_pooled, size_t(pos_ / s.qsa_block + 1) * s.idx_dim * 4, save, bounce);
+        state_io(f, kv_[il].idx_ring, size_t(s.qsa_block) * s.idx_dim * 4, save, bounce);
+    }
+    for (int il : s.ple_layers) state_io(f, ple_state_[il].hist, size_t(ple_.ngram) * 3 * size_t(s.hc_count) * s.d_model * 4 + 4, save, bounce);
+    if (save) {
+        std::fwrite(counts_.data(), 4, counts_.size(), f);
+    } else if (std::fread(counts_.data(), 4, counts_.size(), f) != counts_.size()) {
+        std::fclose(f);
+        throw std::runtime_error("state file truncated");
+    }
+    std::fclose(f);
 }
 
 int32_t ForwardRef::argmax(const float* logits_row_dev) {
