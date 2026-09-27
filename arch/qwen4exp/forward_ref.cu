@@ -51,6 +51,8 @@ ForwardRef::ForwardRef(const Gguf& g, const Spec& s, const GpuWeights& w, const 
     pemb_ = dalloc(B * n);
     norm_ = dalloc(B * n);
     ck(cudaMalloc(&argmax_dev_, 4), "cudaMalloc argmax");
+    ck(cudaMalloc(&params_dev_, 4 * sizeof(int32_t)), "cudaMalloc decode params");
+    ck(cudaHostAlloc(&params_host_, 4 * sizeof(int32_t), cudaHostAllocDefault), "cudaHostAlloc decode params");
     ck(cudaHostAlloc(&argmax_host_, 4, cudaHostAllocDefault), "cudaHostAlloc argmax");
 }
 
@@ -62,7 +64,10 @@ ForwardRef::~ForwardRef() {
     for (float* p : {emb_, x_, mixed_, inject_, blk_, pemb_, norm_}) cudaFree(p);
     if (ple_host_.raw_dev) cudaFree(ple_host_.raw_dev);
     if (ple_host_.raw_pinned) cudaFreeHost(ple_host_.raw_pinned);
+    drop_graphs();
     cudaFree(argmax_dev_);
+    cudaFree(params_dev_);
+    cudaFreeHost(params_host_);
     cudaFreeHost(argmax_host_);
     cudaStreamDestroy(stream_);
 }
@@ -144,45 +149,123 @@ void ForwardRef::reset() {
     pos_ = 0;
 }
 
+// embedding, hyper-connection streams, and the layers before the first PLE layer
+void ForwardRef::enqueue_pre(const BlockCtx& c, const int32_t* seq, int T) {
+    const Spec& s = s_;
+    const int n = s.d_model, hc = s.hc_count;
+    embed(c, seq ? seq + pos_ : nullptr, T, emb_);
+    for (int t = 0; t < T; ++t)
+        for (int st = 0; st < hc; ++st)
+            ck(cudaMemcpyAsync(x_ + (size_t(t) * hc + st) * n, emb_ + size_t(t) * n, size_t(n) * 4, cudaMemcpyDeviceToDevice, stream_),
+               "hc init");
+    for (int il = 0; il < first_ple_layer(); ++il) enqueue_layer(c, il, T);
+}
+
+// the PLE rows (already in ple_host_.raw_pinned), the remaining layers, and the head
+void ForwardRef::enqueue_post(const BlockCtx& c, int T, int out_from, float* logits_dev) {
+    const Spec& s = s_;
+    const int n = s.d_model, hc = s.hc_count;
+    if (!s.ple_layers.empty()) ple_upload(c, ple_host_, T, pemb_);
+    for (int il = first_ple_layer(); il < s.n_layer; ++il) enqueue_layer(c, il, T);
+    if (out_from < T && logits_dev) {
+        const int R = T - out_from;
+        hc_mix(c, -1, 2, x_ + size_t(out_from) * hc * n, R, norm_, nullptr);
+        head_logits(c, norm_, R, logits_dev);
+    }
+}
+
+void ForwardRef::enqueue_layer(const BlockCtx& c, int il, int T) {
+    const Spec& s = s_;
+    for (int pl : s.ple_layers)
+        if (pl == il) ple_block(c, il, ple_, pemb_, x_, T, ple_state_[il]);
+    hc_mix(c, il, 0, x_, T, mixed_, inject_);
+    if (s.mixer[il] == Mixer::QSA) qsa_mixer(c, il, mixed_, T, pos_, kv_[il], blk_);
+    else gdn_mixer(c, il, mixed_, T, gdn_[il], blk_);
+    hc_combine(c, x_, blk_, inject_, T);
+    hc_mix(c, il, 1, x_, T, mixed_, inject_);
+    if (T == 1 && fast_cache_) moe_block_fast(c, il, mixed_, *fast_cache_, *fast_host_, blk_);
+    else moe_block(c, il, mixed_, T, moe_host_, blk_);
+    hc_combine(c, x_, blk_, inject_, T);
+}
+
+int ForwardRef::first_ple_layer() const { return s_.ple_layers.empty() ? s_.n_layer : s_.ple_layers.front(); }
+
+bool ForwardRef::graph_eligible(int T, int out_from, float* logits_dev) const {
+    return use_graphs_ && T == 1 && out_from == 0 && logits_dev && fast_cache_ && fast_host_->doorbell && embed_graph_capable(w_) &&
+           s_.idx_dim == 128;
+}
+
+void ForwardRef::drop_graphs() {
+    for (cudaGraphExec_t* g : {&graph_pre_, &graph_post_})
+        if (*g) {
+            cudaGraphExecDestroy(*g);
+            *g = nullptr;
+        }
+}
+
+void ForwardRef::capture_graphs(float* logits_dev) {
+    drop_graphs();
+    // everything the graphs touch is allocated now, not while capturing
+    int capacity = 0;
+    for (int il : s_.qsa_layers) capacity = kv_[il].capacity;
+    qsa_scratch_reserve(s_, scratch_, 1, capacity / s_.qsa_block);
+    if (!s_.ple_layers.empty() && (!ple_host_.raw_pinned || !ple_host_.raw_dev)) throw std::runtime_error("capture_graphs: run a prefill first");
+    const BlockCtx cg{s_, w_, scratch_, stream_, params_dev_};
+    auto capture = [&](auto&& body) {
+        cudaGraph_t g = nullptr;
+        cudaGraphExec_t ge = nullptr;
+        ck(cudaStreamBeginCapture(stream_, cudaStreamCaptureModeThreadLocal), "begin capture");
+        body();
+        ck(cudaStreamEndCapture(stream_, &g), "end capture");
+        ck(cudaGraphInstantiate(&ge, g, 0), "instantiate graph");
+        cudaGraphDestroy(g);
+        return ge;
+    };
+    graph_pre_ = capture([&] {
+        ck(cudaMemcpyAsync(params_dev_, params_host_, 3 * sizeof(int32_t), cudaMemcpyHostToDevice, stream_), "params");
+        enqueue_pre(cg, nullptr, 1);
+    });
+    graph_post_ = capture([&] { enqueue_post(cg, 1, 0, logits_dev); });
+    graph_logits_ = logits_dev;
+    graph_ple_pinned_ = ple_host_.raw_pinned;
+    graph_ple_dev_ = ple_host_.raw_dev;
+    ++graph_captures_;
+}
+
 void ForwardRef::forward(const int32_t* seq, int T, int out_from, float* logits_dev) {
     if (T < 1 || T > max_batch_) throw std::runtime_error("ForwardRef: bad batch size");
     const Spec& s = s_;
-    const int n = s.d_model, hc = s.hc_count;
     const BlockCtx c{s, w_, scratch_, stream_};
+    const bool graph = graph_eligible(T, out_from, logits_dev);
+    if (!graph) drop_graphs();   // an eager pass may regrow scratch the graphs point at
+    for (int il : s.qsa_layers)
+        if (pos_ + T > kv_[il].capacity) throw std::runtime_error("ForwardRef: KV cache full");
     // the PLE rows come from the SSD: read them on another thread while the embedding and the
-    // layers before the first PLE layer are enqueued
+    // layers before the first PLE layer run
     std::future<void> ple_rows;
     if (!s.ple_layers.empty()) ple_rows = std::async(std::launch::async, [&] {
             unpin_current_thread();
             ple_fetch(ple_host_, seq, pos_, T);
         });
-    embed(c, seq + pos_, T, emb_);
-    for (int t = 0; t < T; ++t)
-        for (int st = 0; st < hc; ++st)
-            ck(cudaMemcpyAsync(x_ + (size_t(t) * hc + st) * n, emb_ + size_t(t) * n, size_t(n) * 4, cudaMemcpyDeviceToDevice, stream_),
-               "hc init");
     const bool db = T == 1 && fast_cache_ && fast_host_->doorbell;
     if (db) doorbell_begin_token(*fast_host_);
-    for (int il = 0; il < s.n_layer; ++il) {
-        if (ple_rows.valid() && il == s.ple_layers.front()) {
-            ple_rows.get();
-            ple_upload(c, ple_host_, T, pemb_);
+    if (graph) {
+        params_host_[0] = seq[pos_];
+        params_host_[1] = pos_;
+        params_host_[2] = int32_t(fast_host_->seq);
+        if (!graph_pre_ || graph_logits_ != logits_dev) {
+            if (ple_rows.valid()) ple_rows.wait();   // the PLE buffers must exist before capture
+            capture_graphs(logits_dev);
         }
-        for (int pl : s.ple_layers)
-            if (pl == il) ple_block(c, il, ple_, pemb_, x_, T, ple_state_[il]);
-        hc_mix(c, il, 0, x_, T, mixed_, inject_);
-        if (s.mixer[il] == Mixer::QSA) qsa_mixer(c, il, mixed_, T, pos_, kv_[il], blk_);
-        else gdn_mixer(c, il, mixed_, T, gdn_[il], blk_);
-        hc_combine(c, x_, blk_, inject_, T);
-        hc_mix(c, il, 1, x_, T, mixed_, inject_);
-        if (T == 1 && fast_cache_) moe_block_fast(c, il, mixed_, *fast_cache_, *fast_host_, blk_);
-        else moe_block(c, il, mixed_, T, moe_host_, blk_);
-        hc_combine(c, x_, blk_, inject_, T);
-    }
-    if (out_from < T && logits_dev) {
-        const int R = T - out_from;
-        hc_mix(c, -1, 2, x_ + size_t(out_from) * hc * n, R, norm_, nullptr);
-        head_logits(c, norm_, R, logits_dev);
+        ck(cudaGraphLaunch(graph_pre_, stream_), "launch graph (pre)");
+        if (ple_rows.valid()) ple_rows.get();
+        if (ple_host_.raw_pinned != graph_ple_pinned_ || ple_host_.raw_dev != graph_ple_dev_)
+            throw std::runtime_error("ForwardRef: PLE buffers moved under a captured graph");
+        ck(cudaGraphLaunch(graph_post_, stream_), "launch graph (post)");
+    } else {
+        enqueue_pre(c, seq, T);
+        if (ple_rows.valid()) ple_rows.get();
+        enqueue_post(c, T, out_from, logits_dev);
     }
     // the adaptive cache learns from the previous token while this one runs on the GPU
     if (T == 1 && fast_cache_ && cache_mgr_ && have_access_) cache_manager_step(cache_mgr_, *fast_host_, stream_);

@@ -46,6 +46,10 @@ struct BlockCtx {
     const GpuWeights& w;
     BlockScratch& scratch;
     cudaStream_t stream;
+    // Graph mode (decode, one token): device int32 [token, position, doorbell seq]. Kernels read
+    // the per-token values from here instead of launch arguments, so a captured CUDA graph can be
+    // replayed every token; the QSA path always runs the indexer selection (dense below its width).
+    const int32_t* dparams = nullptr;
 };
 
 // W x for T tokens (any T): gemv in chunks of up to 8 tokens. x [T][cols], y [T][rows].
@@ -100,6 +104,9 @@ void free_qsa_cache(QsaCache& kv);
 // gated_out, if given, gets the gated attention output before the output projection,
 // [T][heads * dim] (llama.cpp's "attn_gated"). sel_out, if given, gets each token's selected
 // cells (empty when the token attends to every cell).
+// Grows the QSA scratch (indexer scores for max_nb blocks, cells, attention partials) for T
+// tokens; graph capture calls it first so nothing is allocated while capturing.
+void qsa_scratch_reserve(const Spec& s, BlockScratch& bs, int T, int max_nb, int n_splits = 0);
 void qsa_mixer(const BlockCtx& c, int il, const float* x, int T, int pos0, QsaCache& kv, float* out,
                float* gated_out = nullptr, std::vector<std::vector<int32_t>>* sel_out = nullptr);
 
@@ -122,6 +129,8 @@ struct MoeTrace {                              // routing, for parity checks
 void moe_block(const BlockCtx& c, int il, const float* x, int T, MoeHost& h, float* out, MoeTrace* trace = nullptr);
 
 // Token embeddings: out [T][d_model] = dequantized rows of token_embd.
+// Whether embed() can run in graph mode (the token id read on the device) for these weights.
+bool embed_graph_capable(const GpuWeights& w);
 void embed(const BlockCtx& c, const int32_t* tokens, int T, float* out);
 
 // The n-gram (PLE) layer. Rows are read from the SSD (RowReader), dequantized on the GPU;

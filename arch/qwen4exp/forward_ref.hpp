@@ -42,7 +42,19 @@ public:
 
     // Decode (T == 1) uses the fast MoE path with this cache when set; batches keep the reference
     // path. Routing counts of the reference path accumulate into counts() (for a cache fill).
-    void set_fast_moe(const ExpertCache* cache, MoeFastHost* host) { fast_cache_ = cache; fast_host_ = host; }
+    void set_fast_moe(const ExpertCache* cache, MoeFastHost* host) {
+        fast_cache_ = cache;
+        fast_host_ = host;
+        drop_graphs();
+    }
+    // Decode tokens (T == 1, fast path with doorbells) replay two captured CUDA graphs instead of
+    // launching ~1,600 kernels: one up to the first PLE layer, one after it (the PLE rows are
+    // read from the SSD in between). On by default; any other forward() drops them.
+    void set_graphs(bool on) {
+        use_graphs_ = on;
+        drop_graphs();
+    }
+    long graph_captures() const { return graph_captures_; }
     // With a manager, every fast decode token also runs one adaptive-cache step.
     void set_cache_manager(CacheManager* m) { cache_mgr_ = m; }
     std::vector<uint32_t>& counts() { return counts_; }
@@ -61,6 +73,13 @@ public:
 
 private:
     void state_file(const std::string& path, bool save);
+    void enqueue_pre(const BlockCtx& c, const int32_t* seq, int T);
+    void enqueue_post(const BlockCtx& c, int T, int out_from, float* logits_dev);
+    void enqueue_layer(const BlockCtx& c, int il, int T);
+    int first_ple_layer() const;
+    bool graph_eligible(int T, int out_from, float* logits_dev) const;
+    void capture_graphs(float* logits_dev);
+    void drop_graphs();
 
     const Spec& s_;
     const GpuWeights& w_;
@@ -83,6 +102,15 @@ private:
     bool have_access_ = false;   // fast_host_->access holds a token's routing
     std::vector<uint32_t> counts_;
     int32_t* argmax_dev_ = nullptr;
+    // graph mode
+    bool use_graphs_ = true;
+    int32_t* params_dev_ = nullptr;    // [token, position, doorbell seq]
+    int32_t* params_host_ = nullptr;   // pinned; copied to params_dev_ by the first graph node
+    cudaGraphExec_t graph_pre_ = nullptr, graph_post_ = nullptr;
+    float* graph_logits_ = nullptr;
+    const void* graph_ple_pinned_ = nullptr;
+    const void* graph_ple_dev_ = nullptr;
+    long graph_captures_ = 0;
     int32_t* argmax_host_ = nullptr;   // pinned
 };
 

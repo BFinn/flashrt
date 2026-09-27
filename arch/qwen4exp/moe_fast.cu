@@ -196,7 +196,8 @@ __global__ void k_moe_down(const uint8_t* const* hit_ptr, const int32_t* hit_n, 
 __global__ void k_route(const float* logits, const int32_t* table, int E, int K, const uint8_t* slots, size_t slot_bytes,
                         const uint8_t** hit_ptr, float* hit_w, int32_t* hit_n, const uint8_t* arena_dev, size_t arena_stride,
                         int layer, float pcie_frac, int pcie_max, int32_t* route_dev, const float* x, int n, uint8_t* mb,
-                        uint32_t seq) {
+                        uint32_t seq, const int32_t* dp) {
+    if (dp) seq = uint32_t(dp[2]);
     if (mb) route_dev = reinterpret_cast<int32_t*>(mb + kMbRoute);
     __shared__ float p[1024];
     __shared__ float red_v[32];
@@ -340,7 +341,8 @@ __global__ void k_moe_combine(float* out, const float* yh, const float* hit_w, c
 // fire it) it gives up, records seq in the mailbox's error word, and carries on with whatever
 // is there; the host reports the error after the token.
 __global__ void k_moe_combine_db(float* out, const float* yh, const float* hit_w, const int32_t* hit_n, uint8_t* mb,
-                                 size_t out_off, uint32_t seq, const float* shexp, const float* gate, int n) {
+                                 size_t out_off, uint32_t seq, const float* shexp, const float* gate, int n, const int32_t* dp) {
+    if (dp) seq = uint32_t(dp[2]);
     if (threadIdx.x == 0) {
         const volatile uint32_t* done = reinterpret_cast<const volatile uint32_t*>(mb + kMbDone);
         const int64_t t0 = int64_t(global_ns());
@@ -769,7 +771,7 @@ void moe_block_fast(const BlockCtx& c, int il, const float* x, const ExpertCache
     uint8_t* mb = h.doorbell ? h.mbox_dev + size_t(il) * h.mbox_stride : nullptr;
     k_route<<<1, ((E + 31) / 32) * 32, 0, c.stream>>>(logits, cache.table_dev + size_t(il) * E, E, K, cache.slots, cache.slot_bytes,
                                                      hit_ptr, hit_w, hit_n, h.arena_dev, h.arena_stride, il, h.pcie_frac, h.pcie_max,
-                                                     route_dev, x, n, mb, h.seq);
+                                                     route_dev, x, n, mb, h.seq, c.dparams);
     if (!h.doorbell) {
         ck(cudaMemcpyAsync(h.route_host, route_dev, size_t(kRouteInts) * 4, cudaMemcpyDeviceToHost, c.stream), "route to host");
         ck(cudaMemcpyAsync(h.x_host, x, size_t(n) * 4, cudaMemcpyDeviceToHost, c.stream), "x to host");
@@ -785,7 +787,8 @@ void moe_block_fast(const BlockCtx& c, int il, const float* x, const ExpertCache
     linear(c, c.w.layer(il, "ffn_gate_inp_shexp.weight"), x, gate, 1);
 
     if (h.doorbell) {   // 3'. the miss server fills the mailbox; the combine waits for it on the GPU
-        k_moe_combine_db<<<(n + 255) / 256, 256, 0, c.stream>>>(out, yh, hit_w, hit_n, mb, mb_out_off(n), h.seq, sh, gate, n);
+        k_moe_combine_db<<<(n + 255) / 256, 256, 0, c.stream>>>(out, yh, hit_w, hit_n, mb, mb_out_off(n), h.seq, sh, gate, n,
+                                                                c.dparams);
         ck(cudaGetLastError(), "moe_block_fast");
         return;
     }

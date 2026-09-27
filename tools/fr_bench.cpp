@@ -4,6 +4,7 @@
 //   fr_bench MODEL.gguf --ids PROMPT.txt --n-prompt N --gen G [--slots S] [--reserve-mib R]
 //            [--reference] [--workers W] [--no-doorbell] [--spin-us U] [--windows N] [--trace FILE]
 //            [--static-cache] [--swap-budget B] [--pcie-frac F] [--save-state FILE | --load-state FILE] [--no-q3r]
+//            [--no-graphs]
 //
 // Prefills N prompt tokens in 64-token batches (reference path; its routing counts pick the
 // cache contents), fills the VRAM expert cache with the most-routed experts (S slots, or all
@@ -54,7 +55,7 @@ int main(int argc, char** argv) {
     bool reference = false, doorbell = true, adaptive = true;
     int swap_budget = 8;
     float pcie_frac = 0.0f;
-    bool q3r = true;
+    bool q3r = true, graphs = true;
     int spin_us = 2000;
     for (int i = 2; i < argc; ++i) {
         const std::string a = argv[i];
@@ -75,6 +76,7 @@ int main(int argc, char** argv) {
         else if (a == "--pcie-frac") pcie_frac = float(std::atof(next()));
         else if (a == "--save-state") save_state = next();
         else if (a == "--no-q3r") q3r = false;
+        else if (a == "--no-graphs") graphs = false;
         else if (a == "--load-state") load_state = next();
         else { std::fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
     }
@@ -157,6 +159,7 @@ int main(int argc, char** argv) {
             pin_current_thread(cpus[size_t(workers) % cpus.size()]);
         }
         pool.set_spin_us(spin_us);
+        fwd.set_graphs(graphs);
         if (pcie_frac > 0) enable_pcie_misses(host, arena, pcie_frac, 4);
         fwd.set_fast_moe(&cache, &host);
         if (adaptive) {
@@ -220,6 +223,7 @@ int main(int argc, char** argv) {
         std::printf("trace: %zu tokens x %d layers x %d to %s\n", trace.size() / (size_t(s.n_layer) * s.top_k), s.n_layer, s.top_k,
                     trace_path.c_str());
     }
+    std::printf("CUDA graphs: %s (%ld capture(s))\n", graphs ? "on" : "off", fwd.graph_captures());
     std::printf("tokens:");
     for (int i = 0; i < std::min<int>(24, int(out.size())); ++i) std::printf(" %d", out[i]);
     std::printf("\n");
