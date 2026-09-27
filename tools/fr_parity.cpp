@@ -175,6 +175,33 @@ void test_qsa(const BlockCtx& c, const Frd& ref, const std::vector<int>& steps, 
     for (int il : s.qsa_layers) free_qsa_cache(kv[il]);
 }
 
+// Each QSA projection alone, on llama.cpp's exact inputs (needs a dump with the attention
+// intermediates: Qcur_full, Kcur, Vcur, attn_gated).
+void test_qsa_proj(const BlockCtx& c, const Frd& ref, const std::vector<int>& steps, Checker& ck) {
+    const Spec& s = c.s;
+    for (int step : steps) {
+        for (int il : s.qsa_layers) {
+            const std::string L = "-" + std::to_string(il);
+            if (!ref.find("Qcur_full" + L, step)) continue;
+            const Frd::Rec& xr = ref.get("hc_mixed" + L, step, 0);
+            const int T = int(xr.ne[1]);
+            Dev x(ref.floats(xr)), q(size_t(T) * s.n_head * 2 * s.head_dim_k), k(size_t(T) * s.n_head_kv * s.head_dim_k),
+                v(size_t(T) * s.n_head_kv * s.head_dim_k);
+            linear(c, c.w.layer(il, "attn_q.weight"), x.p, q.p, T);
+            linear(c, c.w.layer(il, "attn_k.weight"), x.p, k.p, T);
+            linear(c, c.w.layer(il, "attn_v.weight"), x.p, v.p, T);
+            const Frd::Rec& ag = ref.get("attn_gated" + L, step);
+            Dev g(ref.floats(ag)), o(size_t(T) * s.d_model);
+            linear(c, c.w.layer(il, "attn_output.weight"), g.p, o.p, T);
+            cudaStreamSynchronize(c.stream);
+            ck.check("Qcur_full" + L, q.host(), ref.floats(ref.get("Qcur_full" + L, step)), true);
+            ck.check("Kcur (raw)" + L, k.host(), ref.floats(ref.get("Kcur" + L, step, 0)), true);
+            ck.check("Vcur" + L, v.host(), ref.floats(ref.get("Vcur" + L, step, 0)), true);
+            ck.check("attn_output from attn_gated" + L, o.host(), ref.floats(ref.get("attn_output" + L, step)), true);
+        }
+    }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -206,6 +233,7 @@ int main(int argc, char** argv) {
         if (t == "hc") test_hc(c, ref, steps, ck);
         else if (t == "gdn") test_gdn(c, ref, steps, ck);
         else if (t == "qsa") test_qsa(c, ref, steps, ck);
+        else if (t == "qsa_proj") test_qsa_proj(c, ref, steps, ck);
         else { std::fprintf(stderr, "unknown test %s\n", t.c_str()); return 2; }
     }
     std::printf("fr_parity: %d checks, %d over tolerance %.0e; worst %.3e (%s)\n", ck.checks, ck.fails, ck.tol, ck.worst,
