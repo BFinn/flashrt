@@ -569,22 +569,25 @@ __global__ void k_quant_q8(const float* src, int8_t* dst, __half* dsc, int n_row
     }
 }
 
-// Hot-set upkeep after one attention step: the blocks token T-1 selected are marked recently
-// used, and up to kHotPromote of the missed ones take CLOCK victims' slots (copied from the host
-// store). Values are the same in both stores, so where a block sits never changes a result.
-constexpr int kHotPromote = 128;
+// Hot-set upkeep before one attention step (graph-safe, all on the device):
+//  k_hot_select (one CTA): the blocks token T-1 selected are marked used and pinned for this step;
+//    up to kHotPromote missed blocks get CLOCK victim slots (never a pinned one). The table is
+//    updated at once; the data follows in k_hot_copy.
+//  k_hot_copy (kHotPromote CTAs): CTA k copies promoted block k from the host store.
+// Values are the same in both stores, so where a block sits never changes a result; blocks past
+// the promotion limit are read from the host store by the attention kernel.
+constexpr int kHotPromote = 1024;
 __device__ int block_scan_flags(bool flag, int* total);
-__global__ void k_hot_promote(int8_t* K, int8_t* V, __half* Ks, __half* Vs, const int8_t* hK, const int8_t* hV, const __half* hKs,
-                              const __half* hVs, int32_t* slot_of_block, int32_t* block_of_slot, uint8_t* refbit, int32_t* hand,
-                              const int32_t* cells, const int32_t* counts, int ldc, int T, int pos0, const int32_t* dp, int r,
-                              int kvh, int B) {
+__global__ void k_hot_select(int32_t* slot_of_block, int32_t* block_of_slot, uint8_t* refbit, uint32_t* pinned, int32_t* hand,
+                             int32_t* promo, const int32_t* cells, const int32_t* counts, int ldc, int T, int pos0,
+                             const int32_t* dp, int r, int B) {
     if (dp) pos0 = dp[1];
     __shared__ int miss[kHotPromote];
-    __shared__ int victims[kHotPromote];
     __shared__ int nmiss;
     const int t = T - 1, q = pos0 + t;
     const int cnt = counts ? counts[t] : -1;
     const int nblk = cnt < 0 ? q / r + 1 : (cnt + r - 1) / r;
+    const uint32_t stamp = uint32_t(hand[1]) + 1;   // hand[1]: step counter
     if (threadIdx.x == 0) nmiss = 0;
     __syncthreads();
     for (int base = 0; base < nblk; base += blockDim.x) {
@@ -592,7 +595,10 @@ __global__ void k_hot_promote(int8_t* K, int8_t* V, __half* Ks, __half* Vs, cons
         int b = -1;
         if (i < nblk) b = cnt < 0 ? i : cells[size_t(t) * ldc + size_t(i) * r] / r;
         const int slot = b >= 0 ? slot_of_block[b] : 0;
-        if (b >= 0 && slot >= 0) refbit[slot] = 1;
+        if (b >= 0 && slot >= 0) {
+            refbit[slot] = 1;
+            pinned[slot] = stamp;
+        }
         const bool m = b >= 0 && slot < 0;
         int total;
         const int rank = block_scan_flags(m, &total);
@@ -602,12 +608,15 @@ __global__ void k_hot_promote(int8_t* K, int8_t* V, __half* Ks, __half* Vs, cons
         __syncthreads();
     }
     if (threadIdx.x == 0) {
-        int h = *hand;
+        int h = hand[0], np = 0;
         for (int k = 0; k < nmiss; ++k) {
-            while (refbit[h]) {
+            int guard = 0;
+            while ((refbit[h] || pinned[h] == stamp) && guard < 2 * B) {
                 refbit[h] = 0;
                 h = h + 1 == B ? 0 : h + 1;
+                ++guard;
             }
+            if (guard >= 2 * B) break;   // every slot pinned: the rest stays in the host store
             const int v = h;
             h = h + 1 == B ? 0 : h + 1;
             const int old = block_of_slot[v];
@@ -615,23 +624,30 @@ __global__ void k_hot_promote(int8_t* K, int8_t* V, __half* Ks, __half* Vs, cons
             block_of_slot[v] = miss[k];
             slot_of_block[miss[k]] = v;
             refbit[v] = 1;
-            victims[k] = v;
+            pinned[v] = stamp;
+            promo[1 + 2 * np] = miss[k];
+            promo[2 + 2 * np] = v;
+            ++np;
         }
-        *hand = h;
+        promo[0] = np;
+        hand[0] = h;
+        hand[1] = int32_t(stamp);
     }
-    __syncthreads();
-    // copy: per promoted block, r cells x kvh heads, each 256 value bytes (16 x 16 B) + 8 scales (16 B)
-    const int per_row = 17, rows = r * kvh, items = nmiss * rows * per_row * 2;
-    for (int it = threadIdx.x; it < items; it += blockDim.x) {
-        const int which = it % 2, part = (it / 2) % per_row, rr = (it / 2 / per_row) % rows, k = it / 2 / per_row / rows;
-        const size_t src_row = size_t(miss[k]) * rows + rr, dst_row = size_t(victims[k]) * rows + rr;
-        if (part < 16) {
-            const int4* sp = reinterpret_cast<const int4*>((which ? hV : hK) + src_row * 256) + part;
-            int4* dq = reinterpret_cast<int4*>((which ? V : K) + dst_row * 256) + part;
-            *dq = *sp;
-        } else {
+}
+
+__global__ void k_hot_copy(int8_t* K, int8_t* V, __half* Ks, __half* Vs, const int8_t* hK, const int8_t* hV, const __half* hKs,
+                           const __half* hVs, const int32_t* promo, int r, int kvh) {
+    const int k = blockIdx.x;
+    if (k >= promo[0]) return;
+    const int b = promo[1 + 2 * k], v = promo[2 + 2 * k];
+    const int rows = r * kvh, per_row = 17;   // 16 x 16 B of values + 16 B of scales
+    for (int it = threadIdx.x; it < rows * per_row * 2; it += blockDim.x) {
+        const int which = it % 2, part = (it / 2) % per_row, rr = it / 2 / per_row;
+        const size_t src_row = size_t(b) * rows + rr, dst_row = size_t(v) * rows + rr;
+        if (part < 16)
+            reinterpret_cast<int4*>((which ? V : K) + dst_row * 256)[part] = reinterpret_cast<const int4*>((which ? hV : hK) + src_row * 256)[part];
+        else
             *reinterpret_cast<int4*>((which ? Vs : Ks) + dst_row * 8) = *reinterpret_cast<const int4*>((which ? hVs : hKs) + src_row * 8);
-        }
     }
 }
 
@@ -1026,7 +1042,8 @@ void reset_qsa_hot(const Spec& s, QsaCache& kv, cudaStream_t stream) {
     ck(cudaMemsetAsync(kv.slot_of_block, 0xff, size_t(kv.capacity / s.qsa_block) * 4, stream), "reset hot table");
     ck(cudaMemsetAsync(kv.block_of_slot, 0xff, size_t(kv.hot_blocks) * 4, stream), "reset hot slots");
     ck(cudaMemsetAsync(kv.refbit, 0, size_t(kv.hot_blocks), stream), "reset hot refbits");
-    ck(cudaMemsetAsync(kv.clock_hand, 0, 4, stream), "reset clock");
+    ck(cudaMemsetAsync(kv.clock_hand, 0, 8, stream), "reset clock");
+    ck(cudaMemsetAsync(kv.pinned, 0, size_t(kv.hot_blocks) * 4, stream), "reset hot pins");
 }
 
 QsaCache alloc_qsa_cache(const Spec& s, int capacity, bool q8, int hot_blocks) {
@@ -1051,7 +1068,9 @@ QsaCache alloc_qsa_cache(const Spec& s, int capacity, bool q8, int hot_blocks) {
         ck(cudaMalloc(&kv.slot_of_block, size_t(capacity / r) * 4), "cudaMalloc hot table");
         ck(cudaMalloc(&kv.block_of_slot, size_t(hot_blocks) * 4), "cudaMalloc hot slots");
         ck(cudaMalloc(&kv.refbit, size_t(hot_blocks)), "cudaMalloc hot refbits");
-        ck(cudaMalloc(&kv.clock_hand, 4), "cudaMalloc clock");
+        ck(cudaMalloc(&kv.clock_hand, 8), "cudaMalloc clock");
+        ck(cudaMalloc(&kv.pinned, size_t(hot_blocks) * 4), "cudaMalloc hot pins");
+        ck(cudaMalloc(&kv.promo, size_t(1 + 2 * kHotPromote) * 4), "cudaMalloc hot promotions");
         reset_qsa_hot(s, kv, nullptr);
         ck(cudaDeviceSynchronize(), "hot set init");
     }
@@ -1076,7 +1095,7 @@ void free_qsa_cache(QsaCache& kv) {
     for (void* h : {kv.hK_host, kv.hV_host, kv.hKs_host, kv.hVs_host})
         if (h) cudaFreeHost(h);
     for (void* d : {static_cast<void*>(kv.slot_of_block), static_cast<void*>(kv.block_of_slot), static_cast<void*>(kv.refbit),
-                    static_cast<void*>(kv.clock_hand)})
+                    static_cast<void*>(kv.clock_hand), static_cast<void*>(kv.pinned), static_cast<void*>(kv.promo)})
         if (d) cudaFree(d);
     if (kv.idx_pooled) cudaFree(kv.idx_pooled);
     if (kv.idx_ring) cudaFree(kv.idx_ring);
@@ -1196,6 +1215,15 @@ void qsa_mixer(const BlockCtx& c, int il, const float* x, int T, int pos0, QsaCa
     if (D != 256 || G > kAttnMaxGroup || H % KH) throw std::runtime_error("qsa_mixer: attention needs head_dim 256 and a group <= 16");
     const int n_splits = (std::max(width, ldc) + kAttnSplit - 1) / kAttnSplit;
     qsa_scratch_reserve(c.s, c.scratch, T, 0, n_splits);
+    if (kv.hot_blocks) {   // bring the selected blocks into the hot set first
+        k_hot_select<<<1, 1024, 0, c.stream>>>(kv.slot_of_block, kv.block_of_slot, kv.refbit, kv.pinned, kv.clock_hand, kv.promo, cells,
+                                               counts, ldc, T, pos0, c.dparams, r, kv.hot_blocks);
+        k_hot_copy<<<kHotPromote, 256, 0, c.stream>>>(static_cast<int8_t*>(kv.K), static_cast<int8_t*>(kv.V),
+                                                      reinterpret_cast<__half*>(kv.Ks), reinterpret_cast<__half*>(kv.Vs),
+                                                      static_cast<const int8_t*>(kv.hK), static_cast<const int8_t*>(kv.hV),
+                                                      reinterpret_cast<const __half*>(kv.hKs), reinterpret_cast<const __half*>(kv.hVs),
+                                                      kv.promo, r, KH);
+    }
     const dim3 grid(n_splits, KH, T);
     const float scale = 1.0f / sqrtf(float(D));
     auto launch = [&](auto kvr) {
@@ -1219,12 +1247,6 @@ void qsa_mixer(const BlockCtx& c, int il, const float* x, int T, int pos0, QsaCa
         launch(KvF16{Kc, Vc, KH});
     }
     k_attn_combine<<<T * H, 256, 0, c.stream>>>(c.scratch.attn_part, n_splits, qfull, o, H, D, H * 2 * D, 2 * D, D);
-    if (kv.hot_blocks)
-        k_hot_promote<<<1, 512, 0, c.stream>>>(static_cast<int8_t*>(kv.K), static_cast<int8_t*>(kv.V), reinterpret_cast<__half*>(kv.Ks),
-                                               reinterpret_cast<__half*>(kv.Vs), static_cast<const int8_t*>(kv.hK),
-                                               static_cast<const int8_t*>(kv.hV), reinterpret_cast<const __half*>(kv.hKs),
-                                               reinterpret_cast<const __half*>(kv.hVs), kv.slot_of_block, kv.block_of_slot, kv.refbit,
-                                               kv.clock_hand, cells, counts, ldc, T, pos0, c.dparams, r, KH, kv.hot_blocks);
     if (gated_out) ck(cudaMemcpyAsync(gated_out, o, size_t(T) * H * D * 4, cudaMemcpyDeviceToDevice, c.stream), "copy gated");
     linear(c, c.w.layer(il, "attn_output.weight"), o, out, T);
     ck(cudaGetLastError(), "qsa_mixer");
