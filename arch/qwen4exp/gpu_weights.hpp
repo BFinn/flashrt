@@ -40,8 +40,10 @@ public:
     GpuWeights(const GpuWeights&) = delete;
     GpuWeights& operator=(const GpuWeights&) = delete;
 
-    // Uploads all VramDense tensors of the plan. Throws on CUDA or I/O errors.
-    void load(const Gguf& g, const WeightPlan& plan);
+    // Uploads all VramDense tensors of the plan. Throws on CUDA or I/O errors. q3r_copies adds
+    // a Q3R decode copy of each Q3_K matrix (off by default: the Q3R kernel is not yet faster
+    // than the VRAM it takes from the expert cache; bench/results/2026-09-27-sw10-q3r).
+    void load(const Gguf& g, const WeightPlan& plan, bool q3r_copies = false);
 
     const GpuTensor& get(const std::string& name) const;         // throws if absent
     const GpuTensor* find(const std::string& name) const;        // nullptr if absent
