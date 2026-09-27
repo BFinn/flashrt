@@ -38,4 +38,7 @@ void quantize_q8_1(const float* x, int64_t ncols, int n_tok, void* xq, cudaStrea
 void matvec_q(uint32_t ggml_type, const void* W, const void* xq, float* y, int64_t ncols, int64_t nrows, int n_tok,
               cudaStream_t stream);
 
+// Dequantize n contiguous elements (whole blocks) of a ggml-typed buffer to F32.
+void dequantize(uint32_t ggml_type, const void* src, float* dst, int64_t n, cudaStream_t stream);
+
 }  // namespace flashrt::gemv

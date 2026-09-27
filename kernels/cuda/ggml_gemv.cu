@@ -8,6 +8,7 @@
 #include "src/ggml-cuda/mmvq.cu"
 #include "src/ggml-cuda/mmvf.cu"
 #include "src/ggml-cuda/quantize.cu"
+#include "src/ggml-cuda/convert.cu"
 
 #include "kernels/cuda/ggml_gemv.h"
 
@@ -112,6 +113,18 @@ void matvec(uint32_t t, const void* W, const float* x, float* y, int64_t ncols, 
             quantize_q8_1(x, ncols, n_tok, scratch, stream);
             matvec_q(t, W, scratch, y, ncols, nrows, n_tok, stream);
     }
+}
+
+void dequantize(uint32_t t, const void* src, float* dst, int64_t n, cudaStream_t stream) {
+    if (!supported(t) || n % block_size(t)) throw std::runtime_error("gemv::dequantize: unsupported type or length");
+    if (t == GGML_TYPE_F32) {
+        if (cudaMemcpyAsync(dst, src, size_t(n) * 4, cudaMemcpyDeviceToDevice, stream) != cudaSuccess)
+            throw std::runtime_error("gemv::dequantize: copy failed");
+        return;
+    }
+    const to_fp32_cuda_t fn = ggml_get_to_fp32_cuda(ggml_type(t));
+    if (!fn) throw std::runtime_error("gemv::dequantize: no kernel for type " + std::to_string(t));
+    fn(src, dst, n, stream);
 }
 
 }  // namespace flashrt::gemv
