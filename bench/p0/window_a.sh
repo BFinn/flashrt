@@ -57,7 +57,8 @@ step route_trace
 for d in 1000 32000; do
     python3 -c "import json,sys; d=[x for x in json.load(open('$IDS')) if x['depth']==$d][0]; print(' '.join(map(str,d['ids'])))" > ids_$d.txt
     wait_vram
-    "$FR/route_trace" --model "$MODEL" --ids ids_$d.txt --gen $GEN --out trace_d$d --probs --prefill-trace \
+    qsa=""; [ $d -ge 32000 ] && qsa=--qsa        # QSA selection is only non-trivial beyond ~2K cells
+    "$FR/route_trace" --model "$MODEL" --ids ids_$d.txt --gen $GEN --out trace_d$d --probs --prefill-trace $qsa \
         --temp 1.0 --top-p 0.95 --top-k 20 --seed 42
 done
 

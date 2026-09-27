@@ -3,12 +3,13 @@
 // the routing studies (cache-conditional routing, draft-window expert unions).
 //
 //   route_trace --model M.gguf --ids prompt.txt [--n-prompt N] [--gen G] [--out PREFIX]
-//               [--temp T --top-k K --top-p P --seed S] [--probs] [--prefill-trace]
+//               [--temp T --top-k K --top-p P --seed S] [--probs] [--prefill-trace] [--qsa]
 //               [--ctx C] [--threads T] [--ubatch U]
 //
 // Links against a llama.cpp build (MIT) and observes the graph through the scheduler's
 // eval callback: `ffn_moe_topk-<layer>` (I32 [k, n_tokens]) and, with --probs,
-// `ffn_moe_probs-<layer>` (F32 [n_expert, n_tokens]). Experts stay on the CPU
+// `ffn_moe_probs-<layer>` (F32 [n_expert, n_tokens]); with --qsa, the sparse-attention
+// selection `indexer_top_k-<layer>` (I32 [width, n_tokens], KV cell ids). Experts stay on the CPU
 // (`ffn_.*_exps` override), as in the deployed configuration.
 //
 // Outputs (.npy, C order):
@@ -16,6 +17,8 @@
 //   PREFIX.decode_probs.npy  float32 [G, n_layer, n_exp]  router probabilities (--probs)
 //   PREFIX.prefill_topk.npy  int32 [N, n_layer, k]        prompt tokens (--prefill-trace);
 //                                                         rows the graph skipped are -1
+//   PREFIX.decode_qsa.npy    int32 [G, n_attn_layer, width] selected KV cells per decoded
+//                            token (--qsa); layer ids are in meta.json, padding is -1
 //   PREFIX.tokens.txt        the generated token ids
 //   PREFIX.meta.json         run settings and timings
 //
@@ -73,17 +76,19 @@ int layer_of(const char* name, const char* prefix) {
 
 struct Tracer {
     int n_layer = 0, k = 0, n_exp = 0;
-    bool want_probs = false;
+    bool want_probs = false, want_qsa = false;
     bool recording = false;
     int n_tokens = 0;                 // rows in the current ubatch
     std::vector<int32_t> topk;        // [n_tokens, n_layer, k] for the current ubatch
     std::vector<float> probs;         // [n_tokens, n_layer, n_exp]
+    std::vector<std::vector<int32_t>> qsa;   // per layer, the current decode token's selection
     std::vector<char> scratch;
 
     void begin(int n) {
         n_tokens = n;
         topk.assign(size_t(n) * n_layer * k, -1);
         if (want_probs) probs.assign(size_t(n) * n_layer * n_exp, 0.0f);
+        if (want_qsa) qsa.assign(n_layer, {});
     }
 };
 
@@ -98,7 +103,8 @@ bool eval_cb(ggml_tensor* t, bool ask, void* ud) {
     auto* tr = static_cast<Tracer*>(ud);
     const int il_topk = layer_of(t->name, "ffn_moe_topk");
     const int il_prob = tr->want_probs ? layer_of(t->name, "ffn_moe_probs") : -1;
-    if (ask) return tr->recording && (il_topk >= 0 || il_prob >= 0);
+    const int il_qsa = tr->want_qsa && tr->n_tokens == 1 ? layer_of(t->name, "indexer_top_k") : -1;
+    if (ask) return tr->recording && (il_topk >= 0 || il_prob >= 0 || il_qsa >= 0);
     if (!tr->recording) return true;
 
     if (il_topk >= 0 && il_topk < tr->n_layer && t->type == GGML_TYPE_I32 && t->ne[0] == tr->k) {
@@ -116,6 +122,10 @@ bool eval_cb(ggml_tensor* t, bool ask, void* ud) {
         for (int64_t r = 0; r < rows && first + r >= 0; ++r)
             std::memcpy(&tr->probs[(size_t(first + r) * tr->n_layer + il_prob) * tr->n_exp],
                         tr->scratch.data() + size_t(r) * t->nb[1], size_t(tr->n_exp) * 4);
+    } else if (il_qsa >= 0 && il_qsa < tr->n_layer && t->type == GGML_TYPE_I32) {
+        auto& v = tr->qsa[il_qsa];
+        v.resize(size_t(t->ne[0]));
+        ggml_backend_tensor_get(t, v.data(), 0, v.size() * 4);   // decode: one contiguous row
     }
     return true;
 }
@@ -169,7 +179,7 @@ int main(int argc, char** argv) {
     int n_prompt = 0, gen = 1024, ctx = 0, threads = 12, ubatch = 2048, top_k = 20;
     float temp = 1.0f, top_p = 0.95f;
     uint64_t seed = 42;
-    bool want_probs = false, prefill_trace = false;
+    bool want_probs = false, prefill_trace = false, want_qsa = false;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         auto next = [&]() -> const char* {
@@ -190,6 +200,7 @@ int main(int argc, char** argv) {
         else if (a == "--seed") seed = std::strtoull(next(), nullptr, 10);
         else if (a == "--probs") want_probs = true;
         else if (a == "--prefill-trace") prefill_trace = true;
+        else if (a == "--qsa") want_qsa = true;
         else { std::fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
     }
     if (model_path.empty() || ids_path.empty()) {
@@ -218,6 +229,7 @@ int main(int argc, char** argv) {
 
     Tracer tr;
     tr.want_probs = want_probs;
+    tr.want_qsa = want_qsa;
     tr.n_layer = llama_model_n_layer(model);
     {
         char buf[64];
@@ -274,6 +286,7 @@ int main(int argc, char** argv) {
     std::vector<int32_t> dec_topk(size_t(gen) * tr.n_layer * tr.k, -1);
     std::vector<float> dec_probs;
     if (want_probs) dec_probs.assign(size_t(gen) * tr.n_layer * tr.n_exp, 0.0f);
+    std::vector<std::vector<std::vector<int32_t>>> dec_qsa;   // [G][n_layer][width]
     std::vector<llama_token> out_ids;
     std::mt19937_64 rng(seed);
     std::vector<int> idx;
@@ -290,6 +303,7 @@ int main(int argc, char** argv) {
         std::memcpy(&dec_topk[size_t(g) * tr.n_layer * tr.k], tr.topk.data(), tr.topk.size() * 4);
         if (want_probs)
             std::memcpy(&dec_probs[size_t(g) * tr.n_layer * tr.n_exp], tr.probs.data(), tr.probs.size() * 4);
+        if (want_qsa) dec_qsa.push_back(std::move(tr.qsa));
         tok = sample(llama_get_logits_ith(lctx, -1), n_vocab, vocab, temp, top_k, top_p, rng, idx);
         if ((g + 1) % 64 == 0) std::fprintf(stderr, "\rdecode %d/%d", g + 1, gen);
     }
@@ -306,6 +320,21 @@ int main(int argc, char** argv) {
         write_npy(out + ".decode_probs.npy", "<f4", {size_t(gen), L, E}, dec_probs.data(), dec_probs.size() * 4);
     if (prefill_trace)
         write_npy(out + ".prefill_topk.npy", "<i4", {prompt.size(), L, K}, prefill_topk.data(), prefill_topk.size() * 4);
+    std::vector<int> qsa_layers;
+    if (want_qsa && !dec_qsa.empty()) {
+        size_t W = 0;
+        for (int il = 0; il < tr.n_layer; ++il)
+            if (!dec_qsa[0][il].empty()) qsa_layers.push_back(il);
+        for (auto& tok_rows : dec_qsa)
+            for (int il : qsa_layers) W = std::max(W, tok_rows[il].size());
+        std::vector<int32_t> flat(dec_qsa.size() * qsa_layers.size() * W, -1);
+        for (size_t g = 0; g < dec_qsa.size(); ++g)
+            for (size_t j = 0; j < qsa_layers.size(); ++j) {
+                const auto& v = dec_qsa[g][qsa_layers[j]];
+                std::copy(v.begin(), v.end(), flat.begin() + (g * qsa_layers.size() + j) * W);
+            }
+        write_npy(out + ".decode_qsa.npy", "<i4", {dec_qsa.size(), qsa_layers.size(), W}, flat.data(), flat.size() * 4);
+    }
     {
         std::ofstream f(out + ".tokens.txt");
         for (auto t : out_ids) f << t << '\n';
@@ -316,7 +345,10 @@ int main(int argc, char** argv) {
           << ",\"n_layer\":" << L << ",\"n_expert\":" << E << ",\"top_k\":" << K << ",\"temp\":" << temp
           << ",\"top_p\":" << top_p << ",\"sample_top_k\":" << top_k << ",\"seed\":" << seed
           << ",\"ubatch\":" << ubatch << ",\"threads\":" << threads << ",\"load_s\":" << load_s
-          << ",\"prefill_s\":" << prefill_s << ",\"decode_s\":" << decode_s << ",\"unobserved\":" << missing << "}\n";
+          << ",\"prefill_s\":" << prefill_s << ",\"decode_s\":" << decode_s << ",\"unobserved\":" << missing
+          << ",\"qsa_layers\":[";
+        for (size_t j = 0; j < qsa_layers.size(); ++j) f << (j ? "," : "") << qsa_layers[j];
+        f << "]}\n";
     }
     std::fprintf(stderr, "wrote %s.*\n", out.c_str());
 
