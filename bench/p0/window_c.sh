@@ -1,7 +1,7 @@
 #!/bin/bash
 # P0 window C on the target box, all on natural text (wikitext-2):
-#   1. Strata's own time breakdown at 32K: `--stats`, `--gpu-only-full` (per-token GPU
-#      floor) and `--gpu-stages` (per-stage GPU table), in generate mode
+#   1. Strata's own time breakdown at 32K: `--stats` and `--gpu-stages` (per-stage GPU
+#      table), in generate mode; then PLE read depth (--ple-inflight) and --ple-io mmap
 #   2. llama.cpp prefill vs ubatch at 32K with direct-I/O loading (pinned, no mmap)
 #   3. the reference baselines on wikitext at 1K / 32K / 131K / 245K, interleaved:
 #      Strata tuned greedy x2, Strata tuned t=1.0 x2, llama.cpp dev tree x1
@@ -43,9 +43,15 @@ strata_gen() {
     echo "$label: exit $? ($(wc -l < "$label.log") log lines)"
 }
 step strata generate breakdowns
-strata_gen gen-stats --stats
-strata_gen gen-floor --gpu-only-full
+if [ "${SKIP_DONE:-0}" != 1 ]; then
+    strata_gen gen-stats --stats
+fi
+# --gpu-only-full was OOM-killed at MemoryMax=56G in the first attempt; not retried.
 strata_gen gen-stages --gpu-stages
+# prefill spent 21.6 of 47.4 s blocked on PLE (n-gram table) SSD reads at 64 in flight
+strata_gen gen-ple-inflight256 --stats --ple-inflight 256
+strata_gen gen-ple-inflight1024 --stats --ple-inflight 1024
+strata_gen gen-ple-mmap --stats --ple-io mmap
 
 # ---- 2. llama.cpp prefill vs ubatch at 32K, direct-I/O load (pinned host weights)
 step llama-bench ubatch sweep, -lm dio
