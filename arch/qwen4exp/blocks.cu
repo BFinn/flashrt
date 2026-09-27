@@ -73,7 +73,7 @@ __global__ void k_grouped_rms_norm_v4(const float* x, const float* w, float* y, 
 
 // Decode (one token): the hyper-connection RMS norm, down-projection and inject projection in
 // one kernel. Block (rb, g) normalises stream g (xn = x * inv_g * w) into shared memory (block
-// row 0 also writes it out), then its 8 warps take rows rb*8 .. +7 of [W_down; W_inject] (BF16,
+// row 0 also writes it out), then its warps take one row each of [W_down; W_inject] (BF16,
 // rank + n_inject rows of hc*n columns) over stream g's n columns. part[g][row] holds the
 // per-stream partial dot products; consumers sum them over g in order (deterministic).
 __global__ void k_hc_down(const float* x, const float* w_norm, const uint16_t* Wd, const uint16_t* Wi, float* xn_out,
@@ -97,6 +97,7 @@ __global__ void k_hc_down(const float* x, const float* w_norm, const uint16_t* W
     const uint16_t* wr = (r < rank ? Wd + size_t(r) * hcn : Wi + size_t(r - rank) * hcn) + size_t(g) * n;
     const uint4* w4 = reinterpret_cast<const uint4*>(wr);
     float acc = 0.0f;
+#pragma unroll 5
     for (int ch = lane; ch < n / 8; ch += 32) {
         const uint4 u = w4[ch];
         const float* xv = xs + ch * 8;
@@ -396,7 +397,7 @@ void hc_mix(const BlockCtx& c, int il, int which, const float* x, int T, float* 
         // decode: norm + down + inject in one kernel, then up + silu + gated mean in another
         const int n_inj = w_inj ? hc : 0, rows = s.hc_rank + n_inj;
         float* part = lo;   // [hc][rows], fits: lo is followed by gate [hcd]
-        k_hc_down<<<dim3((rows + 7) / 8, hc), 256, size_t(n) * 4, c.stream>>>(
+        k_hc_down<<<dim3((rows + 15) / 16, hc), 512, size_t(n) * 4, c.stream>>>(
             x, static_cast<const float*>(w_norm.dev), static_cast<const uint16_t*>(w_down.dev),
             w_inj ? static_cast<const uint16_t*>(w_inj->dev) : nullptr, xn, part, n, s.hc_rank, n_inj, float(s.rms_eps));
         k_hc_up_mix<<<(n + 7) / 8, 256, 0, c.stream>>>(static_cast<const uint16_t*>(w_up.dev), part, n_inj, 1.0f / hc, xn, mixed,
