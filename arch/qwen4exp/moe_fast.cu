@@ -23,6 +23,8 @@ namespace flashrt::qwen4exp {
 namespace {
 
 constexpr int kMaxK = 16;   // top-k upper bound for the fixed launch shapes
+constexpr int kRouteSel = 2 + 2 * kMaxK;   // route record: offset of the selected experts
+constexpr int kRouteInts = kRouteSel + kMaxK;
 
 // mailbox layout (one per layer, doorbell mode)
 constexpr size_t kMbRouted = 0;     // uint32, GPU -> host: routing and x are in place for token seq
@@ -88,7 +90,8 @@ __device__ int block_scan_flags(bool flag, int* total) {
 // One block of E threads (E <= 1024): softmax over the router logits, top-k by probability,
 // weights renormalised (sum clamped at 6.1e-5, as llama.cpp). Hits get their slot; the hit list
 // is padded to k with a real slot (or slot 0) at weight 0 so the grouped launches have a fixed
-// shape. route_host gets [n_hits, n_miss, miss experts[k], miss weights[k] as float bits].
+// shape. route_host gets [n_hits, n_miss, miss experts[k], miss weights[k] as float bits,
+// then (at kRouteSel) all k selected experts in rank order].
 // Doorbell mode (mb != nullptr): the record goes to the mailbox instead, followed by x [n], and
 // then the routed flag is raised to seq.
 __global__ void k_route(const float* logits, const int32_t* table, int E, int K, int32_t* hit_slot, float* hit_w,
@@ -198,6 +201,7 @@ __global__ void k_route(const float* logits, const int32_t* table, int E, int K,
             hit_slot[k] = pad;
             hit_w[k] = 0.0f;
         }
+        for (int k = 0; k < K; ++k) route_dev[kRouteSel + k] = sel[k];
         route_dev[0] = nh;
         route_dev[1] = nm;
     }
@@ -300,11 +304,187 @@ void expert_cache_fill(const Spec& s, ExpertCache& cache, const ExpertArena& are
 
 MoeFastHost alloc_moe_fast_host(const Spec& s) {
     MoeFastHost h;
-    ck(cudaHostAlloc(&h.route_host, size_t(2 + 2 * kMaxK) * 4, cudaHostAllocDefault), "cudaHostAlloc route");
+    ck(cudaHostAlloc(&h.route_host, size_t(kRouteInts) * 4, cudaHostAllocDefault), "cudaHostAlloc route");
+    h.access.assign(size_t(s.n_layer) * s.top_k, -1);
     ck(cudaHostAlloc(&h.x_host, size_t(s.d_model) * 4, cudaHostAllocDefault), "cudaHostAlloc x");
     ck(cudaHostAlloc(&h.cpu_out, size_t(s.d_model) * 4, cudaHostAllocDefault), "cudaHostAlloc cpu out");
     ck(cudaEventCreateWithFlags(&h.routed, cudaEventDisableTiming), "cudaEventCreate");
     return h;
+}
+
+// ---- adaptive expert cache
+
+namespace {
+struct TableUpdates {
+    int n;
+    int32_t idx[64];
+    int32_t val[64];
+};
+__global__ void k_table_update(int32_t* table, TableUpdates u) {
+    if (int(threadIdx.x) < u.n) table[u.idx[threadIdx.x]] = u.val[threadIdx.x];
+}
+}  // namespace
+
+struct CacheManager {
+    const Spec* s = nullptr;
+    ExpertCache* cache = nullptr;
+    const ExpertArena* arena = nullptr;
+    CachePolicyConfig cfg;
+    cudaStream_t copy = nullptr;
+    cudaEvent_t tok_done = nullptr;
+    std::vector<float> count;                   // inflated: real count = count / w
+    double w = 1.0;                             // weight of an access now
+    long token = 0;
+    std::set<std::pair<float, int>> resident;   // (count, key) of the cached experts
+    struct Pending {
+        int key, slot;
+        uint8_t* staging;
+        cudaEvent_t ev;
+    };
+    std::vector<Pending> pending;
+    std::vector<uint8_t*> staging_free;
+    std::vector<cudaEvent_t> events_free;
+    std::vector<char> is_pending;               // per key
+    bool registered = false;
+    CacheStats stats;
+
+    void bump(int key, float add) {
+        const int slot = cache->table[key];
+        if (slot >= 0) resident.erase({count[key], key});
+        count[key] += add;
+        if (slot >= 0) resident.insert({count[key], key});
+    }
+    void renormalise() {
+        for (float& c : count) c = float(c / w);
+        w = 1.0;
+        resident.clear();
+        for (int key = 0; key < int(count.size()); ++key)
+            if (cache->table[key] >= 0) resident.insert({count[key], key});
+    }
+};
+
+CacheManager* create_cache_manager(const Spec& s, ExpertCache& cache, const ExpertArena& arena, const CachePolicyConfig& cfg,
+                                   const std::vector<uint32_t>& prior) {
+    auto* m = new CacheManager;
+    m->s = &s;
+    m->cache = &cache;
+    m->arena = &arena;
+    m->cfg = cfg;
+    const size_t n = size_t(s.n_layer) * s.n_expert;
+    m->count.assign(n, 0.0f);
+    for (size_t k = 0; k < n && k < prior.size(); ++k) m->count[k] = float(prior[k]);
+    m->is_pending.assign(n, 0);
+    for (size_t key = 0; key < n; ++key)
+        if (cache.table[key] >= 0) m->resident.insert({m->count[key], int(key)});
+    ck(cudaHostRegister(arena.buf.ptr, arena.total_bytes(), cudaHostRegisterDefault), "cudaHostRegister arena");
+    m->registered = true;
+    ck(cudaStreamCreateWithFlags(&m->copy, cudaStreamNonBlocking), "cudaStreamCreate copy");
+    ck(cudaEventCreateWithFlags(&m->tok_done, cudaEventDisableTiming), "cudaEventCreate");
+    for (int i = 0; i < cfg.budget; ++i) {
+        uint8_t* st = nullptr;
+        ck(cudaMalloc(&st, cache.slot_bytes), "cudaMalloc swap staging");
+        m->staging_free.push_back(st);
+        cudaEvent_t ev;
+        ck(cudaEventCreateWithFlags(&ev, cudaEventDisableTiming), "cudaEventCreate");
+        m->events_free.push_back(ev);
+    }
+    return m;
+}
+
+void destroy_cache_manager(CacheManager* m) {
+    if (!m) return;
+    if (m->copy) cudaStreamSynchronize(m->copy);
+    for (auto& p : m->pending) {
+        m->staging_free.push_back(p.staging);
+        m->events_free.push_back(p.ev);
+    }
+    for (uint8_t* st : m->staging_free) cudaFree(st);
+    for (cudaEvent_t ev : m->events_free) cudaEventDestroy(ev);
+    if (m->tok_done) cudaEventDestroy(m->tok_done);
+    if (m->copy) cudaStreamDestroy(m->copy);
+    if (m->registered) cudaHostUnregister(m->arena->buf.ptr);
+    delete m;
+}
+
+CacheStats cache_manager_stats(const CacheManager* m) { return m->stats; }
+
+void cache_manager_step(CacheManager* m, const MoeFastHost& h, cudaStream_t stream) {
+    const Spec& s = *m->s;
+    ExpertCache& c = *m->cache;
+    const int E = s.n_expert, K = s.top_k;
+    TableUpdates upd{};
+    // 1. learn from the previous token's routing
+    std::vector<int> missed;
+    for (int il = 0; il < s.n_layer; ++il)
+        for (int k = 0; k < K; ++k) {
+            const int e = h.access_prev[size_t(il) * K + k];
+            if (e < 0) continue;
+            const int key = il * E + e;
+            m->bump(key, float(m->w));
+            if (c.table[key] < 0 && !m->is_pending[key]) missed.push_back(key);
+        }
+    if (++m->token % m->cfg.decay_every == 0) {
+        m->w /= m->cfg.decay;
+        if (m->w > 1e18) m->renormalise();
+    }
+    // 2. commit finished uploads (the table entry goes live from the next token on)
+    for (size_t i = 0; i < m->pending.size();) {
+        auto& p = m->pending[i];
+        if (cudaEventQuery(p.ev) != cudaSuccess) { ++i; continue; }
+        c.table[p.key] = p.slot;
+        c.owner[p.slot] = p.key;
+        m->resident.insert({m->count[p.key], p.key});
+        m->is_pending[p.key] = 0;
+        if (upd.n < 64) { upd.idx[upd.n] = p.key; upd.val[upd.n] = p.slot; ++upd.n; }
+        m->staging_free.push_back(p.staging);
+        m->events_free.push_back(p.ev);
+        ++m->stats.committed;
+        p = m->pending.back();
+        m->pending.pop_back();
+    }
+    // 3. admit the strongest misses against the weakest residents
+    std::sort(missed.begin(), missed.end(), [&](int a, int b) { return m->count[a] > m->count[b]; });
+    missed.erase(std::unique(missed.begin(), missed.end()), missed.end());
+    std::vector<std::pair<int, int>> uploads;   // (key, slot)
+    for (int key : missed) {
+        if (int(m->pending.size() + uploads.size()) >= m->cfg.budget || m->resident.empty() || upd.n >= 62) break;
+        if (m->count[key] < m->cfg.admit * m->w) break;   // sorted: no later miss qualifies either
+        const auto [vcount, victim] = *m->resident.begin();
+        if (m->count[key] < m->cfg.margin * vcount) break;
+        m->resident.erase(m->resident.begin());
+        const int slot = c.table[victim];
+        c.table[victim] = -1;
+        c.owner[slot] = -1;
+        upd.idx[upd.n] = victim;
+        upd.val[upd.n] = -1;
+        ++upd.n;
+        m->is_pending[key] = 1;
+        uploads.push_back({key, slot});
+    }
+    // 4. evictions and commits apply after this token; uploads start after it
+    if (upd.n) k_table_update<<<1, 64, 0, stream>>>(c.table_dev, upd);
+    if (uploads.empty()) return;
+    ck(cudaEventRecord(m->tok_done, stream), "event token done");
+    ck(cudaStreamWaitEvent(m->copy, m->tok_done, 0), "wait token done");
+    const q2_0::ExpertShape es{s.d_model, s.d_ff_expert};
+    const size_t mats[3] = {q2_0::mat_bytes(es.d_ff, es.d_model), q2_0::mat_bytes(es.d_ff, es.d_model),
+                            q2_0::mat_bytes(es.d_model, es.d_ff)};
+    for (const auto& [key, slot] : uploads) {
+        uint8_t* st = m->staging_free.back();
+        m->staging_free.pop_back();
+        cudaEvent_t ev = m->events_free.back();
+        m->events_free.pop_back();
+        ck(cudaMemcpyAsync(st, m->arena->blob(key / E, key % E), c.slot_bytes, cudaMemcpyHostToDevice, m->copy), "swap upload");
+        size_t off = 0;
+        for (size_t mb : mats) {
+            const size_t nblk = mb / 18;
+            k_unrepack<<<unsigned((nblk + 255) / 256), 256, 0, m->copy>>>(st + off, c.slots + size_t(slot) * c.slot_bytes + off, nblk);
+            off += mb;
+        }
+        ck(cudaEventRecord(ev, m->copy), "swap event");
+        m->pending.push_back({key, slot, st, ev});
+        ++m->stats.swaps;
+    }
 }
 
 // ---- doorbell mode: the miss server
@@ -315,6 +495,7 @@ struct MissServer {
     int cpu = -1;
     std::thread th;
     alignas(64) std::atomic<uint32_t> post{0};   // latest token to serve
+    alignas(64) std::atomic<uint32_t> served{0}; // latest token fully served
     std::atomic<bool> quit{false};
     std::atomic<bool> failed{false};
     std::string error;
@@ -359,6 +540,7 @@ struct MissServer {
                 const auto t1 = std::chrono::steady_clock::now();
                 const int32_t* route = reinterpret_cast<const int32_t*>(mb + kMbRoute);
                 const int nh = route[0], nm = route[1];
+                for (int k = 0; k < K; ++k) h->access[size_t(il) * K + k] = route[kRouteSel + k];
                 float* out = reinterpret_cast<float*>(mb + out_off);
                 if (nm > 0) {
                     q2_0::quantize_q8(reinterpret_cast<const float*>(mb + kMbX), act);
@@ -378,6 +560,7 @@ struct MissServer {
                 ++h->layers_by_nm[std::min(nm, 16)];
                 __atomic_store_n(reinterpret_cast<uint32_t*>(mb + kMbDone), seq, __ATOMIC_RELEASE);
             }
+            served.store(seq, std::memory_order_release);   // h->access and the statistics are complete
         }
     }
 };
@@ -405,7 +588,9 @@ void doorbell_begin_token(MoeFastHost& h) {
 }
 
 void doorbell_end_token(MoeFastHost& h) {
-    if (h.server->failed.load()) throw std::runtime_error(h.server->error);
+    // the GPU has consumed every done flag; the server's bookkeeping after the last one is brief
+    while (h.server->served.load(std::memory_order_acquire) != h.seq)
+        if (h.server->failed.load()) throw std::runtime_error(h.server->error);
 }
 
 void free_moe_fast_host(MoeFastHost& h) {
@@ -442,7 +627,7 @@ void moe_block_fast(const BlockCtx& c, int il, const float* x, const ExpertCache
     int32_t* route_dev = hit_slot + kMaxK;                              // [2 + 2K]
     uint8_t* xq = static_cast<uint8_t*>(c.scratch.q8);                  // Q8_1 of x
     uint8_t* hq = xq + gemv::q8_1_bytes(n, 1);                          // Q8_1 of the K hidden rows
-    if (size_t(reinterpret_cast<float*>(route_dev + 2 + 2 * kMaxK) - c.scratch.f32) > c.scratch.f32_elems ||
+    if (size_t(reinterpret_cast<float*>(route_dev + kRouteInts) - c.scratch.f32) > c.scratch.f32_elems ||
         gemv::q8_1_bytes(n, 1) + gemv::q8_1_bytes(ff, K) > c.scratch.q8_bytes)
         throw std::runtime_error("moe_block_fast: scratch too small");
 
@@ -452,7 +637,7 @@ void moe_block_fast(const BlockCtx& c, int il, const float* x, const ExpertCache
     k_route<<<1, ((E + 31) / 32) * 32, 0, c.stream>>>(logits, cache.table_dev + size_t(il) * E, E, K, hit_slot, hit_w, route_dev,
                                                      x, n, mb, h.seq);
     if (!h.doorbell) {
-        ck(cudaMemcpyAsync(h.route_host, route_dev, size_t(2 + 2 * K) * 4, cudaMemcpyDeviceToHost, c.stream), "route to host");
+        ck(cudaMemcpyAsync(h.route_host, route_dev, size_t(kRouteInts) * 4, cudaMemcpyDeviceToHost, c.stream), "route to host");
         ck(cudaMemcpyAsync(h.x_host, x, size_t(n) * 4, cudaMemcpyDeviceToHost, c.stream), "x to host");
         ck(cudaEventRecord(h.routed, c.stream), "event");
     }
@@ -481,6 +666,7 @@ void moe_block_fast(const BlockCtx& c, int il, const float* x, const ExpertCache
     ck(cudaEventSynchronize(h.routed), "wait routing");
     const auto t1 = std::chrono::steady_clock::now();
     const int nh = h.route_host[0], nm = h.route_host[1];
+    for (int k = 0; k < K; ++k) h.access[size_t(il) * K + k] = h.route_host[kRouteSel + k];
     h.hits += nh;
     h.misses += nm;
     if (nm > 0) {

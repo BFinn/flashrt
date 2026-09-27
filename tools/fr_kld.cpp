@@ -2,7 +2,7 @@
 // fr_kld: KL divergence of flashrt's logits against a llama-perplexity --kl-divergence-base
 // file (the P1 correctness gate), on the same tokens and chunks.
 //
-//   fr_kld MODEL.gguf BASE.bin [--ctx N] [--chunks K] [--batch B] [--fast] [--reserve-mib R]
+//   fr_kld MODEL.gguf BASE.bin [--ctx N] [--chunks K] [--batch B] [--fast] [--reserve-mib R] [--static-cache]
 //
 // The base file holds: the magic "_logits_", int32 ctx, int32 n_vocab, int32 n_chunk, the
 // tokens of all chunks (n_chunk * ctx int32), then for every chunk the scored positions ctx/2 .. ctx-2, each as a float scale and a
@@ -13,7 +13,7 @@
 // --fast scores the decode path instead: the unscored first half of each chunk is prefilled in
 // batches (reference path), and the scored half runs one token at a time on the fast path
 // (VRAM expert cache filled from chunk 0's prefill routing counts, GPU routing, doorbells),
-// fed the chunk's own tokens.
+// fed the chunk's own tokens. The cache adapts during decode unless --static-cache.
 #include "arch/qwen4exp/experts.hpp"
 #include "arch/qwen4exp/forward_ref.hpp"
 #include "arch/qwen4exp/gpu_weights.hpp"
@@ -43,7 +43,7 @@ int main(int argc, char** argv) {
         return 2;
     }
     int ctx = 0, chunks = 0, batch = 64, reserve_mib = 1024;
-    bool fast = false;
+    bool fast = false, adaptive = true;
     for (int i = 3; i < argc; ++i) {
         auto next = [&]() -> const char* { return i + 1 < argc ? argv[++i] : "0"; };
         if (!std::strcmp(argv[i], "--ctx")) ctx = std::atoi(next());
@@ -51,6 +51,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--batch")) batch = std::atoi(next());
         else if (!std::strcmp(argv[i], "--fast")) fast = true;
         else if (!std::strcmp(argv[i], "--reserve-mib")) reserve_mib = std::atoi(next());
+        else if (!std::strcmp(argv[i], "--static-cache")) adaptive = false;
         else { std::fprintf(stderr, "unknown argument %s\n", argv[i]); return 2; }
     }
 
@@ -95,6 +96,7 @@ int main(int argc, char** argv) {
     const auto t0 = std::chrono::steady_clock::now();
     ExpertCache cache;
     MoeFastHost host;
+    CacheManager* mgr = nullptr;
 
     for (int ch = 0; ch < chunks; ++ch) {
         const int32_t* seq = tokens.data() + size_t(ch) * ctx;
@@ -126,7 +128,12 @@ int main(int argc, char** argv) {
                 pin_current_thread(cpus[8 % cpus.size()]);
                 pool.set_spin_us(2000);
                 fwd.set_fast_moe(&cache, &host);
-                std::printf("fast path: %d cache slots (%.1f%% of experts)\n", slots, 100.0 * slots / (s.n_layer * s.n_expert));
+                if (adaptive) {
+                    mgr = create_cache_manager(s, cache, arena, CachePolicyConfig{}, fwd.counts());
+                    fwd.set_cache_manager(mgr);
+                }
+                std::printf("fast path: %d cache slots (%.1f%% of experts), %s cache\n", slots, 100.0 * slots / (s.n_layer * s.n_expert),
+                            adaptive ? "adaptive" : "static");
             }
             // rows whose logits are scored: positions first .. ctx-2
             const int lo = std::max(first, p0), hi = std::min(ctx - 2, p0 + T - 1);
@@ -191,7 +198,11 @@ int main(int argc, char** argv) {
                 sorted.empty() ? 0.0 : sorted.back());
     std::printf("  same top token %.3f%%\n", 100.0 * same_top / std::max(1L, count));
     if (fast) {
-        std::printf("  fast path: expert cache hit rate %.2f%%\n", 100.0 * host.hits / std::max(1L, host.hits + host.misses));
+        std::printf("  fast path: expert cache hit rate %.2f%%", 100.0 * host.hits / std::max(1L, host.hits + host.misses));
+        if (mgr) std::printf(", %ld swaps", cache_manager_stats(mgr).swaps);
+        std::printf("\n");
+        fwd.set_cache_manager(nullptr);
+        destroy_cache_manager(mgr);
         free_moe_fast_host(host);
         free_expert_cache(cache);
     }

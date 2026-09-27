@@ -7,6 +7,7 @@
 #include "arch/qwen4exp/blocks.hpp"
 
 #include <cstdint>
+#include <set>
 #include <utility>
 #include <vector>
 
@@ -48,6 +49,10 @@ struct MoeFastHost {
     size_t mbox_stride = 0;
     uint32_t seq = 0;                 // token sequence number, the flag value for this token
     struct MissServer* server = nullptr;
+    // the experts each layer selected for the last token, [n_layer][top_k] (for cache policy
+    // and traces); complete once forward() returns
+    std::vector<int32_t> access;
+    std::vector<int32_t> access_prev;   // the previous token's (ForwardRef copies it at token end)
     // statistics
     long hits = 0, misses = 0;
     double wait_s = 0, cpu_s = 0;     // host time waiting for the routing, and running the misses
@@ -64,6 +69,33 @@ void start_doorbell(const Spec& s, MoeFastHost& h, int cpu);
 // stream has synchronised (throws if the miss server failed).
 void doorbell_begin_token(MoeFastHost& h);
 void doorbell_end_token(MoeFastHost& h);
+
+// Adaptive expert cache: decayed LFU with hysteresis and a per-token swap budget. Every
+// access adds 1 to the (layer, expert) count; every decay_every tokens all counts are
+// multiplied by decay. A missed expert is admitted when its count is >= admit and >= margin
+// times the weakest resident's, up to `budget` uploads in flight.
+struct CachePolicyConfig {
+    float decay = 0.7f;
+    int decay_every = 4;
+    float admit = 2.0f;
+    float margin = 1.5f;
+    int budget = 8;
+};
+struct CacheManager;   // opaque; see moe_fast.cu
+
+// Registers the arena with CUDA (pinned uploads) and seeds the counts with `prior` (e.g. the
+// prompt's routing counts, [n_layer * n_expert]).
+CacheManager* create_cache_manager(const Spec& s, ExpertCache& cache, const ExpertArena& arena, const CachePolicyConfig& cfg,
+                                   const std::vector<uint32_t>& prior);
+void destroy_cache_manager(CacheManager* m);
+// Called once per decode token, after the token's kernels are enqueued on `stream` and before
+// it synchronises: learns from the previous token's routing (h.access_prev), commits finished
+// uploads, and schedules evictions (applied after this token) and uploads (started after it).
+void cache_manager_step(CacheManager* m, const MoeFastHost& h, cudaStream_t stream);
+struct CacheStats {
+    long swaps = 0, committed = 0;
+};
+CacheStats cache_manager_stats(const CacheManager* m);
 
 // One token: out [d_model] = routed experts (hits on the GPU, misses on the CPU) + gated shared
 // expert. Same math as moe_block.

@@ -42,6 +42,8 @@ public:
     // Decode (T == 1) uses the fast MoE path with this cache when set; batches keep the reference
     // path. Routing counts of the reference path accumulate into counts() (for a cache fill).
     void set_fast_moe(const ExpertCache* cache, MoeFastHost* host) { fast_cache_ = cache; fast_host_ = host; }
+    // With a manager, every fast decode token also runs one adaptive-cache step.
+    void set_cache_manager(CacheManager* m) { cache_mgr_ = m; }
     std::vector<uint32_t>& counts() { return counts_; }
 
     // Greedy token from a logits row on the device (GPU argmax; 4 bytes come back).
@@ -68,6 +70,8 @@ private:
     int pos_ = 0;
     const ExpertCache* fast_cache_ = nullptr;
     MoeFastHost* fast_host_ = nullptr;
+    CacheManager* cache_mgr_ = nullptr;
+    bool have_access_ = false;   // fast_host_->access holds a token's routing
     std::vector<uint32_t> counts_;
     int32_t* argmax_dev_ = nullptr;
     int32_t* argmax_host_ = nullptr;   // pinned
