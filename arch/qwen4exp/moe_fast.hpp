@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
-// The fast MoE path for decode: a VRAM expert cache (experts in ggml's Q2_0 layout, one slot
-// each), routing on the GPU, cache hits as two grouped mat-vecs (fused gate+up, then down) and
-// misses on the CPU pool, overlapped with the GPU work.
+// The fast MoE path for decode: a VRAM expert cache (experts in the arena's planar Q2_0 layout,
+// one slot each, uploaded as is), routing on the GPU, cache hits as two grouped int8 (dp4a)
+// kernels (gate+up with SwiGLU, then down) and misses on the CPU pool, overlapped with the GPU.
 #pragma once
 
 #include "arch/qwen4exp/blocks.hpp"
@@ -15,18 +15,17 @@ namespace flashrt::qwen4exp {
 
 struct ExpertCache {
     int n_slots = 0;
-    size_t slot_bytes = 0;            // one expert: gate | up | down, ggml Q2_0 blocks
+    size_t slot_bytes = 0;            // one expert: gate | up | down, planar Q2_0 (quant/q2_0/q2_0.hpp)
     uint8_t* slots = nullptr;         // device, n_slots * slot_bytes
     int32_t* table_dev = nullptr;     // [n_layer][n_expert] -> slot, or -1
     std::vector<int32_t> table;       // host mirror of table_dev
     std::vector<int32_t> owner;       // slot -> layer * n_expert + expert, or -1
-    uint8_t* staging = nullptr;       // device staging for one planar blob
 };
 ExpertCache alloc_expert_cache(const Spec& s, int n_slots);
 void free_expert_cache(ExpertCache& c);
 
 // Uploads the experts of `order` ((layer, expert), best first) into the free slots until the
-// cache is full, converting the arena's planar blobs to ggml layout on the GPU.
+// cache is full.
 void expert_cache_fill(const Spec& s, ExpertCache& cache, const ExpertArena& arena,
                        const std::vector<std::pair<int, int>>& order, cudaStream_t stream);
 
