@@ -531,3 +531,130 @@ void moe_block(const BlockCtx& c, int il, const float* x, int T, MoeHost& h, flo
 }
 
 }  // namespace flashrt::qwen4exp
+
+namespace flashrt::qwen4exp {
+
+namespace {
+
+// per (token, stream): s = <keyn, queryn> / sqrt(n); gate = sigmoid(sgn(s) * sqrt(max(|s|, 1e-6)))
+__global__ void k_ple_gate(const float* keyn, const float* queryn, float* gate, int n) {
+    const size_t base = size_t(blockIdx.x) * n;
+    float acc = 0.0f;
+    for (int i = threadIdx.x; i < n; i += blockDim.x) acc += keyn[base + i] * queryn[base + i];
+    acc = block_sum(acc);
+    if (threadIdx.x == 0) {
+        const float sv = acc / sqrtf(float(n));
+        const float mag = sqrtf(fmaxf(fabsf(sv), 1e-6f));
+        const float sg = sv > 0.0f ? 1.0f : (sv < 0.0f ? -1.0f : 0.0f);
+        gate[blockIdx.x] = 1.0f / (1.0f + __expf(-sg * mag));
+    }
+}
+
+// gated[t][s][i] = value[t][i] * gate[t][s]
+__global__ void k_ple_gated(const float* value, const float* gate, float* gated, int n, int hc, int T) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    const int t = blockIdx.y;
+    if (i >= n || t >= T) return;
+    for (int s = 0; s < hc; ++s) gated[(size_t(t) * hc + s) * n + i] = value[size_t(t) * n + i] * gate[t * hc + s];
+}
+
+// one thread per channel c of hc*n: out[t] = silu(sum_k w[k] * x[t - (K-1-k)*dil]) over a history of
+// (K-1)*dil earlier inputs; x += gated + out. The history is advanced.
+__global__ void k_ple_conv(float* x, const float* gated, const float* normed, float* hist, const __half* w, int C, int T,
+                           int K, int dil) {
+    const int c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= C) return;
+    const int H = (K - 1) * dil;          // history length (<= 32)
+    float ring[32];
+    for (int j = 0; j < H; ++j) ring[j] = hist[size_t(j) * C + c];   // oldest first
+    for (int t = 0; t < T; ++t) {
+        const float cur = normed[size_t(t) * C + c];
+        float acc = 0.0f;
+        for (int k = 0; k < K; ++k) {
+            const int back = (K - 1 - k) * dil;              // positions back from t
+            const float v = back == 0 ? cur : ring[H - back];
+            acc += __half2float(w[size_t(c) * K + k]) * v;
+        }
+        const float o = acc / (1.0f + __expf(-acc));
+        x[size_t(t) * C + c] += gated[size_t(t) * C + c] + o;
+        for (int j = 0; j + 1 < H; ++j) ring[j] = ring[j + 1];
+        if (H > 0) ring[H - 1] = cur;
+    }
+    for (int j = 0; j < H; ++j) hist[size_t(j) * C + c] = ring[j];
+}
+
+}  // namespace
+
+void embed(const BlockCtx& c, const int32_t* tokens, int T, float* out) {
+    const GpuTensor& e = c.w.get("token_embd.weight");
+    const size_t rb = size_t(gemv::row_bytes(e.type, e.cols()));
+    for (int t = 0; t < T; ++t)
+        gemv::dequantize(e.type, static_cast<const char*>(e.dev) + size_t(tokens[t]) * rb, out + size_t(t) * e.cols(), e.cols(),
+                         c.stream);
+    ck(cudaGetLastError(), "embed");
+}
+
+PleState alloc_ple_state(const Spec& s, const Ple& p) {
+    PleState st;
+    ck(cudaMalloc(&st.hist, size_t(p.ngram) * 3 * size_t(s.hc_count) * s.d_model * 4 + 4), "cudaMalloc ple hist");
+    reset_ple_state(s, p, st, nullptr);
+    return st;
+}
+
+void reset_ple_state(const Spec& s, const Ple& p, PleState& st, cudaStream_t stream) {
+    ck(cudaMemsetAsync(st.hist, 0, size_t(p.ngram) * 3 * size_t(s.hc_count) * s.d_model * 4 + 4, stream), "memset ple hist");
+}
+
+void free_ple_state(PleState& st) {
+    if (st.hist) cudaFree(st.hist);
+    st = PleState{};
+}
+
+void ple_embed(const BlockCtx& c, PleHost& h, const int32_t* seq, int64_t pos0, int T, float* emb) {
+    const Ple& p = *h.ple;
+    h.rows.resize(size_t(T) * p.n_heads);
+    for (int t = 0; t < T; ++t) ple_rows(p, seq, pos0 + t, h.rows.data() + size_t(t) * p.n_heads);
+    h.raw.resize(h.rows.size() * p.row_bytes);
+    h.reader->fetch(h.rows.data(), h.rows.size(), h.raw.data());
+    if (h.raw_dev_bytes < h.raw.size()) {
+        if (h.raw_dev) cudaFree(h.raw_dev);
+        ck(cudaMalloc(&h.raw_dev, h.raw.size()), "cudaMalloc ple rows");
+        h.raw_dev_bytes = h.raw.size();
+    }
+    ck(cudaMemcpyAsync(h.raw_dev, h.raw.data(), h.raw.size(), cudaMemcpyHostToDevice, c.stream), "ple rows to device");
+    // rows are whole IQ4_NL blocks back to back: one dequantize covers every head of every token
+    const int64_t per_row = int64_t(p.row_bytes) / 18 * 32;
+    gemv::dequantize(20 /* IQ4_NL */, h.raw_dev, emb, int64_t(h.rows.size()) * per_row, c.stream);
+    ck(cudaStreamSynchronize(c.stream), "ple_embed");   // h.raw is reused by the next call
+}
+
+void ple_block(const BlockCtx& c, int il, const Ple& p, const float* emb, float* x, int T, PleState& st) {
+    const Spec& s = c.s;
+    const int n = s.d_model, hc = s.hc_count, C = hc * n;
+    const int K = int(c.w.layer(il, "ple_conv1d.weight").dims.at(0));
+    if ((K - 1) * p.ngram > 32 || (K - 1) * p.ngram > 3 * p.ngram) throw std::runtime_error("ple_block: conv history too long");
+    float* key = c.scratch.f32;                      // [T][C]
+    float* value = key + size_t(T) * C;              // [T][n]
+    float* qn = value + size_t(T) * n;               // [T][C]
+    float* gate = qn + size_t(T) * C;                // [T][hc]
+    float* gated = gate + size_t(T) * hc;            // [T][C]
+    float* normed = gated + size_t(T) * C;           // [T][C]
+    if (size_t(normed + size_t(T) * C - c.scratch.f32) > c.scratch.f32_elems) throw std::runtime_error("ple_block: scratch too small");
+    const float eps = float(s.rms_eps);
+    linear(c, c.w.layer(il, "ple_key.weight"), emb, key, T);
+    linear(c, c.w.layer(il, "ple_value.weight"), emb, value, T);
+    k_grouped_rms_norm<<<T * hc, 256, 0, c.stream>>>(key, static_cast<const float*>(c.w.layer(il, "ple_norm_key.weight").dev), key, n, hc, eps);
+    k_grouped_rms_norm<<<T * hc, 256, 0, c.stream>>>(x, static_cast<const float*>(c.w.layer(il, "ple_norm_query.weight").dev), qn, n, hc, eps);
+    k_ple_gate<<<T * hc, 256, 0, c.stream>>>(key, qn, gate, n);
+    k_ple_gated<<<dim3((n + 255) / 256, T), 256, 0, c.stream>>>(value, gate, gated, n, hc, T);
+    k_grouped_rms_norm<<<T * hc, 256, 0, c.stream>>>(gated, static_cast<const float*>(c.w.layer(il, "ple_norm_conv.weight").dev), normed, n, hc, eps);
+    k_ple_conv<<<(C + 127) / 128, 128, 0, c.stream>>>(x, gated, normed, st.hist, static_cast<const __half*>(c.w.layer(il, "ple_conv1d.weight").dev),
+                                                     C, T, K, p.ngram);
+    ck(cudaGetLastError(), "ple_block");
+}
+
+void head_logits(const BlockCtx& c, const float* norm, int T, float* logits) {
+    linear(c, c.w.get("output.weight"), norm, logits, T);
+}
+
+}  // namespace flashrt::qwen4exp

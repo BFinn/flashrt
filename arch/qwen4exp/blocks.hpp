@@ -8,7 +8,9 @@
 #pragma once
 
 #include "arch/qwen4exp/gpu_weights.hpp"
+#include "arch/qwen4exp/ple.hpp"
 #include "arch/qwen4exp/spec.hpp"
+#include "core/row_reader.hpp"
 #include "core/cpu_pool.hpp"
 #include "core/expert_arena.hpp"
 
@@ -98,5 +100,34 @@ struct MoeTrace {                              // routing, for parity checks
 };
 // out [T][d_model] = routed experts + gated shared expert, for the FFN-side mix x [T][d_model].
 void moe_block(const BlockCtx& c, int il, const float* x, int T, MoeHost& h, float* out, MoeTrace* trace = nullptr);
+
+// Token embeddings: out [T][d_model] = dequantized rows of token_embd.
+void embed(const BlockCtx& c, const int32_t* tokens, int T, float* out);
+
+// The n-gram (PLE) layer. Rows are read from the SSD (RowReader), dequantized on the GPU;
+// the depthwise conv keeps (kernel - 1) * ngram tokens of history per channel.
+struct PleHost {
+    const Ple* ple = nullptr;
+    RowReader* reader = nullptr;
+    std::vector<uint32_t> rows;
+    std::vector<uint8_t> raw;
+    void* raw_dev = nullptr;
+    size_t raw_dev_bytes = 0;
+};
+struct PleState {
+    float* hist = nullptr;   // [(kernel-1)*ngram][hc*d_model], oldest first
+};
+PleState alloc_ple_state(const Spec& s, const Ple& p);
+void reset_ple_state(const Spec& s, const Ple& p, PleState& st, cudaStream_t stream);
+void free_ple_state(PleState& st);
+
+// emb [T][d_model]: the concatenated n-gram rows for tokens seq[pos0 .. pos0+T-1] (seq holds
+// the whole sequence so far, for the n-gram context).
+void ple_embed(const BlockCtx& c, PleHost& h, const int32_t* seq, int64_t pos0, int T, float* emb);
+// x [T][hc][d_model] += gated value + conv(normalised gated value), per llama.cpp's build_ple.
+void ple_block(const BlockCtx& c, int il, const Ple& p, const float* emb, float* x, int T, PleState& st);
+
+// logits [T][n_vocab] = output.weight x norm [T][d_model]
+void head_logits(const BlockCtx& c, const float* norm, int T, float* logits);
 
 }  // namespace flashrt::qwen4exp

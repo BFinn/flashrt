@@ -2,7 +2,7 @@
 // fr_parity: run flashrt's GPU blocks on llama.cpp's recorded inputs (tools/ref_dump) and
 // compare the outputs, block by block.
 //
-//   fr_parity MODEL.gguf REF.frd [test ...]      tests: hc (default), gdn, qsa, qsa_proj, moe
+//   fr_parity MODEL.gguf REF.frd [test ...]      tests: hc (default), gdn, qsa, qsa_proj, moe, ple, head, full
 //
 // Every step of the dump is used (-1 = the prompt batch, 0.. = decode steps). The metric is
 // relative L2, ||ours - ref|| / ||ref||, per layer; the tool fails if any exceeds the tolerance.
@@ -13,6 +13,11 @@
 #include "arch/qwen4exp/spec.hpp"
 #include "core/gguf.hpp"
 #include "tools/frd.hpp"
+#include "arch/qwen4exp/ple.hpp"
+#include "core/row_reader.hpp"
+
+#include <fstream>
+#include <sstream>
 
 #include <cuda_runtime.h>
 
@@ -244,6 +249,150 @@ void test_moe(const BlockCtx& c, const Gguf& g, const Frd& ref, const std::vecto
     arena_free(arena);
 }
 
+// token ids of the dump: the prompt, then the token fed at each decode step
+std::vector<int32_t> dump_tokens(const std::string& frd_path, std::vector<int>* step_len) {
+    std::ifstream m(frd_path + ".meta");
+    std::vector<int32_t> seq;
+    std::string line;
+    while (std::getline(m, line)) {
+        std::istringstream in(line);
+        std::string tag;
+        in >> tag;
+        long v;
+        int n = 0;
+        while (in >> v) { seq.push_back(int32_t(v)); ++n; }
+        if (tag == "prompt") step_len->push_back(n);
+        else for (int i = 0; i < n; ++i) step_len->push_back(1);
+    }
+    return seq;
+}
+
+// PLE: the n-gram embedding rows, and layer 1's attention-side mix after the PLE update
+void test_ple(const BlockCtx& c, const Gguf& g, const std::string& frd_path, const Frd& ref, const std::vector<int>& steps,
+              Checker& ck) {
+    const Spec& s = c.s;
+    const Ple p = parse_ple(g);
+    RowReader rr(g.shards[p.table_shard], p.table_offset, p.row_bytes, 16);
+    PleHost h;
+    h.ple = &p;
+    h.reader = &rr;
+    std::vector<int> lens;
+    const std::vector<int32_t> seq = dump_tokens(frd_path, &lens);
+    std::vector<PleState> st(s.n_layer);
+    for (int il : s.ple_layers) st[il] = alloc_ple_state(s, p);
+    int64_t pos = 0;
+    for (size_t k = 0; k < steps.size(); ++k) {
+        const int step = steps[k], T = lens.at(k);
+        Dev emb(size_t(T) * s.d_model);
+        ple_embed(c, h, seq.data(), pos, T, emb.p);
+        ck.check("ple_embd step " + std::to_string(step), emb.host(), ref.floats(ref.get("ple_embd", step)), true);
+        for (int il : s.ple_layers) {
+            const std::string L = "-" + std::to_string(il);
+            Dev x(ref.floats(ref.get("l_last-" + std::to_string(il - 1), step)));
+            ple_block(c, il, p, emb.p, x.p, T, st[il]);
+            Dev mixed(size_t(T) * s.d_model), inject(size_t(T) * s.hc_count);
+            hc_mix(c, il, 0, x.p, T, mixed.p, inject.p);
+            cudaStreamSynchronize(c.stream);
+            ck.check("hc_mixed" + L + " (attn, after PLE)", mixed.host(), ref.floats(ref.get("hc_mixed" + L, step, 0)), true);
+        }
+        pos += T;
+    }
+    for (int il : s.ple_layers) free_ple_state(st[il]);
+}
+
+// head: logits from llama.cpp's own result_norm
+void test_head(const BlockCtx& c, const Frd& ref, const std::vector<int>& steps, Checker& ck) {
+    for (int step : steps) {
+        const Frd::Rec& nr = ref.get("result_norm", step);
+        const int T = int(nr.ne[1]);
+        Dev x(ref.floats(nr)), lg(size_t(T) * c.s.n_vocab);
+        head_logits(c, x.p, T, lg.p);
+        cudaStreamSynchronize(c.stream);
+        ck.check("result_output step " + std::to_string(step), lg.host(), ref.floats(ref.get("result_output", step)), true);
+    }
+}
+
+// End to end: token ids -> logits with flashrt's own caches and states, compared per layer
+// and at the logits; also counts identical greedy tokens.
+void test_full(const BlockCtx& c, const Gguf& g, const std::string& frd_path, const Frd& ref, const std::vector<int>& steps,
+               Checker& ck) {
+    const Spec& s = c.s;
+    const int n = s.d_model, hc = s.hc_count;
+    ExpertArena arena = arena_alloc(s.n_layer, s.n_expert, q2_0::expert_bytes({n, s.d_ff_expert}), PageMode::THP, 0);
+    if (!arena.buf.ptr) throw std::runtime_error("arena allocation failed");
+    load_experts(g, s, arena, 12);
+    CpuPool pool(8, physical_cpus());
+    MoeHost mh;
+    mh.arena = &arena;
+    mh.pool = &pool;
+    const Ple p = parse_ple(g);
+    RowReader rr(g.shards[p.table_shard], p.table_offset, p.row_bytes, 16);
+    PleHost ph;
+    ph.ple = &p;
+    ph.reader = &rr;
+    std::vector<GdnState> gdn(s.n_layer);
+    std::vector<QsaCache> kv(s.n_layer);
+    std::vector<PleState> pst(s.n_layer);
+    for (int il : s.gdn_layers) gdn[il] = alloc_gdn_state(s);
+    for (int il : s.qsa_layers) kv[il] = alloc_qsa_cache(s, 2048);
+    for (int il : s.ple_layers) pst[il] = alloc_ple_state(s, p);
+    std::vector<int> lens;
+    const std::vector<int32_t> seq = dump_tokens(frd_path, &lens);
+    std::set<int> ple_set(s.ple_layers.begin(), s.ple_layers.end());
+    int64_t pos = 0;
+    int agree = 0, total = 0;
+    for (size_t k = 0; k < steps.size(); ++k) {
+        const int step = steps[k], T = lens.at(k);
+        std::vector<int32_t> toks(seq.begin() + pos, seq.begin() + pos + T);
+        Dev emb(size_t(T) * n), x(size_t(T) * hc * n), mixed(size_t(T) * n), inject(size_t(T) * hc), blk(size_t(T) * n),
+            pemb(size_t(T) * n);
+        embed(c, toks.data(), T, emb.p);
+        for (int t = 0; t < T; ++t)
+            for (int st = 0; st < hc; ++st)
+                cudaMemcpyAsync(x.p + (size_t(t) * hc + st) * n, emb.p + size_t(t) * n, size_t(n) * 4, cudaMemcpyDeviceToDevice, c.stream);
+        if (!ple_set.empty()) ple_embed(c, ph, seq.data(), pos, T, pemb.p);
+        double worst_layer = 0;
+        for (int il = 0; il < s.n_layer; ++il) {
+            if (ple_set.count(il)) ple_block(c, il, p, pemb.p, x.p, T, pst[il]);
+            hc_mix(c, il, 0, x.p, T, mixed.p, inject.p);
+            if (s.mixer[il] == Mixer::QSA) qsa_mixer(c, il, mixed.p, T, int(pos), kv[il], blk.p);
+            else gdn_mixer(c, il, mixed.p, T, gdn[il], blk.p);
+            hc_combine(c, x.p, blk.p, inject.p, T);
+            hc_mix(c, il, 1, x.p, T, mixed.p, inject.p);
+            moe_block(c, il, mixed.p, T, mh, blk.p);
+            hc_combine(c, x.p, blk.p, inject.p, T);
+            cudaStreamSynchronize(c.stream);
+            if (T == 1 || il < s.n_layer - 1) {
+                const std::vector<float> want = ref.floats(ref.get("l_last-" + std::to_string(il), step));
+                const double e = rel_l2(x.host(), want);
+                worst_layer = std::max(worst_layer, e);
+            }
+        }
+        // head on the last token
+        Dev last(size_t(hc) * n), norm(n), lg(size_t(s.n_vocab));
+        cudaMemcpyAsync(last.p, x.p + size_t(T - 1) * hc * n, size_t(hc) * n * 4, cudaMemcpyDeviceToDevice, c.stream);
+        hc_mix(c, -1, 2, last.p, 1, norm.p, nullptr);
+        head_logits(c, norm.p, 1, lg.p);
+        cudaStreamSynchronize(c.stream);
+        const std::vector<float> ours = lg.host();
+        const std::vector<float> want = ref.floats(ref.get("result_output", step));
+        const std::vector<float> want_last(want.end() - s.n_vocab, want.end());
+        ck.check("logits step " + std::to_string(step), ours, want_last, false);
+        const int a = int(std::max_element(ours.begin(), ours.end()) - ours.begin());
+        const int b = int(std::max_element(want_last.begin(), want_last.end()) - want_last.begin());
+        agree += a == b;
+        ++total;
+        std::printf("full: step %3d (%2d tok at %3lld): worst layer rel L2 %.2e, logits rel L2 %.2e, argmax %d vs %d%s\n",
+                    step, T, (long long) pos, worst_layer, rel_l2(ours, want_last), a, b, a == b ? "" : "  DIFFERENT");
+        pos += T;
+    }
+    std::printf("full: greedy token agreement %d / %d\n", agree, total);
+    for (int il : s.gdn_layers) free_gdn_state(gdn[il]);
+    for (int il : s.qsa_layers) free_qsa_cache(kv[il]);
+    for (int il : s.ple_layers) free_ple_state(pst[il]);
+    arena_free(arena);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -277,6 +426,9 @@ int main(int argc, char** argv) {
         else if (t == "qsa") test_qsa(c, ref, steps, ck);
         else if (t == "qsa_proj") test_qsa_proj(c, ref, steps, ck);
         else if (t == "moe") test_moe(c, g, ref, steps, ck);
+        else if (t == "ple") test_ple(c, g, argv[2], ref, steps, ck);
+        else if (t == "head") test_head(c, ref, steps, ck);
+        else if (t == "full") test_full(c, g, argv[2], ref, steps, ck);
         else { std::fprintf(stderr, "unknown test %s\n", t.c_str()); return 2; }
     }
     std::printf("fr_parity: %d checks, %d over tolerance %.0e; worst %.3e (%s)\n", ck.checks, ck.fails, ck.tol, ck.worst,
