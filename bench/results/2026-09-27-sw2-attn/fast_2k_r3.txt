@@ -1,0 +1,5 @@
+prefill: 2048 tokens in 18.4 s (111.4 tok/s, reference path)
+expert cache: 8059 slots (32.8% of experts), filled in 0.8 s from 11650 MiB free
+decode: 128 tokens at depth 2048 in 2.30 s: 55.58 tok/s (fast path)
+expert cache hit rate 87.30% (53640 hits, 7800 misses)
+tokens: 279 58773 26183 593 243693 2982 1116 321 303 220 22 18 18 551 2197 14094 81980 318 14094 13412 847 1116 2843 310

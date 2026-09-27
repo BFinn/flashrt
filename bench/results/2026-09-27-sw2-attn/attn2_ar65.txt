@@ -1,0 +1,198 @@
+qsa: step -1 (1 tokens at 0)
+  qsa attn_output-3 step -1                    rel L2 1.133e-04
+  qsa attn_output-7 step -1                    rel L2 0.000e+00
+qsa: step 0 (1 tokens at 1)
+  qsa attn_output-3 step 0                     rel L2 0.000e+00
+  qsa attn_output-7 step 0                     rel L2 0.000e+00
+qsa: step 1 (1 tokens at 2)
+  qsa attn_output-3 step 1                     rel L2 0.000e+00
+  qsa attn_output-7 step 1                     rel L2 0.000e+00
+qsa: step 2 (1 tokens at 3)
+  qsa attn_output-3 step 2                     rel L2 0.000e+00
+  qsa attn_output-7 step 2                     rel L2 0.000e+00
+qsa: step 3 (1 tokens at 4)
+  qsa attn_output-3 step 3                     rel L2 0.000e+00
+  qsa attn_output-7 step 3                     rel L2 0.000e+00
+qsa: step 4 (1 tokens at 5)
+  qsa attn_output-3 step 4                     rel L2 0.000e+00
+  qsa attn_output-7 step 4                     rel L2 0.000e+00
+qsa: step 5 (1 tokens at 6)
+  qsa attn_output-3 step 5                     rel L2 0.000e+00
+  qsa attn_output-7 step 5                     rel L2 0.000e+00
+qsa: step 6 (1 tokens at 7)
+  qsa attn_output-3 step 6                     rel L2 3.093e-04
+  qsa attn_output-7 step 6                     rel L2 0.000e+00
+qsa: step 7 (1 tokens at 8)
+  qsa attn_output-3 step 7                     rel L2 0.000e+00
+  qsa attn_output-7 step 7                     rel L2 0.000e+00
+qsa: step 8 (1 tokens at 9)
+  qsa attn_output-3 step 8                     rel L2 0.000e+00
+  qsa attn_output-7 step 8                     rel L2 0.000e+00
+qsa: step 9 (1 tokens at 10)
+  qsa attn_output-3 step 9                     rel L2 6.830e-05
+  qsa attn_output-7 step 9                     rel L2 0.000e+00
+qsa: step 10 (1 tokens at 11)
+  qsa attn_output-3 step 10                    rel L2 0.000e+00
+  qsa attn_output-7 step 10                    rel L2 5.749e-04
+qsa: step 11 (1 tokens at 12)
+  qsa attn_output-3 step 11                    rel L2 0.000e+00
+  qsa attn_output-7 step 11                    rel L2 0.000e+00
+qsa: step 12 (1 tokens at 13)
+  qsa attn_output-3 step 12                    rel L2 4.248e-04
+  qsa attn_output-7 step 12                    rel L2 0.000e+00
+qsa: step 13 (1 tokens at 14)
+  qsa attn_output-3 step 13                    rel L2 0.000e+00
+  qsa attn_output-7 step 13                    rel L2 0.000e+00
+qsa: step 14 (1 tokens at 15)
+  qsa attn_output-3 step 14                    rel L2 0.000e+00
+  qsa attn_output-7 step 14                    rel L2 6.079e-04
+qsa: step 15 (1 tokens at 16)
+  qsa attn_output-3 step 15                    rel L2 0.000e+00
+  qsa attn_output-7 step 15                    rel L2 0.000e+00
+qsa: step 16 (1 tokens at 17)
+  qsa attn_output-3 step 16                    rel L2 0.000e+00
+  qsa attn_output-7 step 16                    rel L2 0.000e+00
+qsa: step 17 (1 tokens at 18)
+  qsa attn_output-3 step 17                    rel L2 0.000e+00
+  qsa attn_output-7 step 17                    rel L2 0.000e+00
+qsa: step 18 (1 tokens at 19)
+  qsa attn_output-3 step 18                    rel L2 0.000e+00
+  qsa attn_output-7 step 18                    rel L2 0.000e+00
+qsa: step 19 (1 tokens at 20)
+  qsa attn_output-3 step 19                    rel L2 5.664e-04
+  qsa attn_output-7 step 19                    rel L2 0.000e+00
+qsa: step 20 (1 tokens at 21)
+  qsa attn_output-3 step 20                    rel L2 2.937e-05
+  qsa attn_output-7 step 20                    rel L2 0.000e+00
+qsa: step 21 (1 tokens at 22)
+  qsa attn_output-3 step 21                    rel L2 3.653e-04
+  qsa attn_output-7 step 21                    rel L2 0.000e+00
+qsa: step 22 (1 tokens at 23)
+  qsa attn_output-3 step 22                    rel L2 0.000e+00
+  qsa attn_output-7 step 22                    rel L2 0.000e+00
+qsa: step 23 (1 tokens at 24)
+  qsa attn_output-3 step 23                    rel L2 0.000e+00
+  qsa attn_output-7 step 23                    rel L2 0.000e+00
+qsa: step 24 (1 tokens at 25)
+  qsa attn_output-3 step 24                    rel L2 0.000e+00
+  qsa attn_output-7 step 24                    rel L2 0.000e+00
+qsa: step 25 (1 tokens at 26)
+  qsa attn_output-3 step 25                    rel L2 0.000e+00
+  qsa attn_output-7 step 25                    rel L2 0.000e+00
+qsa: step 26 (1 tokens at 27)
+  qsa attn_output-3 step 26                    rel L2 0.000e+00
+  qsa attn_output-7 step 26                    rel L2 0.000e+00
+qsa: step 27 (1 tokens at 28)
+  qsa attn_output-3 step 27                    rel L2 0.000e+00
+  qsa attn_output-7 step 27                    rel L2 0.000e+00
+qsa: step 28 (1 tokens at 29)
+  qsa attn_output-3 step 28                    rel L2 6.179e-05
+  qsa attn_output-7 step 28                    rel L2 0.000e+00
+qsa: step 29 (1 tokens at 30)
+  qsa attn_output-3 step 29                    rel L2 0.000e+00
+  qsa attn_output-7 step 29                    rel L2 0.000e+00
+qsa: step 30 (1 tokens at 31)
+  qsa attn_output-3 step 30                    rel L2 0.000e+00
+  qsa attn_output-7 step 30                    rel L2 0.000e+00
+qsa: step 31 (1 tokens at 32)
+  qsa attn_output-3 step 31                    rel L2 0.000e+00
+  qsa attn_output-7 step 31                    rel L2 0.000e+00
+qsa: step 32 (1 tokens at 33)
+  qsa attn_output-3 step 32                    rel L2 0.000e+00
+  qsa attn_output-7 step 32                    rel L2 0.000e+00
+qsa: step 33 (1 tokens at 34)
+  qsa attn_output-3 step 33                    rel L2 0.000e+00
+  qsa attn_output-7 step 33                    rel L2 0.000e+00
+qsa: step 34 (1 tokens at 35)
+  qsa attn_output-3 step 34                    rel L2 0.000e+00
+  qsa attn_output-7 step 34                    rel L2 0.000e+00
+qsa: step 35 (1 tokens at 36)
+  qsa attn_output-3 step 35                    rel L2 7.343e-04
+  qsa attn_output-7 step 35                    rel L2 0.000e+00
+  qsa attn_output-23 step 35                   rel L2 2.307e-03  FAIL
+qsa: step 36 (1 tokens at 37)
+  qsa attn_output-3 step 36                    rel L2 3.627e-04
+  qsa attn_output-7 step 36                    rel L2 0.000e+00
+qsa: step 37 (1 tokens at 38)
+  qsa attn_output-3 step 37                    rel L2 2.921e-05
+  qsa attn_output-7 step 37                    rel L2 0.000e+00
+qsa: step 38 (1 tokens at 39)
+  qsa attn_output-3 step 38                    rel L2 2.867e-05
+  qsa attn_output-7 step 38                    rel L2 0.000e+00
+qsa: step 39 (1 tokens at 40)
+  qsa attn_output-3 step 39                    rel L2 0.000e+00
+  qsa attn_output-7 step 39                    rel L2 0.000e+00
+qsa: step 40 (1 tokens at 41)
+  qsa attn_output-3 step 40                    rel L2 6.098e-05
+  qsa attn_output-7 step 40                    rel L2 0.000e+00
+qsa: step 41 (1 tokens at 42)
+  qsa attn_output-3 step 41                    rel L2 2.121e-04
+  qsa attn_output-7 step 41                    rel L2 0.000e+00
+qsa: step 42 (1 tokens at 43)
+  qsa attn_output-3 step 42                    rel L2 2.711e-04
+  qsa attn_output-7 step 42                    rel L2 0.000e+00
+qsa: step 43 (1 tokens at 44)
+  qsa attn_output-3 step 43                    rel L2 0.000e+00
+  qsa attn_output-7 step 43                    rel L2 0.000e+00
+qsa: step 44 (1 tokens at 45)
+  qsa attn_output-3 step 44                    rel L2 4.033e-04
+  qsa attn_output-7 step 44                    rel L2 0.000e+00
+  qsa attn_output-27 step 44                   rel L2 2.175e-03  FAIL
+qsa: step 45 (1 tokens at 46)
+  qsa attn_output-3 step 45                    rel L2 5.280e-04
+  qsa attn_output-7 step 45                    rel L2 0.000e+00
+qsa: step 46 (1 tokens at 47)
+  qsa attn_output-3 step 46                    rel L2 0.000e+00
+  qsa attn_output-7 step 46                    rel L2 0.000e+00
+qsa: step 47 (1 tokens at 48)
+  qsa attn_output-3 step 47                    rel L2 0.000e+00
+  qsa attn_output-7 step 47                    rel L2 0.000e+00
+qsa: step 48 (1 tokens at 49)
+  qsa attn_output-3 step 48                    rel L2 0.000e+00
+  qsa attn_output-7 step 48                    rel L2 0.000e+00
+qsa: step 49 (1 tokens at 50)
+  qsa attn_output-3 step 49                    rel L2 0.000e+00
+  qsa attn_output-7 step 49                    rel L2 0.000e+00
+qsa: step 50 (1 tokens at 51)
+  qsa attn_output-3 step 50                    rel L2 1.583e-04
+  qsa attn_output-7 step 50                    rel L2 0.000e+00
+qsa: step 51 (1 tokens at 52)
+  qsa attn_output-3 step 51                    rel L2 0.000e+00
+  qsa attn_output-7 step 51                    rel L2 0.000e+00
+qsa: step 52 (1 tokens at 53)
+  qsa attn_output-3 step 52                    rel L2 0.000e+00
+  qsa attn_output-7 step 52                    rel L2 0.000e+00
+qsa: step 53 (1 tokens at 54)
+  qsa attn_output-3 step 53                    rel L2 2.700e-04
+  qsa attn_output-7 step 53                    rel L2 0.000e+00
+qsa: step 54 (1 tokens at 55)
+  qsa attn_output-3 step 54                    rel L2 0.000e+00
+  qsa attn_output-7 step 54                    rel L2 0.000e+00
+qsa: step 55 (1 tokens at 56)
+  qsa attn_output-3 step 55                    rel L2 2.970e-05
+  qsa attn_output-7 step 55                    rel L2 0.000e+00
+qsa: step 56 (1 tokens at 57)
+  qsa attn_output-3 step 56                    rel L2 0.000e+00
+  qsa attn_output-7 step 56                    rel L2 0.000e+00
+qsa: step 57 (1 tokens at 58)
+  qsa attn_output-3 step 57                    rel L2 3.790e-04
+  qsa attn_output-7 step 57                    rel L2 0.000e+00
+qsa: step 58 (1 tokens at 59)
+  qsa attn_output-3 step 58                    rel L2 4.201e-04
+  qsa attn_output-7 step 58                    rel L2 0.000e+00
+qsa: step 59 (1 tokens at 60)
+  qsa attn_output-3 step 59                    rel L2 1.393e-04
+  qsa attn_output-7 step 59                    rel L2 0.000e+00
+qsa: step 60 (1 tokens at 61)
+  qsa attn_output-3 step 60                    rel L2 4.796e-04
+  qsa attn_output-7 step 60                    rel L2 0.000e+00
+qsa: step 61 (1 tokens at 62)
+  qsa attn_output-3 step 61                    rel L2 9.960e-05
+  qsa attn_output-7 step 61                    rel L2 0.000e+00
+qsa: step 62 (1 tokens at 63)
+  qsa attn_output-3 step 62                    rel L2 0.000e+00
+  qsa attn_output-7 step 62                    rel L2 0.000e+00
+qsa: step 63 (1 tokens at 64)
+  qsa attn_output-3 step 63                    rel L2 3.406e-04
+  qsa attn_output-7 step 63                    rel L2 0.000e+00
+fr_parity: 780 checks, 2 over tolerance 2e-03; worst 2.307e-03 (qsa attn_output-23 step 35)
