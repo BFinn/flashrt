@@ -26,9 +26,10 @@ namespace flashrt::qwen4exp {
 
 class ForwardRef {
 public:
-    // max_ctx: KV capacity; max_batch: tokens per forward() call (scratch sizing).
+    // max_ctx: KV capacity; max_batch: tokens per forward() call (scratch sizing); kv_q8: the
+    // QSA KV cache in Q8_0 (llama.cpp's q8_0 cache) instead of fp16.
     ForwardRef(const Gguf& g, const Spec& s, const GpuWeights& w, const ExpertArena& arena, CpuPool& pool, int max_ctx,
-               int max_batch);
+               int max_batch, bool kv_q8 = false);
     ~ForwardRef();
     ForwardRef(const ForwardRef&) = delete;
     ForwardRef& operator=(const ForwardRef&) = delete;
@@ -64,7 +65,8 @@ public:
 
     // Snapshot of the sequence state after a prefill (KV and pooled keys up to pos(), GDN and PLE
     // states, pos(), routing counts), for benchmarks at depth without re-running the prefill.
-    // The file is only valid for the same model and the same kernels' numerics.
+    // The file is only valid for the same model and the same kernels' numerics. An fp16-KV file
+    // loads into a q8 cache (converted on the GPU); not the other way.
     void save_state(const std::string& path);
     void load_state(const std::string& path);
 

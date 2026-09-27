@@ -3,7 +3,7 @@
 // file (the P1 correctness gate), on the same tokens and chunks.
 //
 //   fr_kld MODEL.gguf BASE.bin [--ctx N] [--chunks K] [--batch B] [--fast] [--reserve-mib R] [--static-cache]
-//          [--pcie-frac F]
+//          [--pcie-frac F] [--kv q8]
 //
 // The base file holds: the magic "_logits_", int32 ctx, int32 n_vocab, int32 n_chunk, the
 // tokens of all chunks (n_chunk * ctx int32), then for every chunk the scored positions ctx/2 .. ctx-2, each as a float scale and a
@@ -47,6 +47,7 @@ int main(int argc, char** argv) {
     int ctx = 0, chunks = 0, batch = 64, reserve_mib = 1024;
     bool fast = false, adaptive = true;
     float pcie_frac = 0.0f;
+    bool kv_q8 = false;
     for (int i = 3; i < argc; ++i) {
         auto next = [&]() -> const char* { return i + 1 < argc ? argv[++i] : "0"; };
         if (!std::strcmp(argv[i], "--ctx")) ctx = std::atoi(next());
@@ -56,6 +57,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--reserve-mib")) reserve_mib = std::atoi(next());
         else if (!std::strcmp(argv[i], "--static-cache")) adaptive = false;
         else if (!std::strcmp(argv[i], "--pcie-frac")) pcie_frac = float(std::atof(next()));
+        else if (!std::strcmp(argv[i], "--kv")) kv_q8 = !std::strcmp(next(), "q8");
         else { std::fprintf(stderr, "unknown argument %s\n", argv[i]); return 2; }
     }
 
@@ -88,7 +90,8 @@ int main(int argc, char** argv) {
     load_experts(g, s, arena, 12);
     const std::vector<int> cpus = physical_cpus();
     CpuPool pool(8, cpus);
-    ForwardRef fwd(g, s, w, arena, pool, ctx + 8, batch);
+    ForwardRef fwd(g, s, w, arena, pool, ctx + 8, batch, kv_q8);
+    std::printf("KV cache: %s\n", kv_q8 ? "q8_0" : "fp16");
 
     float* logits_dev = nullptr;
     cudaMalloc(&logits_dev, size_t(batch) * n_vocab * 4);

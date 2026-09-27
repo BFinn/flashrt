@@ -536,6 +536,62 @@ __global__ void k_copy_h(const float* src, __half* dst, int n, int pos0, size_t 
     if (i < n) dst[i] = __float2half(src[i]);
 }
 
+// Q8_0 rows (blocks of 32, d = amax / 127, q = round(x / d), as ggml's quantize_row_q8_0_ref):
+// src [n_rows][dim] float -> dst + position * pos_stride_rows rows; one warp per block of 32.
+__global__ void k_quant_q8(const float* src, int8_t* dst, __half* dsc, int n_rows, int dim, int pos0, size_t pos_stride_rows,
+                           const int32_t* dp) {
+    if (dp) pos0 = dp[1];
+    const int lane = threadIdx.x & 31;
+    const long g = (long(blockIdx.x) * blockDim.x + threadIdx.x) >> 5;   // block of 32
+    if (g >= long(n_rows) * (dim / 32)) return;
+    const long row = g / (dim / 32), b = g % (dim / 32);
+    const float x = src[row * dim + b * 32 + lane];
+    float am = fabsf(x);
+    for (int o = 16; o > 0; o >>= 1) am = fmaxf(am, __shfl_xor_sync(0xffffffff, am, o));
+    const float d = am / 127.0f, id = d != 0.0f ? 1.0f / d : 0.0f;
+    const size_t orow = size_t(pos0) * pos_stride_rows + size_t(row);
+    dst[orow * dim + b * 32 + lane] = int8_t(roundf(x * id));
+    if (lane == 0) dsc[orow * (dim / 32) + b] = __float2half(d);
+}
+
+// fp16 rows -> Q8_0 rows (loading an fp16 state file into a q8 cache)
+__global__ void k_h2q8(const __half* src, int8_t* dst, __half* dsc, long n_rows, int dim) {
+    const int lane = threadIdx.x & 31;
+    const long g = (long(blockIdx.x) * blockDim.x + threadIdx.x) >> 5;
+    if (g >= n_rows * (dim / 32)) return;
+    const long row = g / (dim / 32), b = g % (dim / 32);
+    const float x = __half2float(src[row * dim + b * 32 + lane]);
+    float am = fabsf(x);
+    for (int o = 16; o > 0; o >>= 1) am = fmaxf(am, __shfl_xor_sync(0xffffffff, am, o));
+    const float d = am / 127.0f, id = d != 0.0f ? 1.0f / d : 0.0f;
+    dst[row * dim + b * 32 + lane] = int8_t(roundf(x * id));
+    if (lane == 0) dsc[row * (dim / 32) + b] = __float2half(d);
+}
+
+// K/V cell readers for the attention kernel: fp16, or Q8_0 (value * block scale)
+struct KvF16 {
+    const __half* K;
+    const __half* V;
+    __device__ float4 k4(size_t row, int d0) const {   // 4 values from dim d0 (d0 % 4 == 0)
+        const uint2 u = *reinterpret_cast<const uint2*>(K + row * 256 + d0);
+        const float2 a = __half22float2(*reinterpret_cast<const __half2*>(&u.x)), b = __half22float2(*reinterpret_cast<const __half2*>(&u.y));
+        return make_float4(a.x, a.y, b.x, b.y);
+    }
+    __device__ float v(size_t row, int d) const { return __half2float(V[row * 256 + d]); }
+};
+struct KvQ8 {
+    const int8_t* K;
+    const int8_t* V;
+    const __half* Ks;
+    const __half* Vs;
+    __device__ float4 k4(size_t row, int d0) const {
+        const char4 c = *reinterpret_cast<const char4*>(K + row * 256 + d0);
+        const float sc = __half2float(Ks[row * 8 + d0 / 32]);
+        return make_float4(sc * c.x, sc * c.y, sc * c.z, sc * c.w);
+    }
+    __device__ float v(size_t row, int d) const { return __half2float(Vs[row * 8 + d / 32]) * float(V[row * 256 + d]); }
+};
+
 // ---- split-K flash-decode attention
 constexpr int kAttnSplit = 64;     // cells per partial
 constexpr int kAttnMaxGroup = 16;  // query heads per KV head
@@ -543,8 +599,8 @@ constexpr int kAttnMaxGroup = 16;  // query heads per KV head
 // One block per (split, kv head, token), 256 threads, head dim D == 256: the partial softmax of
 // the group's G query heads over up to kAttnSplit cells. Cells come from the token's list, or
 // are 0..pos when counts[t] < 0. Writes, per (token, head, split): max, sum, acc[D].
-template <int G>
-__global__ void k_attn_part(const float* q, const __half* K, const __half* V, int heads, int kv_heads, int pos0, float scale,
+template <int G, typename KV>
+__global__ void k_attn_part(const float* q, KV kvr, int heads, int kv_heads, int pos0, float scale,
                             const int32_t* cells, const int32_t* counts, int ldc, int n_splits, float* part, const int32_t* dp) {
     if (dp) pos0 = dp[1];
     constexpr int D = 256;
@@ -571,11 +627,8 @@ __global__ void k_attn_part(const float* q, const __half* K, const __half* V, in
     // (coalesced K rows, conflict-free shared q)
     const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
     for (int j = warp; j < nj; j += blockDim.x >> 5) {
-        const uint2* kr = reinterpret_cast<const uint2*>(K + (size_t(cell_ids[j]) * kv_heads + hk) * D);   // 4 halves
-        const uint2 u0 = kr[lane], u1 = kr[32 + lane];
-        const float2 a0 = __half22float2(*reinterpret_cast<const __half2*>(&u0.x)), a1 = __half22float2(*reinterpret_cast<const __half2*>(&u0.y));
-        const float2 b0 = __half22float2(*reinterpret_cast<const __half2*>(&u1.x)), b1 = __half22float2(*reinterpret_cast<const __half2*>(&u1.y));
-        const float4 k0 = make_float4(a0.x, a0.y, a1.x, a1.y), k1 = make_float4(b0.x, b0.y, b1.x, b1.y);
+        const size_t krow = size_t(cell_ids[j]) * kv_heads + hk;
+        const float4 k0 = kvr.k4(krow, lane * 4), k1 = kvr.k4(krow, 128 + lane * 4);
         float d[G];
 #pragma unroll
         for (int h = 0; h < G; ++h) {
@@ -612,7 +665,7 @@ __global__ void k_attn_part(const float* q, const __half* K, const __half* V, in
 #pragma unroll
     for (int h = 0; h < G; ++h) acc[h] = 0.0f;
     for (int j = 0; j < nj; ++j) {
-        const float v = __half2float(V[(size_t(cell_ids[j]) * kv_heads + hk) * D + dd]);
+        const float v = kvr.v(size_t(cell_ids[j]) * kv_heads + hk, dd);
 #pragma unroll
         for (int h = 0; h < G; ++h) acc[h] += sc[h][j] * v;
     }
@@ -857,12 +910,30 @@ __global__ void k_idx_select(const float* scores, int ld, int32_t* cells, int32_
 
 }  // namespace
 
-QsaCache alloc_qsa_cache(const Spec& s, int capacity) {
+void qsa_h2q8_rows(const void* src_f16, void* dst_q8, void* dst_scales, long n_rows, int dim, cudaStream_t stream) {
+    const long groups = n_rows * (dim / 32);
+    k_h2q8<<<unsigned((groups * 32 + 255) / 256), 256, 0, stream>>>(static_cast<const __half*>(src_f16), static_cast<int8_t*>(dst_q8),
+                                                                   static_cast<__half*>(dst_scales), n_rows, dim);
+    ck(cudaGetLastError(), "h2q8");
+}
+
+size_t qsa_cell_bytes(const Spec& s, bool q8) {
+    const size_t n = size_t(s.n_head_kv) * s.head_dim_k;
+    return q8 ? n + n / 32 * 2 : n * 2;
+}
+
+QsaCache alloc_qsa_cache(const Spec& s, int capacity, bool q8) {
     QsaCache kv;
     kv.capacity = capacity;
+    kv.q8 = q8;
+    if (q8 && s.head_dim_k % 32) throw std::runtime_error("alloc_qsa_cache: q8 needs head_dim % 32 == 0");
     const size_t n = size_t(capacity) * s.n_head_kv * s.head_dim_k;
-    ck(cudaMalloc(&kv.K, n * 2), "cudaMalloc K cache");
-    ck(cudaMalloc(&kv.V, n * 2), "cudaMalloc V cache");
+    ck(cudaMalloc(&kv.K, n * (q8 ? 1 : 2)), "cudaMalloc K cache");
+    ck(cudaMalloc(&kv.V, n * (q8 ? 1 : 2)), "cudaMalloc V cache");
+    if (q8) {
+        ck(cudaMalloc(&kv.Ks, n / 32 * 2), "cudaMalloc K scales");
+        ck(cudaMalloc(&kv.Vs, n / 32 * 2), "cudaMalloc V scales");
+    }
     ck(cudaMalloc(&kv.idx_pooled, size_t(capacity / s.qsa_block + 1) * s.idx_dim * 4), "cudaMalloc pooled keys");
     ck(cudaMalloc(&kv.idx_ring, size_t(s.qsa_block) * s.idx_dim * 4), "cudaMalloc key ring");
     ck(cudaMemset(kv.idx_ring, 0, size_t(s.qsa_block) * s.idx_dim * 4), "memset key ring");
@@ -872,6 +943,8 @@ QsaCache alloc_qsa_cache(const Spec& s, int capacity) {
 void free_qsa_cache(QsaCache& kv) {
     if (kv.K) cudaFree(kv.K);
     if (kv.V) cudaFree(kv.V);
+    if (kv.Ks) cudaFree(kv.Ks);
+    if (kv.Vs) cudaFree(kv.Vs);
     if (kv.idx_pooled) cudaFree(kv.idx_pooled);
     if (kv.idx_ring) cudaFree(kv.idx_ring);
     kv = QsaCache{};
@@ -925,11 +998,22 @@ void qsa_mixer(const BlockCtx& c, int il, const float* x, int T, int pos0, QsaCa
     k_norm_rope<float><<<T * H, 128, 0, c.stream>>>(qfull, H * 2 * D, 2 * D, static_cast<const float*>(c.w.layer(il, "attn_q_norm.weight").dev),
                                                    q, H, D, s.rope_dims, pos0, theta_scale, eps, 0, c.dparams);
     // K goes straight into the cache rows pos0.. (cell = position); V is copied as is
-    __half* Kc = reinterpret_cast<__half*>(kv.K);
-    __half* Vc = reinterpret_cast<__half*>(kv.V);
-    k_norm_rope<__half><<<T * KH, 128, 0, c.stream>>>(kraw, KH * D, D, static_cast<const float*>(c.w.layer(il, "attn_k_norm.weight").dev),
-                                                     Kc, KH, D, s.rope_dims, pos0, theta_scale, eps, size_t(KH) * D, c.dparams);
-    k_copy_h<<<(T * KH * D + 255) / 256, 256, 0, c.stream>>>(vraw, Vc, T * KH * D, pos0, size_t(KH) * D, c.dparams);
+    __half* Kc = static_cast<__half*>(kv.K);
+    __half* Vc = static_cast<__half*>(kv.V);
+    if (kv.q8) {   // K normed and roped in place (float), then both quantized into the cache rows
+        if (D % 32) throw std::runtime_error("qsa_mixer: q8 KV needs head_dim % 32 == 0");
+        k_norm_rope<float><<<T * KH, 128, 0, c.stream>>>(kraw, KH * D, D, static_cast<const float*>(c.w.layer(il, "attn_k_norm.weight").dev),
+                                                        kraw, KH, D, s.rope_dims, pos0, theta_scale, eps, 0, c.dparams);
+        const int groups = T * KH * D / 32;
+        k_quant_q8<<<(groups * 32 + 255) / 256, 256, 0, c.stream>>>(kraw, static_cast<int8_t*>(kv.K), reinterpret_cast<__half*>(kv.Ks),
+                                                                   T * KH, D, pos0, size_t(KH), c.dparams);
+        k_quant_q8<<<(groups * 32 + 255) / 256, 256, 0, c.stream>>>(vraw, static_cast<int8_t*>(kv.V), reinterpret_cast<__half*>(kv.Vs),
+                                                                   T * KH, D, pos0, size_t(KH), c.dparams);
+    } else {
+        k_norm_rope<__half><<<T * KH, 128, 0, c.stream>>>(kraw, KH * D, D, static_cast<const float*>(c.w.layer(il, "attn_k_norm.weight").dev),
+                                                         Kc, KH, D, s.rope_dims, pos0, theta_scale, eps, size_t(KH) * D, c.dparams);
+        k_copy_h<<<(T * KH * D + 255) / 256, 256, 0, c.stream>>>(vraw, Vc, T * KH * D, pos0, size_t(KH) * D, c.dparams);
+    }
 
     // indexer: queries, raw keys, pooling of the blocks completed here, then per-token selection
     linear(c, c.w.layer(il, "indexer.q_proj.weight"), x, qi, T);
@@ -979,12 +1063,18 @@ void qsa_mixer(const BlockCtx& c, int il, const float* x, int T, int pos0, QsaCa
     qsa_scratch_reserve(c.s, c.scratch, T, 0, n_splits);
     const dim3 grid(n_splits, KH, T);
     const float scale = 1.0f / sqrtf(float(D));
-    switch (G) {
-        case 12: k_attn_part<12><<<grid, 256, 0, c.stream>>>(q, Kc, Vc, H, KH, pos0, scale, cells, counts, ldc, n_splits, c.scratch.attn_part, c.dparams); break;
-        case 8: k_attn_part<8><<<grid, 256, 0, c.stream>>>(q, Kc, Vc, H, KH, pos0, scale, cells, counts, ldc, n_splits, c.scratch.attn_part, c.dparams); break;
-        case 16: k_attn_part<16><<<grid, 256, 0, c.stream>>>(q, Kc, Vc, H, KH, pos0, scale, cells, counts, ldc, n_splits, c.scratch.attn_part, c.dparams); break;
-        default: throw std::runtime_error("qsa_mixer: unsupported GQA group size");
-    }
+    auto launch = [&](auto kvr) {
+        using KV = decltype(kvr);
+        switch (G) {
+            case 12: k_attn_part<12, KV><<<grid, 256, 0, c.stream>>>(q, kvr, H, KH, pos0, scale, cells, counts, ldc, n_splits, c.scratch.attn_part, c.dparams); break;
+            case 8: k_attn_part<8, KV><<<grid, 256, 0, c.stream>>>(q, kvr, H, KH, pos0, scale, cells, counts, ldc, n_splits, c.scratch.attn_part, c.dparams); break;
+            case 16: k_attn_part<16, KV><<<grid, 256, 0, c.stream>>>(q, kvr, H, KH, pos0, scale, cells, counts, ldc, n_splits, c.scratch.attn_part, c.dparams); break;
+            default: throw std::runtime_error("qsa_mixer: unsupported GQA group size");
+        }
+    };
+    if (kv.q8) launch(KvQ8{static_cast<const int8_t*>(kv.K), static_cast<const int8_t*>(kv.V), reinterpret_cast<const __half*>(kv.Ks),
+                           reinterpret_cast<const __half*>(kv.Vs)});
+    else launch(KvF16{Kc, Vc});
     k_attn_combine<<<T * H, 256, 0, c.stream>>>(c.scratch.attn_part, n_splits, qfull, o, H, D, H * 2 * D, 2 * D, D);
     if (gated_out) ck(cudaMemcpyAsync(gated_out, o, size_t(T) * H * D * 4, cudaMemcpyDeviceToDevice, c.stream), "copy gated");
     linear(c, c.w.layer(il, "attn_output.weight"), o, out, T);

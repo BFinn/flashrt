@@ -4,7 +4,7 @@
 //   fr_bench MODEL.gguf --ids PROMPT.txt --n-prompt N --gen G [--slots S] [--reserve-mib R]
 //            [--reference] [--workers W] [--no-doorbell] [--spin-us U] [--windows N] [--trace FILE]
 //            [--static-cache] [--swap-budget B] [--pcie-frac F] [--save-state FILE | --load-state FILE] [--no-q3r]
-//            [--no-graphs]
+//            [--no-graphs] [--kv q8]
 //
 // Prefills N prompt tokens in 64-token batches (reference path; its routing counts pick the
 // cache contents), fills the VRAM expert cache with the most-routed experts (S slots, or all
@@ -55,7 +55,7 @@ int main(int argc, char** argv) {
     bool reference = false, doorbell = true, adaptive = true;
     int swap_budget = 8;
     float pcie_frac = 0.0f;
-    bool q3r = true, graphs = true;
+    bool q3r = true, graphs = true, kv_q8 = false;
     int spin_us = 2000;
     for (int i = 2; i < argc; ++i) {
         const std::string a = argv[i];
@@ -77,6 +77,7 @@ int main(int argc, char** argv) {
         else if (a == "--save-state") save_state = next();
         else if (a == "--no-q3r") q3r = false;
         else if (a == "--no-graphs") graphs = false;
+        else if (a == "--kv") kv_q8 = std::string(next()) == "q8";
         else if (a == "--load-state") load_state = next();
         else { std::fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
     }
@@ -98,7 +99,8 @@ int main(int argc, char** argv) {
     load_experts(g, s, arena, 12);
     const std::vector<int> cpus = physical_cpus();
     CpuPool pool(workers, cpus);   // pins this thread to cpus[0]
-    ForwardRef fwd(g, s, w, arena, pool, n_prompt + windows * gen + 16, 64);
+    ForwardRef fwd(g, s, w, arena, pool, n_prompt + windows * gen + 16, 64, kv_q8);
+    std::printf("KV cache: %s\n", kv_q8 ? "q8_0" : "fp16");
 
     float* logits_dev = nullptr;
     cudaMalloc(&logits_dev, size_t(s.n_vocab) * 4);

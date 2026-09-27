@@ -4,6 +4,7 @@
 #include "core/gguf.hpp"
 #include "core/platform.hpp"
 
+#include <algorithm>
 #include <cstdio>
 #include <future>
 #include <set>
@@ -24,7 +25,7 @@ float* dalloc(size_t elems) {
 }  // namespace
 
 ForwardRef::ForwardRef(const Gguf& g, const Spec& s, const GpuWeights& w, const ExpertArena& arena, CpuPool& pool,
-                       int max_ctx, int max_batch)
+                       int max_ctx, int max_batch, bool kv_q8)
     : s_(s), w_(w), max_batch_(max_batch) {
     ple_ = parse_ple(g);
     reader_ = std::make_unique<RowReader>(g.shards[ple_.table_shard], ple_.table_offset, ple_.row_bytes, 16);
@@ -40,7 +41,7 @@ ForwardRef::ForwardRef(const Gguf& g, const Spec& s, const GpuWeights& w, const 
     kv_.resize(s.n_layer);
     ple_state_.resize(s.n_layer);
     for (int il : s.gdn_layers) gdn_[il] = alloc_gdn_state(s);
-    for (int il : s.qsa_layers) kv_[il] = alloc_qsa_cache(s, max_ctx);
+    for (int il : s.qsa_layers) kv_[il] = alloc_qsa_cache(s, max_ctx, kv_q8);
     for (int il : s.ple_layers) ple_state_[il] = alloc_ple_state(s, ple_);
     const size_t n = s.d_model, hc = s.hc_count, B = max_batch;
     emb_ = dalloc(B * n);
@@ -94,15 +95,25 @@ void ForwardRef::state_file(const std::string& path, bool save) {
     FILE* f = std::fopen(path.c_str(), save ? "wb" : "rb");
     if (!f) throw std::runtime_error("cannot open state file " + path);
     const Spec& s = s_;
-    const uint32_t magic = 0x46525354;   // "FRST"
-    int64_t hdr[4] = {magic, s.n_layer, pos_, int64_t(counts_.size())};
+    // header: magic, n_layer, pos, n_counts, and (version 2) the KV format (0 fp16, 1 q8)
+    const int64_t magic1 = 0x46525354, magic2 = 0x46525332;   // "FRST", "FRS2"
+    const bool q8 = kv_[s.qsa_layers.front()].q8;
+    bool file_q8 = q8;
     if (save) {
+        const int64_t hdr[5] = {magic2, s.n_layer, pos_, int64_t(counts_.size()), q8 ? 1 : 0};
         std::fwrite(hdr, sizeof(hdr), 1, f);
     } else {
-        int64_t h[4];
-        if (std::fread(h, sizeof(h), 1, f) != 1 || h[0] != magic || h[1] != s.n_layer || h[3] != int64_t(counts_.size())) {
+        int64_t h[5] = {0, 0, 0, 0, 0};
+        const bool ok4 = std::fread(h, sizeof(int64_t), 4, f) == 4;
+        if (ok4 && h[0] == magic2 && std::fread(&h[4], sizeof(int64_t), 1, f) != 1) h[0] = 0;
+        if (!ok4 || (h[0] != magic1 && h[0] != magic2) || h[1] != s.n_layer || h[3] != int64_t(counts_.size())) {
             std::fclose(f);
             throw std::runtime_error("state file does not match this model");
+        }
+        file_q8 = h[0] == magic2 && h[4] == 1;
+        if (file_q8 && !q8) {
+            std::fclose(f);
+            throw std::runtime_error("state file has a q8 KV cache; this cache is fp16");
         }
         pos_ = int(h[2]);
         if (pos_ > kv_[s.qsa_layers.front()].capacity) {
@@ -111,15 +122,38 @@ void ForwardRef::state_file(const std::string& path, bool save) {
         }
     }
     std::vector<uint8_t> bounce;
-    const size_t kvrow = size_t(s.n_head_kv) * s.head_dim_k * 2;   // fp16 K or V of one cell
+    const size_t kvn = size_t(s.n_head_kv) * s.head_dim_k;   // K or V values of one cell
     const int gch = 2 * s.ssm_groups * s.ssm_state + s.ssm_heads * s.ssm_state;
     for (int il : s.gdn_layers) {
         state_io(f, gdn_[il].S, size_t(s.ssm_heads) * s.ssm_state * s.ssm_state * 4, save, bounce);
         state_io(f, gdn_[il].conv, size_t(s.ssm_conv - 1) * gch * 4, save, bounce);
     }
     for (int il : s.qsa_layers) {
-        state_io(f, kv_[il].K, size_t(pos_) * kvrow, save, bounce);
-        state_io(f, kv_[il].V, size_t(pos_) * kvrow, save, bounce);
+        QsaCache& kv = kv_[il];
+        if (!q8) {
+            state_io(f, kv.K, size_t(pos_) * kvn * 2, save, bounce);
+            state_io(f, kv.V, size_t(pos_) * kvn * 2, save, bounce);
+        } else if (file_q8) {
+            state_io(f, kv.K, size_t(pos_) * kvn, save, bounce);
+            state_io(f, kv.Ks, size_t(pos_) * kvn / 32 * 2, save, bounce);
+            state_io(f, kv.V, size_t(pos_) * kvn, save, bounce);
+            state_io(f, kv.Vs, size_t(pos_) * kvn / 32 * 2, save, bounce);
+        } else {   // fp16 file into a q8 cache: convert in chunks on the GPU
+            const long rows = long(pos_) * s.n_head_kv, chunk = 1L << 16;
+            void* tmp = nullptr;
+            ck(cudaMalloc(&tmp, size_t(chunk) * s.head_dim_k * 2), "cudaMalloc state conversion");
+            for (int which = 0; which < 2; ++which) {
+                int8_t* dst = static_cast<int8_t*>(which ? kv.V : kv.K);
+                uint16_t* dsc = which ? kv.Vs : kv.Ks;
+                for (long r0 = 0; r0 < rows; r0 += chunk) {
+                    const long nr = std::min(chunk, rows - r0);
+                    state_io(f, tmp, size_t(nr) * s.head_dim_k * 2, false, bounce);
+                    qsa_h2q8_rows(tmp, dst + size_t(r0) * s.head_dim_k, dsc + size_t(r0) * (s.head_dim_k / 32), nr, s.head_dim_k, stream_);
+                    ck(cudaStreamSynchronize(stream_), "state conversion");
+                }
+            }
+            cudaFree(tmp);
+        }
         state_io(f, kv_[il].idx_pooled, size_t(pos_ / s.qsa_block + 1) * s.idx_dim * 4, save, bounce);
         state_io(f, kv_[il].idx_ring, size_t(s.qsa_block) * s.idx_dim * 4, save, bounce);
     }

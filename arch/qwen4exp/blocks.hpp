@@ -86,13 +86,23 @@ void gdn_mixer(const BlockCtx& c, int il, const float* x, int T, GdnState& st, f
 // roped at the block's first position; as llama.cpp's pooled-key cache) and a ring of the last
 // `block` raw keys, from which the next block is pooled.
 struct QsaCache {
-    uint16_t* K = nullptr;   // [capacity][kv_heads][head_dim] fp16 bits (the values are fp16-rounded anyway)
-    uint16_t* V = nullptr;
+    // K, V [capacity][kv_heads][head_dim]: fp16 bits (llama.cpp's F16 cache), or with q8 int8 in
+    // blocks of 32 with an fp16 scale each in Ks, Vs [capacity][kv_heads][head_dim / 32]
+    // (llama.cpp's Q8_0 cache: d = amax / 127)
+    void* K = nullptr;
+    void* V = nullptr;
+    uint16_t* Ks = nullptr;
+    uint16_t* Vs = nullptr;
+    bool q8 = false;
     int capacity = 0;
     float* idx_pooled = nullptr;   // [capacity / block][idx_dim]
     float* idx_ring = nullptr;     // [block][idx_dim], slot = position % block
 };
-QsaCache alloc_qsa_cache(const Spec& s, int capacity);
+QsaCache alloc_qsa_cache(const Spec& s, int capacity, bool q8 = false);
+// fp16 rows -> Q8_0 rows (values [n_rows][dim], scales [n_rows][dim / 32]), on the GPU.
+void qsa_h2q8_rows(const void* src_f16, void* dst_q8, void* dst_scales, long n_rows, int dim, cudaStream_t stream);
+// Bytes of one cell's K (or V) over all KV heads, values plus scales.
+size_t qsa_cell_bytes(const Spec& s, bool q8);
 void free_qsa_cache(QsaCache& kv);
 
 // QSA mixer for T consecutive tokens at positions pos0 .. pos0+T-1: projections, q/k RMS
