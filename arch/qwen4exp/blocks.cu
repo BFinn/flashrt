@@ -5,6 +5,8 @@
 
 #include "kernels/cuda/ggml_gemv.h"
 
+#include <cuda_fp16.h>
+
 #include <algorithm>
 #include <stdexcept>
 #include <string>
@@ -290,8 +292,11 @@ namespace {
 // per (token, head): RMS norm over dim with weight w, then NEOX rope on the first n_rot dims
 // at position pos0 + token; src rows are `src_stride` floats apart per token and `head_stride`
 // per head, dst is [T][heads][dim]
+__device__ __forceinline__ float round_h(float v, bool r) { return r ? __half2float(__float2half(v)) : v; }
+
+// round_fp16: store values rounded to fp16 (the KV cache format of the parity reference)
 __global__ void k_norm_rope(const float* src, int src_stride, int head_stride, const float* w, float* dst, int heads,
-                            int dim, int n_rot, int pos0, float theta_scale, float eps) {
+                            int dim, int n_rot, int pos0, float theta_scale, float eps, bool round_fp16) {
     const int t = blockIdx.x / heads, h = blockIdx.x % heads;
     const float* x = src + size_t(t) * src_stride + size_t(h) * head_stride;
     float* y = dst + (size_t(t) * heads + h) * dim;
@@ -307,12 +312,17 @@ __global__ void k_norm_rope(const float* src, int src_stride, int head_stride, c
             float sn, cs;
             sincosf(theta, &sn, &cs);
             const float x0 = x[i] * inv * w[i], x1 = x[i + half] * inv * w[i + half];
-            y[i] = x0 * cs - x1 * sn;
-            y[i + half] = x0 * sn + x1 * cs;
+            y[i] = round_h(x0 * cs - x1 * sn, round_fp16);
+            y[i + half] = round_h(x0 * sn + x1 * cs, round_fp16);
         } else if (i >= n_rot) {
-            y[i] = x[i] * inv * w[i];
+            y[i] = round_h(x[i] * inv * w[i], round_fp16);
         }
     }
+}
+
+__global__ void k_copy_round_h(const float* src, float* dst, int n) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) dst[i] = __half2float(__float2half(src[i]));
 }
 
 // dense causal attention, one block per (token, head), blockDim = dim threads:
@@ -401,11 +411,11 @@ void qsa_mixer(const BlockCtx& c, int il, const float* x, int T, int pos0, QsaCa
     const float theta_scale = powf(float(s.rope_base), -2.0f / float(s.rope_dims));
     const float eps = float(s.rms_eps);
     k_norm_rope<<<T * H, 128, 0, c.stream>>>(qfull, H * 2 * D, 2 * D, static_cast<const float*>(c.w.layer(il, "attn_q_norm.weight").dev),
-                                            q, H, D, s.rope_dims, pos0, theta_scale, eps);
+                                            q, H, D, s.rope_dims, pos0, theta_scale, eps, false);
     // K goes straight into the cache rows pos0.. (cell = position); V is copied as is
     k_norm_rope<<<T * KH, 128, 0, c.stream>>>(kraw, KH * D, D, static_cast<const float*>(c.w.layer(il, "attn_k_norm.weight").dev),
-                                             kv.K + size_t(pos0) * KH * D, KH, D, s.rope_dims, pos0, theta_scale, eps);
-    ck(cudaMemcpyAsync(kv.V + size_t(pos0) * KH * D, vraw, size_t(T) * KH * D * 4, cudaMemcpyDeviceToDevice, c.stream), "V append");
+                                             kv.K + size_t(pos0) * KH * D, KH, D, s.rope_dims, pos0, theta_scale, eps, true);
+    k_copy_round_h<<<(T * KH * D + 255) / 256, 256, 0, c.stream>>>(vraw, kv.V + size_t(pos0) * KH * D, T * KH * D);
     const size_t smem = size_t(pos0 + T) * 4;
     k_attn_dense<<<T * H, D, smem, c.stream>>>(q, kv.K, kv.V, qfull, o, H, KH, D, pos0, 1.0f / sqrtf(float(D)), H * 2 * D, 2 * D, D);
     linear(c, c.w.layer(il, "attn_output.weight"), o, out, T);

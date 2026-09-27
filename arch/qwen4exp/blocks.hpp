@@ -61,7 +61,8 @@ void free_gdn_state(GdnState& st);
 void gdn_mixer(const BlockCtx& c, int il, const float* x, int T, GdnState& st, float* out, float* o_inner = nullptr);
 
 // KV cache of one QSA layer for one sequence: post-norm, post-rope K and V, [cell][kv_head][dim].
-// Cell index = position. F32 for now (the parity reference uses F16 KV).
+// Cell index = position. Stored as F32 holding values rounded to F16, like the parity
+// reference's F16 KV cache (a packed F16 / Q8 layout comes with the fused kernels).
 struct QsaCache {
     float* K = nullptr;
     float* V = nullptr;
