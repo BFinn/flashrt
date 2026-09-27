@@ -44,4 +44,20 @@ void hc_mix(const BlockCtx& c, int il, int which, const float* x, int T, float* 
 // Hyper-connection combine: x[t][s][:] += out[t][:] * 2*sigmoid(inject[t][s] / hc).
 void hc_combine(const BlockCtx& c, float* x, const float* out, const float* inject, int T);
 
+// GDN (gated delta net) recurrent state of one layer for one sequence: the delta-rule state
+// S[head][j][i] (value row i fastest; flashrt's own layout) and the causal-conv history of
+// the last (conv - 1) qkv inputs, [conv-1][channels]. Zero at the start of a sequence.
+struct GdnState {
+    float* S = nullptr;
+    float* conv = nullptr;
+};
+GdnState alloc_gdn_state(const Spec& s);
+void reset_gdn_state(const Spec& s, GdnState& st, cudaStream_t stream);
+void free_gdn_state(GdnState& st);
+
+// GDN mixer for T consecutive tokens (state advances token by token). x [T][d_model] is the
+// hyper-connection mix; out [T][d_model]. o_inner, if given, gets the delta-rule output
+// before the gated norm, [T][heads][state] (llama.cpp's "attn_output" in GDN layers).
+void gdn_mixer(const BlockCtx& c, int il, const float* x, int T, GdnState& st, float* out, float* o_inner = nullptr);
+
 }  // namespace flashrt::qwen4exp

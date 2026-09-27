@@ -2,7 +2,7 @@
 // fr_parity: run flashrt's GPU blocks on llama.cpp's recorded inputs (tools/ref_dump) and
 // compare the outputs, block by block.
 //
-//   fr_parity MODEL.gguf REF.frd [test ...]      tests: hc (default)
+//   fr_parity MODEL.gguf REF.frd [test ...]      tests: hc (default), gdn
 //
 // Every step of the dump is used (-1 = the prompt batch, 0.. = decode steps). The metric is
 // relative L2, ||ours - ref|| / ||ref||, per layer; the tool fails if any exceeds the tolerance.
@@ -127,6 +127,27 @@ void test_hc(const BlockCtx& c, const Frd& ref, const std::vector<int>& steps, C
     }
 }
 
+// GDN mixers: states carried across the steps in order (prompt batch, then decode steps).
+void test_gdn(const BlockCtx& c, const Frd& ref, const std::vector<int>& steps, Checker& ck) {
+    const Spec& s = c.s;
+    std::vector<GdnState> st(s.n_layer);
+    for (int il : s.gdn_layers) st[il] = alloc_gdn_state(s);
+    for (int step : steps) {
+        const int T = int(ref.get("model.input_embed", step).ne[1]);
+        std::printf("gdn: step %d (%d tokens)\n", step, T);
+        for (int il : s.gdn_layers) {
+            const std::string L = "-" + std::to_string(il);
+            Dev x(ref.floats(ref.get("hc_mixed" + L, step, 0)));
+            Dev out(size_t(T) * s.d_model), o(size_t(T) * s.ssm_heads * s.ssm_state);
+            gdn_mixer(c, il, x.p, T, st[il], out.p, o.p);
+            cudaStreamSynchronize(c.stream);
+            ck.check("gdn attn_output" + L, o.host(), ref.floats(ref.get("attn_output" + L, step)), il < 3);
+            ck.check("linear_attn_out" + L, out.host(), ref.floats(ref.get("linear_attn_out" + L, step)), il < 3);
+        }
+    }
+    for (int il : s.gdn_layers) free_gdn_state(st[il]);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -156,6 +177,7 @@ int main(int argc, char** argv) {
     Checker ck{2e-3};
     for (const std::string& t : tests) {
         if (t == "hc") test_hc(c, ref, steps, ck);
+        else if (t == "gdn") test_gdn(c, ref, steps, ck);
         else { std::fprintf(stderr, "unknown test %s\n", t.c_str()); return 2; }
     }
     std::printf("fr_parity: %d checks, %d over tolerance %.0e; worst %.3e (%s)\n", ck.checks, ck.fails, ck.tol, ck.worst,
