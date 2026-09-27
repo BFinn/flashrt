@@ -88,7 +88,7 @@ struct CachePolicyConfig {
     int decay_every = 4;
     float admit = 2.0f;
     float margin = 1.5f;
-    int budget = 32;
+    int budget = 8;
 };
 struct CacheManager;   // opaque; see moe_fast.cu
 
