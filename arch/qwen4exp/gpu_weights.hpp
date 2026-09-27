@@ -23,6 +23,7 @@ struct GpuTensor {
     uint32_t type = 0;              // ggml type id
     std::vector<int64_t> dims;      // ggml order: dims[0] is the row length
     size_t bytes = 0;
+    void* q3r = nullptr;            // Q3_K only: the Q3R decode copy (kernels/cuda/q3r.h), or null
 
     int64_t cols() const { return dims.at(0); }
     int64_t rows() const {
@@ -47,11 +48,12 @@ public:
     const GpuTensor& layer(int il, const std::string& suffix) const {   // "blk.<il>.<suffix>"
         return get("blk." + std::to_string(il) + "." + suffix);
     }
-    size_t device_bytes() const { return total_; }
+    size_t device_bytes() const { return total_; }   // including the Q3R copies
     double load_seconds() const { return seconds_; }
 
 private:
     void* base_ = nullptr;
+    void* q3r_base_ = nullptr;
     size_t total_ = 0;
     double seconds_ = 0;
     std::map<std::string, GpuTensor> tensors_;

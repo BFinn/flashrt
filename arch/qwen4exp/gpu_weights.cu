@@ -3,6 +3,7 @@
 
 #include "core/gguf.hpp"
 #include "kernels/cuda/ggml_gemv.h"
+#include "kernels/cuda/q3r.h"
 
 #include <cuda_runtime.h>
 #include <fcntl.h>
@@ -26,6 +27,7 @@ size_t slot_bytes(size_t bytes) { return (bytes + gemv::kWeightTailPad + 255) & 
 
 GpuWeights::~GpuWeights() {
     if (base_) cudaFree(base_);
+    if (q3r_base_) cudaFree(q3r_base_);
 }
 
 void GpuWeights::load(const Gguf& g, const WeightPlan& plan) {
@@ -80,6 +82,25 @@ void GpuWeights::load(const Gguf& g, const WeightPlan& plan) {
         }
         tensors_.emplace(t.name, std::move(gt));
         off += slot_bytes(t.bytes);
+    }
+    // Q3_K matrices get a Q3R copy for single-token mat-vecs (MMVQ reads Q3_K at ~320 GB/s);
+    // not the token embedding, which is only ever read one row at a time
+    size_t q3r_total = 0;
+    auto q3r_eligible = [](const std::string& name, const GpuTensor& t) {
+        return t.type == 11 /* GGML_TYPE_Q3_K */ && name != "token_embd.weight" && t.cols() % 256 == 0 && t.cols() <= 11264;
+    };
+    for (auto& [name, t] : tensors_)
+        if (q3r_eligible(name, t)) q3r_total += q3r::bytes(t.rows(), t.cols());
+    if (q3r_total) {
+        ck(cudaMalloc(&q3r_base_, q3r_total), "cudaMalloc q3r copies");
+        size_t qoff = 0;
+        for (auto& [name, t] : tensors_)
+            if (q3r_eligible(name, t)) {
+                t.q3r = static_cast<uint8_t*>(q3r_base_) + qoff;
+                q3r::repack(t.dev, t.q3r, t.rows(), t.cols(), st);
+                qoff += q3r::bytes(t.rows(), t.cols());
+            }
+        total_ += q3r_total;
     }
     ck(cudaStreamSynchronize(st), "cudaStreamSynchronize");
     for (int fd : fds) close(fd);

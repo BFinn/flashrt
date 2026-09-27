@@ -97,7 +97,7 @@ if(FLASHRT_CUDA)
   target_link_libraries(h2dbw PRIVATE flashrt_core CUDA::cudart)
 
   # dense mat-vec over ggml's vendored CUDA kernels (MIT, third_party/ggml)
-  add_library(flashrt_gemv STATIC kernels/cuda/ggml_gemv.cu kernels/cuda/ggml_shim.cu)
+  add_library(flashrt_gemv STATIC kernels/cuda/ggml_gemv.cu kernels/cuda/ggml_shim.cu kernels/cuda/q3r.cu)
   target_include_directories(flashrt_gemv PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ggml
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ggml/include

@@ -4,6 +4,7 @@
 #include "arch/qwen4exp/blocks.hpp"
 
 #include "kernels/cuda/ggml_gemv.h"
+#include "kernels/cuda/q3r.h"
 #include "quant/q2_0/moe_cpu.hpp"
 
 #include <cuda_fp16.h>
@@ -365,6 +366,10 @@ void free_block_scratch(BlockScratch& b) {
 
 void linear(const BlockCtx& c, const GpuTensor& W, const float* x, float* y, int T) {
     const int64_t cols = W.cols(), rows = W.rows();
+    if (T == 1 && W.q3r) {
+        q3r::matvec(W.q3r, x, y, rows, cols, c.stream);
+        return;
+    }
     for (int t0 = 0; t0 < T; t0 += gemv::kMaxTokens) {
         const int n = std::min(gemv::kMaxTokens, T - t0);
         gemv::matvec(W.type, W.dev, x + size_t(t0) * cols, y + size_t(t0) * rows, cols, rows, n, c.scratch.q8, c.stream);
