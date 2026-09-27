@@ -706,6 +706,33 @@ __global__ void k_idx_scores(const float* qi, const float* pooled, float* scores
     scores[size_t(t) * ld + b] = sum;
 }
 
+// As k_idx_scores for dim == 128: one warp per pooled key (a coalesced 512-byte read), the
+// token's queries in shared memory; each block covers 8 warps x kIdxKeysPerWarp keys.
+constexpr int kIdxKeysPerWarp = 4;
+__global__ void k_idx_scores128(const float* qi, const float* pooled, float* scores, int ld, int pos0, int r, int heads) {
+    extern __shared__ __align__(16) float qs[];   // [heads][128]
+    const int t = blockIdx.y;
+    const int nb = (pos0 + t + 1) / r;
+    const int b0 = blockIdx.x * (blockDim.x >> 5) * kIdxKeysPerWarp;
+    if (b0 >= nb) return;
+    for (int i = threadIdx.x; i < heads * 128; i += blockDim.x) qs[i] = qi[size_t(t) * heads * 128 + i];
+    __syncthreads();
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+    for (int j = 0; j < kIdxKeysPerWarp; ++j) {
+        const int b = b0 + warp * kIdxKeysPerWarp + j;
+        if (b >= nb) break;
+        const float4 kv = reinterpret_cast<const float4*>(pooled + size_t(b) * 128)[lane];
+        float sum = 0.0f;
+        for (int h = 0; h < heads; ++h) {
+            const float4 q = reinterpret_cast<const float4*>(qs + h * 128)[lane];
+            float d = q.x * kv.x + q.y * kv.y + q.z * kv.z + q.w * kv.w;
+            for (int o = 16; o > 0; o >>= 1) d += __shfl_xor_sync(0xffffffff, d, o);
+            sum += fmaxf(d, 0.0f);
+        }
+        if (lane == 0) scores[size_t(t) * ld + b] = sum;
+    }
+}
+
 __device__ __forceinline__ unsigned ordered_key(float f) {
     const unsigned u = __float_as_uint(f);
     return (u & 0x80000000u) ? ~u : (u | 0x80000000u);
@@ -756,19 +783,36 @@ __global__ void k_idx_select(const float* scores, int ld, int32_t* cells, int32_
             for (int k = 0; k < r; ++k) out[b * r + k] = b * r + k;
         filled = nb;
     } else {
-        unsigned prefix = 0;
-        for (int bit = 31; bit >= 0; --bit) {
-            const unsigned cand = prefix | (1u << bit);
-            if (threadIdx.x == 0) cnt = 0;
+        // tau = the M-th largest key, found 8 bits at a time: a histogram of the next digit over
+        // the keys that match the digits found so far (integer counts: order-independent)
+        __shared__ int hist[256];
+        __shared__ unsigned sh_prefix;
+        __shared__ int sh_need;
+        if (threadIdx.x == 0) {
+            sh_prefix = 0;
+            sh_need = M;
+        }
+        for (int shift = 24; shift >= 0; shift -= 8) {
+            for (int i = threadIdx.x; i < 256; i += blockDim.x) hist[i] = 0;
             __syncthreads();
-            int local = 0;
-            for (int b = threadIdx.x; b < nb; b += blockDim.x) local += ordered_key(sc[b]) >= cand;
-            atomicAdd(&cnt, local);
+            const unsigned prefix = sh_prefix, hmask = shift == 24 ? 0u : ~0u << (shift + 8);
+            for (int b = threadIdx.x; b < nb; b += blockDim.x) {
+                const unsigned key = ordered_key(sc[b]);
+                if ((key & hmask) == prefix) atomicAdd(&hist[(key >> shift) & 255], 1);
+            }
             __syncthreads();
-            if (cnt >= M) prefix = cand;
+            if (threadIdx.x == 0) {
+                int need = sh_need, acc = 0, d = 255;
+                for (; d > 0; --d) {
+                    if (acc + hist[d] >= need) break;
+                    acc += hist[d];
+                }
+                sh_need = need - acc;
+                sh_prefix = prefix | (unsigned(d) << shift);
+            }
             __syncthreads();
         }
-        const unsigned tau = prefix;
+        const unsigned tau = sh_prefix;
         // blocks above tau, plus the lowest-index blocks equal to tau up to M, written in block
         // order (deterministic, so the attention sums in a fixed order)
         if (threadIdx.x == 0) cnt = 0;
@@ -879,7 +923,13 @@ void qsa_mixer(const BlockCtx& c, int il, const float* x, int T, int pos0, QsaCa
             ck(cudaMalloc(&bs.idx_cells, bs.idx_cells_elems * 4), "cudaMalloc idx cells");
             ck(cudaMalloc(&bs.idx_counts, bs.idx_cells_elems / ldc * 4), "cudaMalloc idx counts");
         }
-        k_idx_scores<<<dim3((max_nb + 127) / 128, T), 128, 0, c.stream>>>(qi, kv.idx_pooled, bs.idx_scores, max_nb, pos0, r, IH, ID);
+        if (ID == 128) {
+            const int per_block = 8 * kIdxKeysPerWarp;
+            k_idx_scores128<<<dim3((max_nb + per_block - 1) / per_block, T), 256, size_t(IH) * 128 * 4, c.stream>>>(
+                qi, kv.idx_pooled, bs.idx_scores, max_nb, pos0, r, IH);
+        } else {
+            k_idx_scores<<<dim3((max_nb + 127) / 128, T), 128, 0, c.stream>>>(qi, kv.idx_pooled, bs.idx_scores, max_nb, pos0, r, IH, ID);
+        }
         k_idx_select<<<T, 1024, 0, c.stream>>>(bs.idx_scores, max_nb, bs.idx_cells, bs.idx_counts, ldc, pos0, r, nsel, width);
         cells = bs.idx_cells;
         counts = bs.idx_counts;
