@@ -941,6 +941,32 @@ __device__ int block_scan_flags(bool flag, int* total) {
     return before + in_warp;
 }
 
+// block-wide exclusive scan of ints (blockDim a multiple of 32, <= 1024); sets *total
+__device__ int block_scan_int(int v, int* total) {
+    __shared__ int warp_tot[32];
+    const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5, nw = blockDim.x >> 5;
+    int incl = v;
+    for (int o = 1; o < 32; o <<= 1) {
+        const int n = __shfl_up_sync(0xffffffff, incl, o);
+        if (lane >= o) incl += n;
+    }
+    if (lane == 31) warp_tot[warp] = incl;
+    __syncthreads();
+    if (warp == 0) {
+        int w = lane < nw ? warp_tot[lane] : 0;
+        for (int o = 1; o < 32; o <<= 1) {
+            const int n = __shfl_up_sync(0xffffffff, w, o);
+            if (lane >= o) w += n;
+        }
+        if (lane < nw) warp_tot[lane] = w;   // inclusive
+    }
+    __syncthreads();
+    const int before = (warp > 0 ? warp_tot[warp - 1] : 0) + incl - v;
+    *total = warp_tot[nw - 1];
+    __syncthreads();
+    return before;
+}
+
 // Per token (one CUDA block): the cells to attend to. Dense (counts = -1) while q + 1 <= width;
 // otherwise the top M blocks by score, M = nsel minus one when the incomplete tail exists, then
 // the tail cells. The M-th largest score is found by a 32-pass radix select; ties at it are taken
@@ -956,7 +982,6 @@ __global__ void k_idx_select(const float* scores, int ld, int32_t* cells, int32_
     const int nb = (q + 1) / r, tail = (q + 1) - nb * r, M = nsel - (tail > 0 ? 1 : 0);
     const float* sc = scores + size_t(t) * ld;
     int32_t* out = cells + size_t(t) * ldc;
-    __shared__ int cnt;
     int filled;
     if (nb <= M) {
         for (int b = threadIdx.x; b < nb; b += blockDim.x)
@@ -981,40 +1006,54 @@ __global__ void k_idx_select(const float* scores, int ld, int32_t* cells, int32_
                 if ((key & hmask) == prefix) atomicAdd(&hist[(key >> shift) & 255], 1);
             }
             __syncthreads();
-            if (threadIdx.x == 0) {
-                int need = sh_need, acc = 0, d = 255;
-                for (; d > 0; --d) {
-                    if (acc + hist[d] >= need) break;
-                    acc += hist[d];
+            if (threadIdx.x < 32) {   // warp 0: the digit holding the need-th largest key
+                const int lane = threadIdx.x, need = sh_need;
+                int part = 0;   // lane owns digits 255 - 8 lane .. 248 - 8 lane (descending)
+                for (int k = 0; k < 8; ++k) part += hist[255 - 8 * lane - k];
+                int incl = part;
+                for (int o = 1; o < 32; o <<= 1) {
+                    const int v = __shfl_up_sync(0xffffffff, incl, o);
+                    if (lane >= o) incl += v;
                 }
-                sh_need = need - acc;
-                sh_prefix = prefix | (unsigned(d) << shift);
+                const int excl = incl - part;
+                const unsigned hit = __ballot_sync(0xffffffff, excl < need && incl >= need);
+                if (lane == __ffs(hit) - 1) {
+                    int acc = excl, d = 255 - 8 * lane;
+                    for (int k = 0; k < 7; ++k, --d) {
+                        if (acc + hist[d] >= need) break;
+                        acc += hist[d];
+                    }
+                    sh_need = need - acc;
+                    sh_prefix = prefix | (unsigned(d) << shift);
+                }
             }
             __syncthreads();
         }
         const unsigned tau = sh_prefix;
         // blocks above tau, plus the lowest-index blocks equal to tau up to M, written in block
-        // order (deterministic, so the attention sums in a fixed order)
-        if (threadIdx.x == 0) cnt = 0;
-        __syncthreads();
-        int local = 0;
-        for (int b = threadIdx.x; b < nb; b += blockDim.x) local += ordered_key(sc[b]) > tau;
-        atomicAdd(&cnt, local);
-        __syncthreads();
-        const int tie_budget = M - cnt;
-        int ties = 0, written = 0;
-        for (int base = 0; base < nb; base += blockDim.x) {
-            const int b = base + threadIdx.x;
-            const unsigned key = b < nb ? ordered_key(sc[b]) : 0u;
-            const bool tie = b < nb && key == tau;
-            int tie_total, sel_total;
-            const int tie_rank = block_scan_flags(tie, &tie_total);
-            const bool sel = b < nb && (key > tau || (tie && ties + tie_rank < tie_budget));
-            const int pos = block_scan_flags(sel, &sel_total);
-            if (sel)
-                for (int k = 0; k < r; ++k) out[(written + pos) * r + k] = b * r + k;
-            ties += tie_total;
-            written += sel_total;
+        // order (deterministic, so the attention sums in a fixed order). Each thread owns a
+        // contiguous segment: count, one scan for the offsets, then write in order.
+        const int seg = (nb + int(blockDim.x) - 1) / int(blockDim.x);
+        const int b0 = min(nb, int(threadIdx.x) * seg), b1 = min(nb, b0 + seg);
+        int g = 0, e = 0;
+        for (int b = b0; b < b1; ++b) {
+            const unsigned key = ordered_key(sc[b]);
+            g += key > tau;
+            e += key == tau;
+        }
+        int g_total, e_total;
+        const int g_before = block_scan_int(g, &g_total);
+        const int e_before = block_scan_int(e, &e_total);
+        const int tie_budget = M - g_total;
+        int pos = g_before + min(e_before, tie_budget), tie_idx = e_before;
+        for (int b = b0; b < b1; ++b) {
+            const unsigned key = ordered_key(sc[b]);
+            bool sel = key > tau;
+            if (key == tau) sel = tie_idx++ < tie_budget;
+            if (sel) {
+                for (int k = 0; k < r; ++k) out[pos * r + k] = b * r + k;
+                ++pos;
+            }
         }
         filled = M;
     }
