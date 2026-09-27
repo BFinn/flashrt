@@ -1,0 +1,1 @@
+cpu_pool: 20000 runs, 8 workers, 2.9 s, 0 violations: ok

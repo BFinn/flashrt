@@ -1,0 +1,11 @@
+expert 0 (slot  3): rel L2 9.12e-03 ok
+expert 1 (slot 11): rel L2 9.61e-03 ok
+expert 2 (slot  0): rel L2 1.33e-02 ok
+expert 3 (slot  7): rel L2 1.39e-02 ok
+expert 4 (slot 15): rel L2 1.40e-02 ok
+expert 5 (slot  5): rel L2 9.02e-03 ok
+expert 6 (slot  9): rel L2 7.81e-03 ok
+expert 7 (slot  2): rel L2 8.26e-03 ok
+expert 8 (slot 13): rel L2 1.25e-02 ok
+expert 9 (pad): not written, ok
+all passed
