@@ -343,6 +343,7 @@ void test_full(const BlockCtx& c, const Gguf& g, const std::string& frd_path, co
     std::set<int> ple_set(s.ple_layers.begin(), s.ple_layers.end());
     int64_t pos = 0;
     int agree = 0, total = 0;
+    double kld_sum = 0, kld_max = 0;
     for (size_t k = 0; k < steps.size(); ++k) {
         const int step = steps[k], T = lens.at(k);
         std::vector<int32_t> toks(seq.begin() + pos, seq.begin() + pos + T);
@@ -393,15 +394,31 @@ void test_full(const BlockCtx& c, const Gguf& g, const std::string& frd_path, co
         const std::vector<float> want = ref.floats(ref.get("result_output", step));
         const std::vector<float> want_last(want.end() - s.n_vocab, want.end());
         ck.check("logits step " + std::to_string(step), ours, want_last, false);
+        // KL(ref || ours) over the full vocabulary
+        double kld = 0;
+        {
+            const float mr = *std::max_element(want_last.begin(), want_last.end());
+            const float mo = *std::max_element(ours.begin(), ours.end());
+            double zr = 0, zo = 0;
+            for (int v = 0; v < s.n_vocab; ++v) { zr += std::exp(double(want_last[v]) - mr); zo += std::exp(double(ours[v]) - mo); }
+            const double lzr = std::log(zr) + mr, lzo = std::log(zo) + mo;
+            for (int v = 0; v < s.n_vocab; ++v) {
+                const double lr = want_last[v] - lzr, lo = ours[v] - lzo;
+                kld += std::exp(lr) * (lr - lo);
+            }
+        }
+        kld_sum += kld;
+        kld_max = std::max(kld_max, kld);
         const int a = int(std::max_element(ours.begin(), ours.end()) - ours.begin());
         const int b = int(std::max_element(want_last.begin(), want_last.end()) - want_last.begin());
         agree += a == b;
         ++total;
-        std::printf("full: step %3d (%2d tok at %3lld): worst layer rel L2 %.2e, logits rel L2 %.2e, argmax %d vs %d%s\n",
-                    step, T, (long long) pos, worst_layer, rel_l2(ours, want_last), a, b, a == b ? "" : "  DIFFERENT");
+        std::printf("full: step %3d (%2d tok at %3lld): worst layer rel L2 %.2e, logits rel L2 %.2e, KLD %.5f, argmax %d vs %d%s\n",
+                    step, T, (long long) pos, worst_layer, rel_l2(ours, want_last), kld, a, b, a == b ? "" : "  DIFFERENT");
         pos += T;
     }
-    std::printf("full: greedy token agreement %d / %d\n", agree, total);
+    std::printf("full: greedy token agreement %d / %d; KLD(ref || flashrt) mean %.5f, max %.5f over %d steps\n", agree,
+                total, kld_sum / std::max(total, 1), kld_max, total);
     for (int il : s.gdn_layers) free_gdn_state(gdn[il]);
     for (int il : s.qsa_layers) free_qsa_cache(kv[il]);
     for (int il : s.ple_layers) free_ple_state(pst[il]);
