@@ -3,7 +3,7 @@
 //
 //   fr_bench MODEL.gguf --ids PROMPT.txt --n-prompt N --gen G [--slots S] [--reserve-mib R]
 //            [--reference] [--workers W] [--no-doorbell] [--spin-us U] [--windows N] [--trace FILE]
-//            [--static-cache] [--swap-budget B]
+//            [--static-cache] [--swap-budget B] [--pcie-frac F]
 //
 // Prefills N prompt tokens in 64-token batches (reference path; its routing counts pick the
 // cache contents), fills the VRAM expert cache with the most-routed experts (S slots, or all
@@ -14,7 +14,8 @@
 // consecutive windows of G tokens after the one prefill and reports each (deep prompts).
 // --trace writes the decode's routing, int16 [tokens][n_layer][top_k], for tools/cache_sim.py.
 // The expert cache adapts during decode (decayed LFU, up to B uploads in flight, default 8)
-// unless --static-cache.
+// unless --static-cache. --pcie-frac F (default 0.5; 0 = off) lets the GPU read floor(F * misses)
+// of each layer's misses straight from host memory, up to 4 per layer.
 #include "arch/qwen4exp/experts.hpp"
 #include "arch/qwen4exp/forward_ref.hpp"
 #include "arch/qwen4exp/gpu_weights.hpp"
@@ -50,6 +51,7 @@ int main(int argc, char** argv) {
     int n_prompt = 1024, gen = 128, slots = 0, reserve_mib = 1024, workers = 8, windows = 1;
     bool reference = false, doorbell = true, adaptive = true;
     int swap_budget = 8;
+    float pcie_frac = 0.5f;
     int spin_us = 2000;
     for (int i = 2; i < argc; ++i) {
         const std::string a = argv[i];
@@ -67,6 +69,7 @@ int main(int argc, char** argv) {
         else if (a == "--trace") trace_path = next();
         else if (a == "--static-cache") adaptive = false;
         else if (a == "--swap-budget") swap_budget = std::atoi(next());
+        else if (a == "--pcie-frac") pcie_frac = float(std::atof(next()));
         else { std::fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
     }
     std::vector<int32_t> seq;
@@ -132,6 +135,7 @@ int main(int argc, char** argv) {
             pin_current_thread(cpus[size_t(workers) % cpus.size()]);
         }
         pool.set_spin_us(spin_us);
+        if (pcie_frac > 0) enable_pcie_misses(host, arena, pcie_frac, 4);
         fwd.set_fast_moe(&cache, &host);
         if (adaptive) {
             const auto tr = Clock::now();
@@ -151,7 +155,7 @@ int main(int argc, char** argv) {
     std::vector<int16_t> trace;
     cudaProfilerStart();   // nsys --capture-range=cudaProfilerApi profiles the decode loop only
     for (int wi = 0; wi < windows; ++wi) {
-        const long hits0 = host.hits, misses0 = host.misses;
+        const long hits0 = host.hits, misses0 = host.misses, gmiss0 = host.gpu_misses;
         const int depth = int(seq.size()) - 1;
         const auto td = Clock::now();
         for (int i = 0; i < gen; ++i) {
@@ -166,14 +170,16 @@ int main(int argc, char** argv) {
                     reference ? "reference path" : doorbell ? "fast path, doorbell" : "fast path, host sync per layer");
         if (windows > 1 && !reference)
             std::printf(", window %d, hit rate %.2f%%", wi + 1,
-                        100.0 * (host.hits - hits0) / std::max(1L, host.hits - hits0 + host.misses - misses0));
+                        100.0 * (host.hits - hits0) /
+                            std::max(1L, host.hits - hits0 + host.misses - misses0 + host.gpu_misses - gmiss0));
         if (mgr) std::printf(", swaps %ld", cache_manager_stats(mgr).swaps);
         std::printf("\n");
     }
     cudaProfilerStop();
     if (!reference)
-        std::printf("expert cache hit rate %.2f%% (%ld hits, %ld misses)\n", 100.0 * host.hits / std::max(1L, host.hits + host.misses),
-                    host.hits, host.misses);
+        std::printf("expert cache hit rate %.2f%% (%ld hits, %ld misses: %ld on the CPU, %ld read over PCIe)\n",
+                    100.0 * host.hits / std::max(1L, host.hits + host.misses + host.gpu_misses), host.hits,
+                    host.misses + host.gpu_misses, host.misses, host.gpu_misses);
     if (!reference)
         std::printf("host per token: %.2f ms waiting for routing, %.2f ms running misses\n", 1e3 * host.wait_s / (gen * windows),
                     1e3 * host.cpu_s / (gen * windows));

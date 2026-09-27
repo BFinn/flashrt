@@ -48,18 +48,28 @@ struct MoeFastHost {
     size_t mbox_stride = 0;
     uint32_t seq = 0;                 // token sequence number, the flag value for this token
     struct MissServer* server = nullptr;
+    // PCIe misses (enable_pcie_misses): the GPU reads some misses straight from the mapped arena
+    const uint8_t* arena_dev = nullptr;
+    size_t arena_stride = 0;
+    float pcie_frac = 0.0f;
+    int pcie_max = 0;
     // the experts each layer selected for the last token, [n_layer][top_k] (for cache policy
     // and traces); complete once forward() returns
     std::vector<int32_t> access;
     std::vector<int32_t> access_prev;   // the previous token's (ForwardRef copies it at token end)
     // statistics
-    long hits = 0, misses = 0;
+    long hits = 0, misses = 0, gpu_misses = 0;   // misses: CPU-served; gpu_misses: read over PCIe
     double wait_s = 0, cpu_s = 0;     // host time waiting for the routing, and running the misses
     double cpu_by_nm[17] = {};        // miss time by the layer's miss count
     long layers_by_nm[17] = {};
 };
 MoeFastHost alloc_moe_fast_host(const Spec& s);
 void free_moe_fast_host(MoeFastHost& h);   // also stops the miss server
+
+// Lets the GPU serve floor(misses * frac) (at most max_per_layer) of each layer's misses by
+// reading the experts straight from the arena in host memory (registered and mapped here), in
+// parallel with the CPU serving the rest.
+void enable_pcie_misses(MoeFastHost& h, const ExpertArena& arena, float frac, int max_per_layer);
 
 // Switches h to doorbell mode: allocates the mailboxes and starts the miss server pinned to
 // `cpu` (the pool's caller CPU; the pool must not be used by another thread meanwhile).
@@ -96,13 +106,14 @@ struct CacheStats {
 };
 CacheStats cache_manager_stats(const CacheManager* m);
 
-// The cache-hit experts of one token: yh[k] [n] = down_k(silu(gate_k x) * up_k x) for
-// k < *hit_n (device int), expert k in slot hit_slot[k]; rows k >= *hit_n are not written.
-// x [n] float; activations are quantized to int8 per 64 values inside. scratch holds
-// moe_hits_scratch_bytes(K, ff) bytes. Needs n % 512 == 0, ff % 64 == 0, ff <= 4096.
+// The GPU experts of one token: yh[k] [n] = down_k(silu(gate_k x) * up_k x) for k < *hit_n
+// (device int), expert k's planar blob at hit_ptr[k] (device array; a cache slot or mapped host
+// memory); rows k >= *hit_n are not written. x [n] float; activations are quantized to int8
+// per 64 values inside. scratch holds moe_hits_scratch_bytes(K, ff) bytes. Needs n % 512 == 0,
+// ff % 64 == 0, ff <= 4096.
 size_t moe_hits_scratch_bytes(int K, int ff);
-void moe_hits(const uint8_t* slots, size_t slot_bytes, const int32_t* hit_slot, const int32_t* hit_n, int K, const float* x, int n,
-              int ff, void* scratch, float* yh, cudaStream_t stream);
+void moe_hits(const uint8_t* const* hit_ptr, const int32_t* hit_n, int K, const float* x, int n, int ff, void* scratch, float* yh,
+              cudaStream_t stream);
 
 // One token: out [d_model] = routed experts (hits on the GPU, misses on the CPU) + gated shared
 // expert. Same math as moe_block.

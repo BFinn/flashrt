@@ -3,6 +3,7 @@
 // file (the P1 correctness gate), on the same tokens and chunks.
 //
 //   fr_kld MODEL.gguf BASE.bin [--ctx N] [--chunks K] [--batch B] [--fast] [--reserve-mib R] [--static-cache]
+//          [--pcie-frac F]
 //
 // The base file holds: the magic "_logits_", int32 ctx, int32 n_vocab, int32 n_chunk, the
 // tokens of all chunks (n_chunk * ctx int32), then for every chunk the scored positions ctx/2 .. ctx-2, each as a float scale and a
@@ -45,6 +46,7 @@ int main(int argc, char** argv) {
     }
     int ctx = 0, chunks = 0, batch = 64, reserve_mib = 1024;
     bool fast = false, adaptive = true;
+    float pcie_frac = 0.5f;
     for (int i = 3; i < argc; ++i) {
         auto next = [&]() -> const char* { return i + 1 < argc ? argv[++i] : "0"; };
         if (!std::strcmp(argv[i], "--ctx")) ctx = std::atoi(next());
@@ -53,6 +55,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--fast")) fast = true;
         else if (!std::strcmp(argv[i], "--reserve-mib")) reserve_mib = std::atoi(next());
         else if (!std::strcmp(argv[i], "--static-cache")) adaptive = false;
+        else if (!std::strcmp(argv[i], "--pcie-frac")) pcie_frac = float(std::atof(next()));
         else { std::fprintf(stderr, "unknown argument %s\n", argv[i]); return 2; }
     }
 
@@ -128,6 +131,7 @@ int main(int argc, char** argv) {
                 start_doorbell(s, host, cpus[0]);
                 pin_current_thread(cpus[8 % cpus.size()]);
                 pool.set_spin_us(2000);
+                if (pcie_frac > 0) enable_pcie_misses(host, arena, pcie_frac, 4);
                 fwd.set_fast_moe(&cache, &host);
                 if (adaptive) {
                     mgr = create_cache_manager(s, cache, arena, CachePolicyConfig{}, fwd.counts());
@@ -199,7 +203,8 @@ int main(int argc, char** argv) {
                 sorted.empty() ? 0.0 : sorted.back());
     std::printf("  same top token %.3f%%\n", 100.0 * same_top / std::max(1L, count));
     if (fast) {
-        std::printf("  fast path: expert cache hit rate %.2f%%", 100.0 * host.hits / std::max(1L, host.hits + host.misses));
+        std::printf("  fast path: expert cache hit rate %.2f%%, %ld misses read over PCIe", 100.0 * host.hits /
+                    std::max(1L, host.hits + host.misses + host.gpu_misses), host.gpu_misses);
         if (mgr) std::printf(", %ld swaps", cache_manager_stats(mgr).swaps);
         std::printf("\n");
         fwd.set_cache_manager(nullptr);

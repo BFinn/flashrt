@@ -26,7 +26,8 @@ namespace {
 
 constexpr int kMaxK = 16;   // top-k upper bound for the fixed launch shapes
 constexpr int kRouteSel = 2 + 2 * kMaxK;   // route record: offset of the selected experts
-constexpr int kRouteInts = kRouteSel + kMaxK;
+constexpr int kRouteGpu = kRouteSel + kMaxK;   // route record: misses the GPU reads from host memory
+constexpr int kRouteInts = kRouteGpu + 1;
 
 // mailbox layout (one per layer, doorbell mode)
 constexpr size_t kMbRouted = 0;     // uint32, GPU -> host: routing and x are in place for token seq
@@ -110,11 +111,12 @@ __device__ __forceinline__ int dot_block64(uint4 c, const uint32_t* xw, int ld, 
     return acc;
 }
 
-// Gate and up of cache-hit expert k (blockIdx.y < *hit_n) for 64 rows (blockIdx.x), SwiGLU, and
+// Gate and up of GPU expert k (blockIdx.y < *hit_n; weights at hit_ptr[k], a cache slot or
+// mapped host memory) for 64 rows (blockIdx.x), SwiGLU, and
 // the hidden block quantized for the down kernel: hq words [k][16][ff/64], hscale/hsum [k][ff/64].
 // 512 threads: 16 warps x 4 rows, 8 lanes per row. Needs n % 512 == 0 and ff % 64 == 0.
-__global__ void k_moe_gate_up(const uint8_t* slots, size_t slot_bytes, const int32_t* hit_slot, const int32_t* hit_n,
-                              const float* x, int n, int ff, uint32_t* hq, float* hscale, int32_t* hsum) {
+__global__ void k_moe_gate_up(const uint8_t* const* hit_ptr, const int32_t* hit_n, const float* x, int n, int ff, uint32_t* hq,
+                              float* hscale, int32_t* hsum) {
     const int k = blockIdx.y;
     if (k >= *hit_n) return;
     extern __shared__ __align__(16) uint32_t xw[];   // [16][nb] words, then scale [nb], sum [nb]
@@ -126,7 +128,7 @@ __global__ void k_moe_gate_up(const uint8_t* slots, size_t slot_bytes, const int
         quant_block64(x[b * kQB + lane], x[b * kQB + 32 + lane], reinterpret_cast<int8_t*>(xw), nb, b, xscale + b, xsum + b);
     __syncthreads();
     const int rsub = lane >> 3, l8 = lane & 7, rl = warp * 4 + rsub, r = blockIdx.x * kQB + rl;
-    const uint8_t* base = slots + size_t(hit_slot[k]) * slot_bytes;
+    const uint8_t* base = hit_ptr[k];
     const size_t mb = size_t(ff) * nb * 18;   // one gate/up matrix
     const uint4* cg = reinterpret_cast<const uint4*>(base) + size_t(r) * nb;
     const __half* sg = reinterpret_cast<const __half*>(base + size_t(ff) * nb * 16) + size_t(r) * nb;
@@ -155,8 +157,8 @@ __global__ void k_moe_gate_up(const uint8_t* slots, size_t slot_bytes, const int
 
 // Down of cache-hit expert k for 128 rows: yh[k][r]. 512 threads: 16 warps x 8 rows, 4 lanes
 // per row. Needs n % 128 == 0, ff % 64 == 0, ff / 64 <= 64.
-__global__ void k_moe_down(const uint8_t* slots, size_t slot_bytes, const int32_t* hit_slot, const int32_t* hit_n,
-                           const uint32_t* hq, const float* hscale, const int32_t* hsum, float* yh, int n, int ff) {
+__global__ void k_moe_down(const uint8_t* const* hit_ptr, const int32_t* hit_n, const uint32_t* hq, const float* hscale,
+                           const int32_t* hsum, float* yh, int n, int ff) {
     const int k = blockIdx.y;
     if (k >= *hit_n) return;
     __shared__ uint32_t hw[16 * 64];
@@ -171,7 +173,7 @@ __global__ void k_moe_down(const uint8_t* slots, size_t slot_bytes, const int32_
     __syncthreads();
     const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, l4 = lane & 3;
     const int r = blockIdx.x * 128 + warp * 8 + (lane >> 2);
-    const uint8_t* base = slots + size_t(hit_slot[k]) * slot_bytes + 2 * size_t(ff) * (n / kQB) * 18;
+    const uint8_t* base = hit_ptr[k] + 2 * size_t(ff) * (n / kQB) * 18;
     const uint4* cd = reinterpret_cast<const uint4*>(base) + size_t(r) * nbh;
     const __half* sd = reinterpret_cast<const __half*>(base + size_t(n) * nbh * 16) + size_t(r) * nbh;
     float acc = 0.0f;
@@ -188,8 +190,13 @@ __global__ void k_moe_down(const uint8_t* slots, size_t slot_bytes, const int32_
 // then (at kRouteSel) all k selected experts in rank order].
 // Doorbell mode (mb != nullptr): the record goes to the mailbox instead, followed by x [n], and
 // then the routed flag is raised to seq.
-__global__ void k_route(const float* logits, const int32_t* table, int E, int K, int32_t* hit_slot, float* hit_w,
-                        int32_t* hit_n, int32_t* route_dev, const float* x, int n, uint8_t* mb, uint32_t seq) {
+// GPU experts: hits point at their cache slot (slots + slot * slot_bytes); with arena_dev set,
+// floor(misses * pcie_frac) (at most pcie_max) of the misses point at their blob in mapped host
+// memory and are read over PCIe by the hit kernels, and only the rest go to the CPU.
+__global__ void k_route(const float* logits, const int32_t* table, int E, int K, const uint8_t* slots, size_t slot_bytes,
+                        const uint8_t** hit_ptr, float* hit_w, int32_t* hit_n, const uint8_t* arena_dev, size_t arena_stride,
+                        int layer, float pcie_frac, int pcie_max, int32_t* route_dev, const float* x, int n, uint8_t* mb,
+                        uint32_t seq) {
     if (mb) route_dev = reinterpret_cast<int32_t*>(mb + kMbRoute);
     __shared__ float p[1024];
     __shared__ float red_v[32];
@@ -275,30 +282,37 @@ __global__ void k_route(const float* logits, const int32_t* table, int E, int K,
         float ws = 0.0f;
         for (int k = 0; k < K; ++k) ws += selp[k];
         ws = fmaxf(ws, 6.103515625e-5f);
-        int nh = 0, nm = 0;
-        int pad = 0;
+        int misses = 0;
+        for (int k = 0; k < K; ++k) misses += sel_slot[k] < 0;
+        const int n_gpu = arena_dev ? min(pcie_max, int(float(misses) * pcie_frac)) : 0;
+        int nh = 0, ng = 0, nm = 0;
+        const uint8_t* pad = slots;
         for (int k = 0; k < K; ++k) {
             const int slot = sel_slot[k];
             const float w = selp[k] / ws;
             if (slot >= 0) {
-                hit_slot[nh] = slot;
-                hit_w[nh] = w;
-                pad = slot;
+                hit_ptr[nh + ng] = pad = slots + size_t(slot) * slot_bytes;
+                hit_w[nh + ng] = w;
                 ++nh;
+            } else if (ng < n_gpu) {
+                hit_ptr[nh + ng] = pad = arena_dev + (size_t(layer) * E + sel[k]) * arena_stride;
+                hit_w[nh + ng] = w;
+                ++ng;
             } else {
                 route_dev[2 + nm] = sel[k];
                 reinterpret_cast<float*>(route_dev)[2 + K + nm] = w;
                 ++nm;
             }
         }
-        for (int k = nh; k < K; ++k) {
-            hit_slot[k] = pad;
+        for (int k = nh + ng; k < K; ++k) {
+            hit_ptr[k] = pad;
             hit_w[k] = 0.0f;
         }
         for (int k = 0; k < K; ++k) route_dev[kRouteSel + k] = sel[k];
         route_dev[0] = nh;
         route_dev[1] = nm;
-        *hit_n = nh;
+        route_dev[kRouteGpu] = ng;
+        *hit_n = nh + ng;
     }
     if (mb) {
         float* xh = reinterpret_cast<float*>(mb + kMbX);
@@ -358,16 +372,16 @@ __global__ void k_swiglu_1(float* g, const float* u, int n) {
 
 size_t moe_hits_scratch_bytes(int K, int ff) { return size_t(K) * (ff / kQB) * (8 + 64) + 256; }
 
-void moe_hits(const uint8_t* slots, size_t slot_bytes, const int32_t* hit_slot, const int32_t* hit_n, int K, const float* x, int n,
-              int ff, void* scratch, float* yh, cudaStream_t stream) {
+void moe_hits(const uint8_t* const* hit_ptr, const int32_t* hit_n, int K, const float* x, int n, int ff, void* scratch, float* yh,
+              cudaStream_t stream) {
     if (n % 512 || ff % kQB || ff / kQB > 64 || K > kMaxK) throw std::runtime_error("moe_hits: unsupported expert shape");
     const int nbh = ff / kQB;
     float* hscale = static_cast<float*>(scratch);                               // [K][ff/64]
     int32_t* hsum = reinterpret_cast<int32_t*>(hscale + size_t(K) * nbh);       // [K][ff/64]
     uint32_t* hq = reinterpret_cast<uint32_t*>(hsum + size_t(K) * nbh);         // [K][16][ff/64]
     const size_t smem_gu = size_t(n / kQB) * (16 * 4 + 8);
-    k_moe_gate_up<<<dim3(ff / kQB, K), 512, smem_gu, stream>>>(slots, slot_bytes, hit_slot, hit_n, x, n, ff, hq, hscale, hsum);
-    k_moe_down<<<dim3(n / 128, K), 512, 0, stream>>>(slots, slot_bytes, hit_slot, hit_n, hq, hscale, hsum, yh, n, ff);
+    k_moe_gate_up<<<dim3(ff / kQB, K), 512, smem_gu, stream>>>(hit_ptr, hit_n, x, n, ff, hq, hscale, hsum);
+    k_moe_down<<<dim3(n / 128, K), 512, 0, stream>>>(hit_ptr, hit_n, hq, hscale, hsum, yh, n, ff);
     ck(cudaGetLastError(), "moe_hits");
 }
 
@@ -432,6 +446,25 @@ __global__ void k_table_update(int32_t* table, TableUpdates u) {
 }
 }  // namespace
 
+// Registers the arena with CUDA once (mapped), whoever asks first; returns its device address.
+const uint8_t* arena_register(const ExpertArena& arena) {
+    unsigned flags = 0;
+    if (cudaHostGetFlags(&flags, arena.buf.ptr) != cudaSuccess) {
+        cudaGetLastError();   // not registered yet
+        ck(cudaHostRegister(arena.buf.ptr, arena.total_bytes(), cudaHostRegisterMapped), "cudaHostRegister arena");
+    }
+    void* dev = nullptr;
+    ck(cudaHostGetDevicePointer(&dev, arena.buf.ptr, 0), "arena device pointer");
+    return static_cast<const uint8_t*>(dev);
+}
+
+void enable_pcie_misses(MoeFastHost& h, const ExpertArena& arena, float frac, int max_per_layer) {
+    h.arena_dev = arena_register(arena);
+    h.arena_stride = arena.stride;
+    h.pcie_frac = frac;
+    h.pcie_max = max_per_layer;
+}
+
 struct CacheManager {
     const Spec* s = nullptr;
     ExpertCache* cache = nullptr;
@@ -450,7 +483,6 @@ struct CacheManager {
     std::vector<Pending> pending;
     std::vector<cudaEvent_t> events_free;
     std::vector<char> is_pending;               // per key
-    bool registered = false;
     CacheStats stats;
 
     void bump(int key, float add) {
@@ -481,8 +513,7 @@ CacheManager* create_cache_manager(const Spec& s, ExpertCache& cache, const Expe
     m->is_pending.assign(n, 0);
     for (size_t key = 0; key < n; ++key)
         if (cache.table[key] >= 0) m->resident.insert({m->count[key], int(key)});
-    ck(cudaHostRegister(arena.buf.ptr, arena.total_bytes(), cudaHostRegisterDefault), "cudaHostRegister arena");
-    m->registered = true;
+    arena_register(arena);
     ck(cudaStreamCreateWithFlags(&m->copy, cudaStreamNonBlocking), "cudaStreamCreate copy");
     ck(cudaEventCreateWithFlags(&m->tok_done, cudaEventDisableTiming), "cudaEventCreate");
     for (int i = 0; i < cfg.budget; ++i) {
@@ -500,7 +531,6 @@ void destroy_cache_manager(CacheManager* m) {
     for (cudaEvent_t ev : m->events_free) cudaEventDestroy(ev);
     if (m->tok_done) cudaEventDestroy(m->tok_done);
     if (m->copy) cudaStreamDestroy(m->copy);
-    if (m->registered) cudaHostUnregister(m->arena->buf.ptr);
     delete m;
 }
 
@@ -633,6 +663,7 @@ struct MissServer {
                 cur_phase.store(2, std::memory_order_relaxed);
                 const int32_t* route = reinterpret_cast<const int32_t*>(mb + kMbRoute);
                 const int nh = route[0], nm = route[1];
+                h->gpu_misses += route[kRouteGpu];
                 for (int k = 0; k < K; ++k) h->access[size_t(il) * K + k] = route[kRouteSel + k];
                 float* out = reinterpret_cast<float*>(mb + out_off);
                 if (nm > 0) {
@@ -725,8 +756,9 @@ void moe_block_fast(const BlockCtx& c, int il, const float* x, const ExpertCache
     float* yh = gate + 4;                          // [K][n]
     float* cpu_dev = yh + size_t(K) * n;           // [n]
     float* hit_w = cpu_dev + n;                    // [K]
-    int32_t* hit_slot = reinterpret_cast<int32_t*>(hit_w + kMaxK);     // [K]
-    int32_t* route_dev = hit_slot + kMaxK;                              // [kRouteInts]
+    const uint8_t** hit_ptr = reinterpret_cast<const uint8_t**>(hit_w + kMaxK);   // [K] (8-byte aligned: n, K even)
+    int32_t* route_dev = reinterpret_cast<int32_t*>(hit_ptr + kMaxK);             // [kRouteInts]
+    if (reinterpret_cast<uintptr_t>(hit_ptr) % 8) throw std::runtime_error("moe_block_fast: misaligned scratch");
     int32_t* hit_n = route_dev + kRouteInts;                            // [1] (padded to 4)
     float* hits_scratch = reinterpret_cast<float*>(hit_n + 4);          // moe_hits_scratch_bytes
     if (size_t(hits_scratch - c.scratch.f32) * 4 + moe_hits_scratch_bytes(K, ff) > c.scratch.f32_elems * 4)
@@ -735,7 +767,8 @@ void moe_block_fast(const BlockCtx& c, int il, const float* x, const ExpertCache
     // 1. routing, and the input for the CPU
     linear(c, c.w.layer(il, "ffn_gate_inp.weight"), x, logits, 1);
     uint8_t* mb = h.doorbell ? h.mbox_dev + size_t(il) * h.mbox_stride : nullptr;
-    k_route<<<1, ((E + 31) / 32) * 32, 0, c.stream>>>(logits, cache.table_dev + size_t(il) * E, E, K, hit_slot, hit_w, hit_n,
+    k_route<<<1, ((E + 31) / 32) * 32, 0, c.stream>>>(logits, cache.table_dev + size_t(il) * E, E, K, cache.slots, cache.slot_bytes,
+                                                     hit_ptr, hit_w, hit_n, h.arena_dev, h.arena_stride, il, h.pcie_frac, h.pcie_max,
                                                      route_dev, x, n, mb, h.seq);
     if (!h.doorbell) {
         ck(cudaMemcpyAsync(h.route_host, route_dev, size_t(kRouteInts) * 4, cudaMemcpyDeviceToHost, c.stream), "route to host");
@@ -744,7 +777,7 @@ void moe_block_fast(const BlockCtx& c, int il, const float* x, const ExpertCache
     }
 
     // 2. GPU: cache hits (fused gate+up, then down) and the shared expert
-    moe_hits(cache.slots, cache.slot_bytes, hit_slot, hit_n, K, x, n, ff, hits_scratch, yh, c.stream);
+    moe_hits(hit_ptr, hit_n, K, x, n, ff, hits_scratch, yh, c.stream);
     linear(c, c.w.layer(il, "ffn_gate_shexp.weight"), x, sg, 1);
     linear(c, c.w.layer(il, "ffn_up_shexp.weight"), x, su, 1);
     k_swiglu_1<<<(ffs + 255) / 256, 256, 0, c.stream>>>(sg, su, ffs);
@@ -762,6 +795,7 @@ void moe_block_fast(const BlockCtx& c, int il, const float* x, const ExpertCache
     ck(cudaEventSynchronize(h.routed), "wait routing");
     const auto t1 = std::chrono::steady_clock::now();
     const int nh = h.route_host[0], nm = h.route_host[1];
+    h.gpu_misses += h.route_host[kRouteGpu];
     for (int k = 0; k < K; ++k) h.access[size_t(il) * K + k] = h.route_host[kRouteSel + k];
     h.hits += nh;
     h.misses += nm;

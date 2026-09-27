@@ -67,7 +67,8 @@ int main() {
 
     uint8_t* d_slots;
     float *d_x, *d_yh;
-    int32_t *d_slot, *d_n;
+    const uint8_t** d_ptr;
+    int32_t* d_n;
     void* d_scr;
     CK(cudaMalloc(&d_slots, host.size()));
     CK(cudaMemcpy(d_slots, host.data(), host.size(), cudaMemcpyHostToDevice));
@@ -75,12 +76,14 @@ int main() {
     CK(cudaMemcpy(d_x, x.data(), n * 4, cudaMemcpyHostToDevice));
     CK(cudaMalloc(&d_yh, size_t(K) * n * 4));
     CK(cudaMemset(d_yh, 0xff, size_t(K) * n * 4));   // NaN: rows that must not be written stay NaN
-    CK(cudaMalloc(&d_slot, K * 4));
-    CK(cudaMemcpy(d_slot, slot_of, K * 4, cudaMemcpyHostToDevice));
+    std::vector<const uint8_t*> ptrs(K);
+    for (int k = 0; k < K; ++k) ptrs[k] = d_slots + eb * slot_of[k];
+    CK(cudaMalloc(&d_ptr, K * sizeof(void*)));
+    CK(cudaMemcpy(d_ptr, ptrs.data(), K * sizeof(void*), cudaMemcpyHostToDevice));
     CK(cudaMalloc(&d_n, 4));
     CK(cudaMemcpy(d_n, &hit_n, 4, cudaMemcpyHostToDevice));
     CK(cudaMalloc(&d_scr, qwen4exp::moe_hits_scratch_bytes(K, ff)));
-    qwen4exp::moe_hits(d_slots, eb, d_slot, d_n, K, d_x, n, ff, d_scr, d_yh, nullptr);
+    qwen4exp::moe_hits(d_ptr, d_n, K, d_x, n, ff, d_scr, d_yh, nullptr);
     CK(cudaDeviceSynchronize());
     std::vector<float> yh(size_t(K) * n);
     CK(cudaMemcpy(yh.data(), d_yh, yh.size() * 4, cudaMemcpyDeviceToHost));
