@@ -1,4 +1,6 @@
 #!/bin/bash
+# HISTORICAL (window A, 2026-09-27). Do not rerun as is: it restarts flashnext-262k-server on
+# exit, and no live service should run now. New windows source bench/p0/lib.sh instead.
 # P0 window A on the target box: bandwidth probes, routing traces, llama.cpp prefill ubatch
 # sweep. Stops the live server for the duration and restarts it on exit.
 #

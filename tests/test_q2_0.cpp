@@ -96,19 +96,21 @@ int main() {
         for (int nt = 1; nt <= 4; ++nt) {
             std::fill(ya.begin(), ya.end(), 0.0f);
             matvec_avx512(w, av.data(), nt, 0, rows, ya.data(), rows);
-            double worst = 0;
+            // max abs error over the RMS of the outputs: robust to outputs near zero
+            double worst = 0, ss = 0;
             for (int t = 0; t < nt; ++t)
                 for (int r = 0; r < rows; ++r) {
-                    const double ref = yr[t * rows + r];
-                    worst = std::max(worst, std::fabs(ya[t * rows + r] - ref) / (std::fabs(ref) + 1e-3));
+                    ss += double(yr[t * rows + r]) * yr[t * rows + r];
+                    worst = std::max(worst, double(std::fabs(ya[t * rows + r] - yr[t * rows + r])));
                 }
-            std::snprintf(name, sizeof name, "avx512 vs ref, %dx%d, %d tok (max rel err)", rows, cols, nt);
-            check(worst < 1e-4, name, worst);
+            worst /= std::sqrt(ss / (nt * rows));
+            std::snprintf(name, sizeof name, "avx512 vs ref, %dx%d, %d tok (max err / rms)", rows, cols, nt);
+            check(worst < 1e-5, name, worst);
         }
         // a row sub-range must touch only its rows
         std::vector<float> ys(rows, -7.0f);
         matvec_avx512(w, av.data(), 1, 10, 20, ys.data(), rows);
-        bool clean = ys[9] == -7.0f && ys[20] == -7.0f && std::fabs(ys[15] - yr[15]) <= 1e-4 * (std::fabs(yr[15]) + 1e-3);
+        bool clean = ys[9] == -7.0f && ys[20] == -7.0f && std::fabs(ys[15] - yr[15]) <= 1e-4 * (std::fabs(yr[15]) + 1e-2);
         std::snprintf(name, sizeof name, "avx512 row range [10,20) of %dx%d", rows, cols);
         check(clean, name, 0);
     }
