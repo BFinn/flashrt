@@ -279,6 +279,87 @@ by the background estimate).
 
 Validation for steps 3-4 before any kernel work: the Q4_0 carrier GGUF in llama.cpp.
 
+## Search harness
+
+With 48 × 512 × 3 = 73,728 expert matrices, the space cannot be tested as a grid (3^73,728
+combinations with three formats). It splits into three layers:
+
+1. **A per-matrix cost table.** For each matrix and format: routing mass × imatrix-weighted
+   quantization error. This is a first-order additive proxy for the loss.
+2. **A knapsack solver.** It turns the cost table, a byte budget and a few policy knobs
+   into a full per-expert allocation, in seconds.
+3. **A Bayesian search** (Optuna: multi-objective TPE with a constraint function, or
+   NSGA-II) over about 10-15 knobs. It corrects the proxy with measured quality. The knobs:
+   - routing-mass exponent;
+   - down vs gate/up weight;
+   - early-layer and late-layer multipliers;
+   - imatrix power;
+   - cold-tier cutoff;
+   - weights for the calibration mix. Routing counts are collected once per domain
+     (general, code, multilingual, vision) and then mixed for free.
+
+**Objectives:**
+- **Quality:** KLD against the reference on a fixed token set, plus top-1 agreement and the
+  router's top-10 overlap. Routing drift is where the additive proxy breaks.
+- **Speed:** predicted, not measured. Replay the recorded routing traces through
+  `tools/cache_sim.py` with per-expert blob sizes (it needs variable-size slots added).
+- **Hold-out:** a second KLD token set. The final 2-3 Pareto points also get task evals
+  (LCB and GPQA subsets).
+
+**The carrier trick.**
+- Ternary `{-1,0,+1}·d` is a subset of Q2_0's grid, and 8-bit block scales are exact in
+  fp16.
+- So any mix of Q2_0, ternary and fp8-scaled Q2_0 is an ordinary Q2_0 GGUF with the same
+  layout and size. Existing kernels in llama.cpp or flashrt run it at full speed.
+- A trial is a copy of the current shard 1 with the selected experts' bytes overwritten in
+  place at known offsets. Shard 2 is a symlink; it is identical across builds.
+- A 3-bit hot tier would break this, so it waits for native flashrt formats.
+
+**Where each part runs [E for all timings]:**
+
+| Stage | Where | Disk | Time |
+|---|---|---|---|
+| Ternary database from BF16 | See below | output only, about 28 GB | hours (241 GB read) |
+| Q2_0 database | none: reuse ISTA's GSQ codes, already on the box | 0 | 0 |
+| Calibration (per-domain routing counts, per-expert imatrix) | the box, one window | a few GB | about 1-2 h |
+| Reference logits (IQ3_S build, about 16K tokens) | the box, or an HF Job with 100+ GB RAM | about 8 GB kept; 55 GB temporary for IQ3_S shard 1 | about 1 h |
+| Trials | the box, overnight | one 37.6 GB trial shard, reused | about 3-4 min per trial, 100-150 trials |
+| Speed validation of Pareto points | the box only; the box profile matters | none | about 30 min per point |
+
+**Disk on the box** (149 GB free on 2026-09-27):
+- Steady state is about 74 GB: the database, the trial shard and the logits.
+- The peak is about 129 GB, while the IQ3_S reference exists. Delete it once the logits are
+  written, or compute the logits elsewhere.
+- The external drive at `$EXT` is a fallback; its free space is
+  unchecked.
+
+**Building the ternary database without local disk.**
+- The BF16 checkpoint (131 shards, 360 GB) stores experts fused per layer:
+  `mlp.experts.gate_up_proj` and `mlp.experts.down_proj`, 96 tensors in 97 shards.
+- Safetensors headers give byte offsets, and the Hub serves HTTP ranges. So the quantizer
+  can stream one expert slice at a time and write only its output.
+- The 102 GB PLE table and the dense tensors are never read.
+- **Options, by where the network is fastest:**
+  - **A Hugging Face Job**, "CPU XL" (16 vCPU, 124 GB RAM, 1 TB disk, $1.00/h), next to
+    the Hub. It uploads the database to a private repo. It needs a positive credit
+    balance, and the default timeout is 30 min, so set a longer one.
+  - **This Mac:** 403 GB free, but an M1 with 16 GB. Stream-quantize, then scp the result.
+  - **the box**, if it can reach the Hub. That is unverified; it cannot reach GitHub.
+
+**What exists vs what must be written:**
+
+| Piece | Exists? |
+|---|---|
+| Streaming tensor reads from the Hub | yes: HTTP range requests, `huggingface_hub` HfFileSystem |
+| Compute next to the Hub | yes: HF Jobs |
+| Per-expert imatrix | yes: `llama-imatrix` keeps per-expert entries for `_exps` |
+| KLD and top-1 agreement | yes: `llama-perplexity --kl-divergence-base / --kl-divergence` |
+| Bayesian and multi-objective search | yes: Optuna |
+| Budget-exact allocation with per-expert groups | partly: RCO (Apache-2.0) needs the full model and GPUs; our Lagrangian greedy is about 100 lines |
+| Weighted scale search for a 64-block ternary | partly: ggml's weighted `make_qx_quants`-style search (MIT) can be adapted; the stock TQ1_0 and Q2_0 quantizers ignore the imatrix |
+| Ternary quantizer, database format, in-place trial assembler, variable-size `cache_sim` | no: ours to write |
+| An end-to-end per-expert mixed-quant search service | none found |
+
 ## Open questions
 
 - **Global routing skew over a diverse corpus.** This decides how much frequency-aware
