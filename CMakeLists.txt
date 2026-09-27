@@ -120,7 +120,7 @@ if(FLASHRT_CUDA)
   add_library(flashrt_qwen4exp_gpu STATIC arch/qwen4exp/gpu_weights.cu)
   target_link_libraries(flashrt_qwen4exp_gpu PUBLIC flashrt_qwen4exp flashrt_gemv)
   add_executable(fr_gpu_load tools/fr_gpu_load.cpp)
-  target_link_libraries(fr_gpu_load PRIVATE flashrt_qwen4exp_gpu flashrt_ggml_stubs)
+  target_link_libraries(fr_gpu_load PRIVATE flashrt_qwen4exp_gpu flashrt_gemv flashrt_ggml_stubs)   # stubs last
 
   add_executable(bench_gemv tools/bench_gemv.cpp)
   target_link_libraries(bench_gemv PRIVATE flashrt_gemv flashrt_ggml_stubs)
