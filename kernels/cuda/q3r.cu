@@ -10,14 +10,15 @@ namespace flashrt::q3r {
 
 namespace {
 
-constexpr int kQK = 256;
+constexpr int kQK = 256;           // Q3_K super-block
 constexpr int kBlockBytes = 110;   // hmask[32] qs[64] scales[12] d (fp16)
+constexpr int kTok = 8;            // tokens per pass of the mat-vec
 
 size_t up256(size_t x) { return (x + 255) & ~size_t(255); }
 
 struct Planes {
-    uint32_t* low;
-    uint16_t* high;
+    uint8_t* lo;
+    uint8_t* hi;
     int8_t* sc;
     __half* d;
 };
@@ -25,9 +26,9 @@ struct Planes {
 __host__ __device__ inline Planes planes(void* base, int64_t rows, int64_t K) {
     uint8_t* p = static_cast<uint8_t*>(base);
     Planes q;
-    q.low = reinterpret_cast<uint32_t*>(p);
+    q.lo = p;
     p += (size_t(rows) * K / 4 + 255) & ~size_t(255);
-    q.high = reinterpret_cast<uint16_t*>(p);
+    q.hi = p;
     p += (size_t(rows) * K / 8 + 255) & ~size_t(255);
     q.sc = reinterpret_cast<int8_t*>(p);
     p += (size_t(rows) * K / 16 + 255) & ~size_t(255);
@@ -35,174 +36,137 @@ __host__ __device__ inline Planes planes(void* base, int64_t rows, int64_t K) {
     return q;
 }
 
-// one thread per 16-element group (group gi of super-block sb of row r)
-__global__ void k_repack(const uint8_t* src, Planes q, int64_t rows, int64_t K) {
-    const int64_t g = int64_t(blockIdx.x) * blockDim.x + threadIdx.x;   // global group
-    const int64_t groups_per_row = K / 16;
-    if (g >= rows * groups_per_row) return;
-    const int64_t r = g / groups_per_row, gr = g % groups_per_row;
-    const int64_t sb = gr / 16;
-    const int gi = int(gr % 16);
-    const uint8_t* b = src + (r * (K / kQK) + sb) * kBlockBytes;
+// Q3_K element e (0..255) of a super-block: its 3-bit q and its group scale index
+__device__ inline int q3k_q(const uint8_t* b, int e) {
     const uint8_t* hmask = b;
     const uint8_t* qs = b + 32;
-    const uint8_t* scales = b + 96;
-    const int is = gi;   // the group's scale index (8n + 2j + l/16 == gi for e = 16 gi)
-    const int us = is < 4 ? (scales[is] & 0xF) | (((scales[is + 8] >> 0) & 3) << 4)
-                 : is < 8 ? (scales[is] & 0xF) | (((scales[is + 4] >> 2) & 3) << 4)
-                 : is < 12 ? (scales[is - 8] >> 4) | (((scales[is] >> 4) & 3) << 4)
-                           : (scales[is - 8] >> 4) | (((scales[is - 4] >> 6) & 3) << 4);
-    uint32_t low = 0;
-    uint32_t high = 0;
-    for (int i = 0; i < 16; ++i) {
-        const int e = 16 * gi + i, n = e / 128, j = (e % 128) / 32, l = e % 32;
-        low |= uint32_t((qs[32 * n + l] >> (2 * j)) & 3) << (2 * i);
-        high |= uint32_t((hmask[l] >> (4 * n + j)) & 1) << i;
-    }
-    q.low[g] = low;
-    q.high[g] = uint16_t(high);
-    q.sc[g] = int8_t(us - 32);
-    if (gi == 0) q.d[r * (K / kQK) + sb] = *reinterpret_cast<const __half*>(b + 108);
+    const int n = e / 128, j = (e % 128) / 32, l = e % 32;
+    return ((qs[32 * n + l] >> (2 * j)) & 3) | (((hmask[l] >> (4 * n + j)) & 1) << 2);
 }
 
-// 8 warps per block, one row per warp. Lane l takes groups l, l+32, ...; x sits in shared memory
-// transposed (xt[i][g] = x[16 g + i]) so a warp's reads are consecutive, with each group's sum.
-__global__ void k_matvec(Planes q, const float* x, float* y, int64_t rows, int64_t K) {
-    extern __shared__ __align__(16) float xt[];   // [16][K/16] then group sums [K/16]
-    const int64_t G = K / 16;
-    float* xsum = xt + K;
-    for (int64_t gidx = threadIdx.x; gidx < G; gidx += blockDim.x) {
-        float s = 0.0f;
-#pragma unroll
-        for (int i = 0; i < 16; ++i) {
-            const float v = x[16 * gidx + i];
-            xt[i * G + gidx] = v;
-            s += v;
+// one thread per 16 bytes of the lo plane (one 64-block) of one row
+__global__ void k_repack(const uint8_t* src, Planes q, int64_t rows, int64_t K) {
+    const int64_t nb = K / 64;
+    const int64_t g = int64_t(blockIdx.x) * blockDim.x + threadIdx.x;   // (row, 64-block)
+    if (g >= rows * nb) return;
+    const int64_t r = g / nb, b = g % nb;
+    const uint8_t* sb = src + (r * (K / kQK) + b / 4) * kBlockBytes;
+    const int e0 = int(b % 4) * 64;
+    uint8_t lo[16] = {}, hi[16] = {};
+    for (int j = 0; j < 64; ++j) {
+        const int q = q3k_q(sb, e0 + j);
+        lo[j % 16] |= uint8_t((q & 3) << (2 * (j / 16)));
+        hi[j % 16] |= uint8_t(((q >> 2) & 1) << ((b % 2) * 4 + j / 16));
+    }
+    uint8_t* dlo = q.lo + (r * nb + b) * 16;
+    for (int i = 0; i < 16; ++i) dlo[i] = lo[i];
+    // the hi plane is shared by the block pair: the odd block ORs into what the even one wrote
+    // would race, so the even block's thread writes both halves
+    if (b % 2 == 0) {
+        uint8_t hi2[16] = {};
+        if (b + 1 < nb) {
+            const uint8_t* sb2 = src + (r * (K / kQK) + (b + 1) / 4) * kBlockBytes;
+            const int e1 = int((b + 1) % 4) * 64;
+            for (int j = 0; j < 64; ++j) hi2[j % 16] |= uint8_t(((q3k_q(sb2, e1 + j) >> 2) & 1) << (4 + j / 16));
         }
-        xsum[gidx] = s;
+        uint8_t* dhi = q.hi + (r * (nb / 2) + b / 2) * 16;
+        for (int i = 0; i < 16; ++i) dhi[i] = hi[i] | hi2[i];
+    }
+    // scales of the block's 4 groups, and d once per super-block
+    const uint8_t* scales = sb + 96;
+    for (int gi = 0; gi < 4; ++gi) {
+        const int is = int(b % 4) * 4 + gi;
+        const int us = is < 4 ? (scales[is] & 0xF) | (((scales[is + 8] >> 0) & 3) << 4)
+                     : is < 8 ? (scales[is] & 0xF) | (((scales[is + 4] >> 2) & 3) << 4)
+                     : is < 12 ? (scales[is - 8] >> 4) | (((scales[is] >> 4) & 3) << 4)
+                               : (scales[is - 8] >> 4) | (((scales[is - 4] >> 6) & 3) << 4);
+        q.sc[r * (K / 16) + b * 4 + gi] = int8_t(us - 32);
+    }
+    if (b % 4 == 0) q.d[r * (K / kQK) + b / 4] = *reinterpret_cast<const __half*>(sb + 108);
+}
+
+// y[t][r] for ts (<= kTok) tokens at a time: 16 warps x 4 rows, 8 lanes per row (64 rows per block).
+// Activations of the pass's tokens are quantized per 64 values into shared memory, words in
+// "planar word order" (word 4p + ic holds elements 16p + 4ic .. +3) laid out [t][w][nb].
+__global__ void k_matvec(Planes q, const float* x, float* y, int64_t rows, int64_t K, int T, int ts) {
+    extern __shared__ __align__(16) uint32_t smem[];
+    const int nb = int(K / 64), nt = min(ts, T - int(blockIdx.y) * ts), t0 = blockIdx.y * ts;
+    uint32_t* xw = smem;                                             // [ts][16][nb]
+    float* xscale = reinterpret_cast<float*>(xw + ts * 16 * nb);     // [ts][nb]
+    int* xsum = reinterpret_cast<int*>(xscale + ts * nb);            // [ts][nb][4] (per 16-group)
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, nwarp = blockDim.x >> 5;
+    for (int item = warp; item < nt * nb; item += nwarp) {
+        const int t = item / nb, b = item % nb;
+        const float* xb = x + size_t(t0 + t) * K + size_t(b) * 64;
+        const float v0 = xb[lane], v1 = xb[lane + 32];
+        float am = fmaxf(fabsf(v0), fabsf(v1));
+        for (int o = 16; o > 0; o >>= 1) am = fmaxf(am, __shfl_xor_sync(0xffffffff, am, o));
+        const float inv = am > 0.0f ? 127.0f / am : 0.0f;
+        const int q0 = __float2int_rn(v0 * inv), q1 = __float2int_rn(v1 * inv);
+        int8_t* wb = reinterpret_cast<int8_t*>(xw + size_t(t) * 16 * nb);
+        const int j0 = lane, j1 = lane + 32;
+        wb[((j0 / 16 * 4 + (j0 % 16) / 4) * nb + b) * 4 + j0 % 4] = int8_t(q0);
+        wb[((j1 / 16 * 4 + (j1 % 16) / 4) * nb + b) * 4 + j1 % 4] = int8_t(q1);
+        // per 16-group sums: lanes 0-15 are group 0 (q0) / group 2 (q1), lanes 16-31 group 1 / 3
+        int s0 = q0, s1 = q1;
+        for (int o = 8; o > 0; o >>= 1) {
+            s0 += __shfl_xor_sync(0xffffffff, s0, o);
+            s1 += __shfl_xor_sync(0xffffffff, s1, o);
+        }
+        if (lane == 0) {
+            xscale[t * nb + b] = am / 127.0f;
+            xsum[(t * nb + b) * 4 + 0] = s0;
+            xsum[(t * nb + b) * 4 + 2] = s1;
+        }
+        if (lane == 16) {
+            xsum[(t * nb + b) * 4 + 1] = s0;
+            xsum[(t * nb + b) * 4 + 3] = s1;
+        }
     }
     __syncthreads();
-    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
-    const int64_t r = int64_t(blockIdx.x) * (blockDim.x >> 5) + warp;
+    const int rsub = lane >> 3, l8 = lane & 7;
+    const int64_t r = int64_t(blockIdx.x) * 64 + warp * 4 + rsub;
     if (r >= rows) return;
-    const uint32_t* low = q.low + r * G;
-    const uint16_t* high = q.high + r * G;
-    const int8_t* sc = q.sc + r * G;
+    const uint4* lo = reinterpret_cast<const uint4*>(q.lo) + r * nb;
+    const uint4* hi = reinterpret_cast<const uint4*>(q.hi) + r * (nb / 2);
+    const uint32_t* sc = reinterpret_cast<const uint32_t*>(q.sc + r * (K / 16));   // 4 group scales per 64-block
     const __half* d = q.d + r * (K / kQK);
-    float acc = 0.0f;
-#pragma unroll 4
-    for (int64_t gidx = lane; gidx < G; gidx += 32) {
-        const uint32_t lo = low[gidx];
-        const uint32_t hi = high[gidx];
-        float s = 0.0f;
+    float acc[kTok];
 #pragma unroll
-        for (int i = 0; i < 16; ++i) s += float(((lo >> (2 * i)) & 3) | (((hi >> i) & 1) << 2)) * xt[i * G + gidx];
-        acc += __half2float(d[gidx / 16]) * float(sc[gidx]) * (s - 4.0f * xsum[gidx]);
-    }
-    for (int o = 16; o > 0; o >>= 1) acc += __shfl_xor_sync(0xffffffff, acc, o);
-    if (lane == 0) y[r] = acc;
-}
-
-// v2: each lane takes 2 consecutive groups (8-byte low, 4-byte high, 2-byte scale loads) of
-// RPW rows (x reads shared across rows). Block of 8 warps = 8 * RPW rows. xt from shared memory
-// (built per block) or, with XG, from a global copy built once per call by k_prep.
-__global__ void k_prep(const float* x, float* xt, int64_t K) {
-    const int64_t G = K / 16;
-    for (int64_t gidx = int64_t(blockIdx.x) * blockDim.x + threadIdx.x; gidx < G; gidx += int64_t(gridDim.x) * blockDim.x) {
-        float s = 0.0f;
+    for (int t = 0; t < kTok; ++t) acc[t] = 0.0f;
+    for (int b = l8; b < nb; b += 8) {
+        const uint4 wl = lo[b], wh = hi[b / 2];
+        const uint32_t scw = sc[b];
+        const float db = __half2float(d[b / 4]);
+        const int hs = (b % 2) * 4;
+        const uint32_t lw[4] = {wl.x, wl.y, wl.z, wl.w}, hw[4] = {wh.x, wh.y, wh.z, wh.w};
+        uint32_t v[16];   // q of elements 16p + 4ic .. +3 as bytes, v[4p + ic]
 #pragma unroll
-        for (int i = 0; i < 16; ++i) {
-            const float v = x[16 * gidx + i];
-            xt[i * G + gidx] = v;
-            s += v;
-        }
-        xt[K + gidx] = s;
-    }
-}
-
-template <int RPW, bool XG>
-__global__ void k_matvec2(Planes q, const float* x, const float* xt_g, float* y, int64_t rows, int64_t K) {
-    extern __shared__ __align__(16) float xt_s[];
-    const int64_t G = K / 16;
-    const float* xt;
-    if (XG) {
-        xt = xt_g;
-    } else {
-        for (int64_t gidx = threadIdx.x; gidx < G; gidx += blockDim.x) {
-            float s = 0.0f;
+        for (int p = 0; p < 4; ++p)
 #pragma unroll
-            for (int i = 0; i < 16; ++i) {
-                const float v = x[16 * gidx + i];
-                xt_s[i * G + gidx] = v;
-                s += v;
+            for (int ic = 0; ic < 4; ++ic)
+                v[p * 4 + ic] = ((lw[ic] >> (2 * p)) & 0x03030303u) | (((hw[ic] >> (hs + p)) & 0x01010101u) << 2);
+        for (int t = 0; t < nt; ++t) {
+            const uint32_t* xt = xw + size_t(t) * 16 * nb;
+            const int* xs = xsum + (t * nb + b) * 4;
+            float blk = 0.0f;
+#pragma unroll
+            for (int p = 0; p < 4; ++p) {
+                int a = 0;
+#pragma unroll
+                for (int ic = 0; ic < 4; ++ic) a = __dp4a(int(v[p * 4 + ic]), int(xt[(p * 4 + ic) * nb + b]), a);
+                blk += float(int8_t(scw >> (8 * p))) * float(a - 4 * xs[p]);
             }
-            xt_s[K + gidx] = s;
+            acc[t] += db * xscale[t * nb + b] * blk;
         }
-        __syncthreads();
-        xt = xt_s;
-    }
-    const float* xsum = xt + K;
-    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
-    const int64_t r0 = (int64_t(blockIdx.x) * (blockDim.x >> 5) + warp) * RPW;
-    float acc[RPW];
-#pragma unroll
-    for (int k = 0; k < RPW; ++k) acc[k] = 0.0f;
-    for (int64_t g2 = 2 * lane; g2 < G; g2 += 64) {   // groups g2, g2 + 1 (G is even: K % 256 == 0)
-        uint2 lo[RPW];
-        uint32_t hi[RPW];
-        uint32_t scv[RPW];
-        float dv[RPW];
-#pragma unroll
-        for (int k = 0; k < RPW; ++k) {
-            const int64_t r = min(r0 + k, rows - 1);
-            lo[k] = *reinterpret_cast<const uint2*>(q.low + r * G + g2);
-            hi[k] = *reinterpret_cast<const uint32_t*>(q.high + r * G + g2);
-            scv[k] = *reinterpret_cast<const uint16_t*>(q.sc + r * G + g2);
-            dv[k] = __half2float(q.d[r * (K / kQK) + g2 / 16]);
-        }
-        float s0[RPW], s1[RPW];
-#pragma unroll
-        for (int k = 0; k < RPW; ++k) s0[k] = s1[k] = 0.0f;
-#pragma unroll
-        for (int i = 0; i < 16; ++i) {
-            const float2 xv = *reinterpret_cast<const float2*>(xt + i * G + g2);
-#pragma unroll
-            for (int k = 0; k < RPW; ++k) {
-                s0[k] += float(((lo[k].x >> (2 * i)) & 3) | (((hi[k] >> i) & 1) << 2)) * xv.x;
-                s1[k] += float(((lo[k].y >> (2 * i)) & 3) | (((hi[k] >> (16 + i)) & 1) << 2)) * xv.y;
-            }
-        }
-        const float xs0 = xsum[g2], xs1 = xsum[g2 + 1];
-#pragma unroll
-        for (int k = 0; k < RPW; ++k)
-            acc[k] += dv[k] * (float(int8_t(scv[k] & 0xff)) * (s0[k] - 4.0f * xs0) + float(int8_t(scv[k] >> 8)) * (s1[k] - 4.0f * xs1));
     }
 #pragma unroll
-    for (int k = 0; k < RPW; ++k) {
-        float a = acc[k];
-        for (int o = 16; o > 0; o >>= 1) a += __shfl_xor_sync(0xffffffff, a, o);
-        if (lane == 0 && r0 + k < rows) y[r0 + k] = a;
+    for (int t = 0; t < kTok; ++t) {
+        float a = acc[t];
+        for (int o = 4; o > 0; o >>= 1) a += __shfl_xor_sync(0xffffffff, a, o);
+        if (l8 == 0 && t < nt) y[size_t(t0 + t) * rows + r] = a;
     }
 }
-
-// read-only probe: the loads of k_matvec2<2> without the decode (bandwidth of the access pattern)
-__global__ void k_readonly(Planes q, float* y, int64_t rows, int64_t K) {
-    const int64_t G = K / 16;
-    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
-    const int64_t r0 = (int64_t(blockIdx.x) * (blockDim.x >> 5) + warp) * 2;
-    uint32_t acc = 0;
-    for (int64_t g2 = 2 * lane; g2 < G; g2 += 64)
-        for (int k = 0; k < 2; ++k) {
-            const int64_t r = min(r0 + k, rows - 1);
-            const uint2 lo = *reinterpret_cast<const uint2*>(q.low + r * G + g2);
-            acc ^= lo.x ^ lo.y ^ *reinterpret_cast<const uint32_t*>(q.high + r * G + g2) ^
-                   *reinterpret_cast<const uint16_t*>(q.sc + r * G + g2) ^ __half_as_ushort(q.d[r * (K / kQK) + g2 / 16]);
-        }
-    for (int o = 16; o > 0; o >>= 1) acc ^= __shfl_xor_sync(0xffffffff, acc, o);
-    if (lane == 0 && r0 < rows) y[r0] = float(acc);
-}
-
-float* g_xt = nullptr;   // k_prep's output, allocated on first use (K <= 11264)
 
 void ck(cudaError_t e, const char* what) {
     if (e != cudaSuccess) throw std::runtime_error(std::string("q3r ") + what + ": " + cudaGetErrorString(e));
@@ -217,33 +181,22 @@ size_t bytes(int64_t rows, int64_t K) {
 
 void repack(const void* q3k, void* q3r, int64_t rows, int64_t K, cudaStream_t stream) {
     if (K % kQK) throw std::runtime_error("q3r::repack: K must be a multiple of 256");
-    const int64_t groups = rows * K / 16;
-    k_repack<<<unsigned((groups + 255) / 256), 256, 0, stream>>>(static_cast<const uint8_t*>(q3k), planes(q3r, rows, K), rows, K);
+    const int64_t items = rows * (K / 64);
+    k_repack<<<unsigned((items + 127) / 128), 128, 0, stream>>>(static_cast<const uint8_t*>(q3k), planes(q3r, rows, K), rows, K);
     ck(cudaGetLastError(), "repack");
 }
 
-void matvec_variant(int v, const void* q3r, const float* x, float* y, int64_t rows, int64_t K, cudaStream_t stream) {
-    const Planes pl = planes(const_cast<void*>(q3r), rows, K);
-    const size_t smem = size_t(K + K / 16) * 4;
-    if (v == 1) {
-        k_matvec<<<unsigned((rows + 7) / 8), 256, smem, stream>>>(pl, x, y, rows, K);
-    } else if (v == 2) {
-        k_matvec2<2, false><<<unsigned((rows + 15) / 16), 256, smem, stream>>>(pl, x, nullptr, y, rows, K);
-    } else if (v == 3 || v == 4) {
-        if (!g_xt) ck(cudaMalloc(&g_xt, size_t(11264 + 11264 / 16) * 4), "cudaMalloc xt");
-        k_prep<<<unsigned((K / 16 + 127) / 128), 128, 0, stream>>>(x, g_xt, K);
-        if (v == 3) k_matvec2<2, true><<<unsigned((rows + 15) / 16), 256, 0, stream>>>(pl, x, g_xt, y, rows, K);
-        else k_matvec2<4, true><<<unsigned((rows + 31) / 32), 256, 0, stream>>>(pl, x, g_xt, y, rows, K);
-    } else if (v == 5) {
-        k_readonly<<<unsigned((rows + 15) / 16), 256, 0, stream>>>(pl, y, rows, K);
+void matvec(const void* q3r, const float* x, float* y, int64_t rows, int64_t K, int T, cudaStream_t stream) {
+    if (K % kQK || K > 8192 || T < 1) throw std::runtime_error("q3r::matvec: unsupported shape");
+    const int nb = int(K / 64), ts = T < kTok ? T : kTok;   // tokens per pass
+    const size_t smem = size_t(ts) * nb * (16 * 4 + 4 + 16);
+    static bool attr_set = false;
+    if (!attr_set) {
+        ck(cudaFuncSetAttribute(k_matvec, cudaFuncAttributeMaxDynamicSharedMemorySize, 96 * 1024), "smem attribute");
+        attr_set = true;
     }
-    ck(cudaGetLastError(), "matvec");
-}
-
-void matvec(const void* q3r, const float* x, float* y, int64_t rows, int64_t K, cudaStream_t stream) {
-    if (K % kQK || K > 11264) throw std::runtime_error("q3r::matvec: unsupported K");
-    const size_t smem = size_t(K + K / 16) * 4;
-    k_matvec<<<unsigned((rows + 7) / 8), 256, smem, stream>>>(planes(const_cast<void*>(q3r), rows, K), x, y, rows, K);
+    const dim3 grid(unsigned((rows + 63) / 64), unsigned((T + ts - 1) / ts));
+    k_matvec<<<grid, 512, smem, stream>>>(planes(const_cast<void*>(q3r), rows, K), x, y, rows, K, T, ts);
     ck(cudaGetLastError(), "matvec");
 }
 

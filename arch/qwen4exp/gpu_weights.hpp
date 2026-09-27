@@ -18,12 +18,14 @@ struct Gguf;
 
 namespace flashrt::qwen4exp {
 
+// A GpuTensor type outside ggml's ids: Q3_K converted to Q3R (kernels/cuda/q3r.h)
+constexpr uint32_t kTypeQ3R = 1000;
+
 struct GpuTensor {
     void* dev = nullptr;
     uint32_t type = 0;              // ggml type id
     std::vector<int64_t> dims;      // ggml order: dims[0] is the row length
     size_t bytes = 0;
-    void* q3r = nullptr;            // Q3_K only: the Q3R decode copy (kernels/cuda/q3r.h), or null
 
     int64_t cols() const { return dims.at(0); }
     int64_t rows() const {
@@ -40,22 +42,20 @@ public:
     GpuWeights(const GpuWeights&) = delete;
     GpuWeights& operator=(const GpuWeights&) = delete;
 
-    // Uploads all VramDense tensors of the plan. Throws on CUDA or I/O errors. q3r_copies adds
-    // a Q3R decode copy of each Q3_K matrix (off by default: the Q3R kernel is not yet faster
-    // than the VRAM it takes from the expert cache; bench/results/2026-09-27-sw10-q3r).
-    void load(const Gguf& g, const WeightPlan& plan, bool q3r_copies = false);
+    // Uploads all VramDense tensors of the plan. Throws on CUDA or I/O errors. With q3r, Q3_K
+    // matrices (not the token embedding) are converted in place to Q3R (type kTypeQ3R).
+    void load(const Gguf& g, const WeightPlan& plan, bool q3r = true);
 
     const GpuTensor& get(const std::string& name) const;         // throws if absent
     const GpuTensor* find(const std::string& name) const;        // nullptr if absent
     const GpuTensor& layer(int il, const std::string& suffix) const {   // "blk.<il>.<suffix>"
         return get("blk." + std::to_string(il) + "." + suffix);
     }
-    size_t device_bytes() const { return total_; }   // including the Q3R copies
+    size_t device_bytes() const { return total_; }
     double load_seconds() const { return seconds_; }
 
 private:
     void* base_ = nullptr;
-    void* q3r_base_ = nullptr;
     size_t total_ = 0;
     double seconds_ = 0;
     std::map<std::string, GpuTensor> tensors_;

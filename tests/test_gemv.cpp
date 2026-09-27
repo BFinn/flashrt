@@ -100,23 +100,27 @@ int main() {
                 void* dq = nullptr;
                 CK(cudaMalloc(&dq, flashrt::q3r::bytes(nrows, ncols)));
                 flashrt::q3r::repack(dw, dq, nrows, ncols, st);
-                CK(cudaMemset(dy, 0xff, size_t(nrows) * 4));
-                flashrt::q3r::matvec(dq, dx, dy, nrows, ncols, st);
-                CK(cudaStreamSynchronize(st));
-                CK(cudaGetLastError());
-                std::vector<float> y(nrows);
-                CK(cudaMemcpy(y.data(), dy, y.size() * 4, cudaMemcpyDeviceToHost));
-                double num = 0, den = 0;
-                for (int r = 0; r < nrows; ++r) {
-                    double ref = 0;
-                    for (int c = 0; c < ncols; ++c) ref += double(wd[size_t(r) * ncols + c]) * x[c];
-                    num += (y[r] - ref) * (y[r] - ref);
-                    den += ref * ref;
+                for (int nt : {1, 4}) {
+                    CK(cudaMemset(dy, 0xff, size_t(4) * nrows * 4));
+                    flashrt::q3r::matvec(dq, dx, dy, nrows, ncols, nt, st);
+                    CK(cudaStreamSynchronize(st));
+                    CK(cudaGetLastError());
+                    std::vector<float> y(size_t(nt) * nrows);
+                    CK(cudaMemcpy(y.data(), dy, y.size() * 4, cudaMemcpyDeviceToHost));
+                    double num = 0, den = 0;
+                    for (int k = 0; k < nt; ++k)
+                        for (int r = 0; r < nrows; ++r) {
+                            double ref = 0;
+                            for (int c = 0; c < ncols; ++c) ref += double(wd[size_t(r) * ncols + c]) * x[size_t(k) * ncols + c];
+                            const double d = y[size_t(k) * nrows + r] - ref;
+                            num += d * d;
+                            den += ref * ref;
+                        }
+                    const double rel = std::sqrt(num / den);
+                    const bool ok = std::isfinite(rel) && rel < 3e-2;   // int8 activations, as the quantized types
+                    fail += !ok;
+                    std::printf("Q3R     ncols %5d, %d tok: rel L2 %.2e (tol 3e-02) %s\n", ncols, nt, rel, ok ? "ok" : "FAIL");
                 }
-                const double rel = std::sqrt(num / den);
-                const bool ok = std::isfinite(rel) && rel < 1e-5;
-                fail += !ok;
-                std::printf("Q3R     ncols %5d, 1 tok: rel L2 %.2e (tol 1e-05) %s\n", ncols, rel, ok ? "ok" : "FAIL");
                 CK(cudaFree(dq));
             }
             CK(cudaFree(dw));

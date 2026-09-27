@@ -105,7 +105,7 @@ int main(int argc, char** argv) {
     return 0;
 }
 
-// ggml Q3_K MMVQ against the Q3R variants, one token, VRAM-resident (rotating copies).
+// ggml Q3_K MMVQ against Q3R, 1 and 4 tokens, VRAM-resident (rotating copies).
 int bench_q3r(int iters) {
     const int shapes[][2] = {{2560, 6144}, {2560, 10240}, {2560, 12288}, {6144, 2560}, {2560, 640}};
     cudaStream_t st;
@@ -114,7 +114,7 @@ int bench_q3r(int iters) {
     cudaEventCreate(&e0);
     cudaEventCreate(&e1);
     std::mt19937_64 rng(1);
-    std::printf("%-14s %8s %10s %10s %10s %10s %10s %10s\n", "shape", "MB q3k", "ggml us", "v1 us", "v2 us", "v3 us", "v4 us", "read-only");
+    std::printf("%-14s %8s %12s %12s %12s %12s\n", "shape", "MB q3k", "ggml 1 tok", "Q3R 1 tok", "ggml 4 tok", "Q3R 4 tok");
     for (const auto& sh : shapes) {
         const int K = sh[0], R = sh[1];
         const size_t wbytes = size_t(flashrt::gemv::row_bytes(11, K)) * R;
@@ -133,15 +133,16 @@ int bench_q3r(int iters) {
             cudaMemcpy(w + slot * k, host.data(), wbytes, cudaMemcpyHostToDevice);
             flashrt::q3r::repack(w + slot * k, wq + qslot * k, R, K, st);
         }
-        cudaMalloc(&x, size_t(K) * 4);
-        cudaMemset(x, 0, size_t(K) * 4);
-        cudaMalloc(&y, size_t(R) * 4);
-        cudaMalloc(&scratch, flashrt::gemv::q8_1_bytes(K, 1));
-        float us[6];
-        for (int v = 0; v < 6; ++v) {
+        cudaMalloc(&x, size_t(4) * K * 4);
+        cudaMemset(x, 0, size_t(4) * K * 4);
+        cudaMalloc(&y, size_t(4) * R * 4);
+        cudaMalloc(&scratch, flashrt::gemv::q8_1_bytes(K, 4));
+        float us[4];
+        for (int v = 0; v < 4; ++v) {
+            const int nt = v < 2 ? 1 : 4;
             auto call = [&](int i) {
-                if (v == 0) flashrt::gemv::matvec(11, w + slot * (i % copies), x, y, K, R, 1, scratch, st);
-                else flashrt::q3r::matvec_variant(v, wq + qslot * (i % copies), x, y, R, K, st);
+                if (v % 2 == 0) flashrt::gemv::matvec(11, w + slot * (i % copies), x, y, K, R, nt, scratch, st);
+                else flashrt::q3r::matvec(wq + qslot * (i % copies), x, y, R, K, nt, st);
             };
             for (int i = 0; i < 10; ++i) call(i);
             cudaEventRecord(e0, st);
@@ -155,10 +156,9 @@ int bench_q3r(int iters) {
         const cudaError_t err = cudaGetLastError();
         char name[32];
         std::snprintf(name, sizeof(name), "%dx%d", K, R);
-        std::printf("%-14s %8.2f %10.2f %10.2f %10.2f %10.2f %10.2f %10.2f%s\n", name, wbytes / 1e6, us[0], us[1], us[2], us[3], us[4],
-                    us[5], err == cudaSuccess ? "" : "  CUDA ERROR");
-        std::printf("%-14s %8s %10.0f %10.0f %10.0f %10.0f %10.0f %10.0f  (GB/s of Q3_K bytes)\n", "", "", wbytes / (us[0] * 1e3),
-                    wbytes / (us[1] * 1e3), wbytes / (us[2] * 1e3), wbytes / (us[3] * 1e3), wbytes / (us[4] * 1e3), wbytes / (us[5] * 1e3));
+        std::printf("%-14s %8.2f %9.2f us %9.2f us %9.2f us %9.2f us%s\n", name, wbytes / 1e6, us[0], us[1], us[2], us[3],
+                    err == cudaSuccess ? "" : "  CUDA ERROR");
+        std::printf("%-14s %8s %9.0f GB/s %6.0f GB/s  (of the Q3_K bytes, 1 token)\n", "", "", wbytes / (us[0] * 1e3), wbytes / (us[1] * 1e3));
         cudaFree(w);
         cudaFree(wq);
         cudaFree(x);

@@ -9,6 +9,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstring>
 #include <stdexcept>
@@ -23,18 +24,29 @@ void ck(cudaError_t e, const char* what) {
 
 size_t slot_bytes(size_t bytes) { return (bytes + gemv::kWeightTailPad + 255) & ~size_t(255); }
 
+// Q3_K matrices are converted in place to Q3R (kernels/cuda/q3r.h), except the token embedding,
+// which is read one row at a time by ggml's dequantize
+bool q3r_eligible(const GgufTensor& t) {
+    return t.type == 11 /* GGML_TYPE_Q3_K */ && t.name != "token_embd.weight" && t.dims.size() == 2 && t.dims[0] % 256 == 0 &&
+           t.dims[0] <= 8192;
+}
+size_t tensor_slot(const GgufTensor& t, bool q3r_on) {
+    size_t b = t.bytes;
+    if (q3r_on && q3r_eligible(t)) b = std::max(b, q3r::bytes(t.dims[1], t.dims[0]));
+    return slot_bytes(b);
+}
+
 }  // namespace
 
 GpuWeights::~GpuWeights() {
     if (base_) cudaFree(base_);
-    if (q3r_base_) cudaFree(q3r_base_);
 }
 
-void GpuWeights::load(const Gguf& g, const WeightPlan& plan, bool q3r_copies) {
+void GpuWeights::load(const Gguf& g, const WeightPlan& plan, bool q3r_on) {
     const auto t0 = std::chrono::steady_clock::now();
     total_ = 0;
     for (const Placement& p : plan.tensors)
-        if (p.tier == Tier::VramDense) total_ += slot_bytes(p.tensor->bytes);
+        if (p.tier == Tier::VramDense) total_ += tensor_slot(*p.tensor, q3r_on);
     ck(cudaMalloc(&base_, total_), "cudaMalloc dense weights");
     ck(cudaMemset(base_, 0, total_), "cudaMemset dense weights");
 
@@ -81,26 +93,29 @@ void GpuWeights::load(const Gguf& g, const WeightPlan& plan, bool q3r_copies) {
             done_b += n;
         }
         tensors_.emplace(t.name, std::move(gt));
-        off += slot_bytes(t.bytes);
+        off += tensor_slot(t, q3r_on);
     }
-    // Q3_K matrices get a Q3R copy for single-token mat-vecs (MMVQ reads Q3_K at ~320 GB/s);
-    // not the token embedding, which is only ever read one row at a time
-    size_t q3r_total = 0;
-    auto q3r_eligible = [q3r_copies](const std::string& name, const GpuTensor& t) {
-        return q3r_copies && t.type == 11 /* GGML_TYPE_Q3_K */ && name != "token_embd.weight" && t.cols() % 256 == 0 && t.cols() <= 11264;
-    };
-    for (auto& [name, t] : tensors_)
-        if (q3r_eligible(name, t)) q3r_total += q3r::bytes(t.rows(), t.cols());
-    if (q3r_total) {
-        ck(cudaMalloc(&q3r_base_, q3r_total), "cudaMalloc q3r copies");
-        size_t qoff = 0;
-        for (auto& [name, t] : tensors_)
-            if (q3r_eligible(name, t)) {
-                t.q3r = static_cast<uint8_t*>(q3r_base_) + qoff;
-                q3r::repack(t.dev, t.q3r, t.rows(), t.cols(), st);
-                qoff += q3r::bytes(t.rows(), t.cols());
+    // Q3_K -> Q3R in place, through one temporary (the slots were sized for the larger of the two)
+    if (q3r_on) {
+        size_t tmp_bytes = 0;
+        for (const Placement& p : plan.tensors)
+            if (p.tier == Tier::VramDense && q3r_eligible(*p.tensor))
+                tmp_bytes = std::max(tmp_bytes, q3r::bytes(p.tensor->dims[1], p.tensor->dims[0]));
+        if (tmp_bytes) {
+            void* tmp = nullptr;
+            ck(cudaMalloc(&tmp, tmp_bytes), "cudaMalloc q3r temporary");
+            for (const Placement& p : plan.tensors) {
+                if (p.tier != Tier::VramDense || !q3r_eligible(*p.tensor)) continue;
+                GpuTensor& t = tensors_.at(p.tensor->name);
+                const size_t qb = q3r::bytes(t.rows(), t.cols());
+                q3r::repack(t.dev, tmp, t.rows(), t.cols(), st);
+                ck(cudaMemcpyAsync(t.dev, tmp, qb, cudaMemcpyDeviceToDevice, st), "q3r copy back");
+                t.type = kTypeQ3R;
+                t.bytes = qb;
             }
-        total_ += q3r_total;
+            ck(cudaStreamSynchronize(st), "q3r repack");
+            cudaFree(tmp);
+        }
     }
     ck(cudaStreamSynchronize(st), "cudaStreamSynchronize");
     for (int fd : fds) close(fd);

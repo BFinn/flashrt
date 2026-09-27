@@ -369,8 +369,8 @@ void free_block_scratch(BlockScratch& b) {
 
 void linear(const BlockCtx& c, const GpuTensor& W, const float* x, float* y, int T) {
     const int64_t cols = W.cols(), rows = W.rows();
-    if (T == 1 && W.q3r) {
-        q3r::matvec(W.q3r, x, y, rows, cols, c.stream);
+    if (W.type == kTypeQ3R) {
+        q3r::matvec(W.dev, x, y, rows, cols, T, c.stream);
         return;
     }
     for (int t0 = 0; t0 < T; t0 += gemv::kMaxTokens) {
