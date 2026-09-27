@@ -1,0 +1,7 @@
+PLE: 3-gram, 16 heads, 90 B rows, table at offset 192 of shard 1
+prompt: 32000 tokens, 512000 row reads, 318012 distinct rows (62.1%), 310867 distinct pages
+whole prompt at depth 64: 310867 device reads in 0.497 s (625036 reads/s, 64340 tokens/s)
+2048-token chunks: 382804 device reads in 0.577 s (55460 tokens/s)
+decode (one token, 16 rows): p50 134 us, p90 167 us, p99 217 us over 512 tokens
+verify: 2000 sampled rows, 0 mismatches
+fr_ple OK
