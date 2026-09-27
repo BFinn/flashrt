@@ -2,14 +2,15 @@
 // fr_bench: decode speed of flashrt at a given depth.
 //
 //   fr_bench MODEL.gguf --ids PROMPT.txt --n-prompt N --gen G [--slots S] [--reserve-mib R]
-//            [--reference] [--workers W] [--no-doorbell] [--spin-us U]
+//            [--reference] [--workers W] [--no-doorbell] [--spin-us U] [--windows N]
 //
 // Prefills N prompt tokens in 64-token batches (reference path; its routing counts pick the
 // cache contents), fills the VRAM expert cache with the most-routed experts (S slots, or all
 // free VRAM minus R MiB), then decodes G tokens greedily on the fast path and reports tok/s and
 // the cache hit rate. --reference decodes on the reference path instead (no cache), to compare
 // the generated tokens. The fast path runs in doorbell mode (the whole token enqueued at once, a
-// miss-server thread on the pool's first CPU) unless --no-doorbell.
+// miss-server thread on the pool's first CPU) unless --no-doorbell. --windows N decodes N
+// consecutive windows of G tokens after the one prefill and reports each (deep prompts).
 #include "arch/qwen4exp/experts.hpp"
 #include "arch/qwen4exp/forward_ref.hpp"
 #include "arch/qwen4exp/gpu_weights.hpp"
@@ -41,7 +42,7 @@ int main(int argc, char** argv) {
         return 2;
     }
     std::string ids_path;
-    int n_prompt = 1024, gen = 128, slots = 0, reserve_mib = 1024, workers = 8;
+    int n_prompt = 1024, gen = 128, slots = 0, reserve_mib = 1024, workers = 8, windows = 1;
     bool reference = false, doorbell = true;
     int spin_us = 2000;
     for (int i = 2; i < argc; ++i) {
@@ -56,6 +57,7 @@ int main(int argc, char** argv) {
         else if (a == "--reference") reference = true;
         else if (a == "--no-doorbell") doorbell = false;
         else if (a == "--spin-us") spin_us = std::atoi(next());
+        else if (a == "--windows") windows = std::max(1, std::atoi(next()));
         else { std::fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
     }
     std::vector<int32_t> seq;
@@ -76,7 +78,7 @@ int main(int argc, char** argv) {
     load_experts(g, s, arena, 12);
     const std::vector<int> cpus = physical_cpus();
     CpuPool pool(workers, cpus);   // pins this thread to cpus[0]
-    ForwardRef fwd(g, s, w, arena, pool, n_prompt + gen + 16, 64);
+    ForwardRef fwd(g, s, w, arena, pool, n_prompt + windows * gen + 16, 64);
 
     float* logits_dev = nullptr;
     cudaMalloc(&logits_dev, size_t(s.n_vocab) * 4);
@@ -128,22 +130,30 @@ int main(int argc, char** argv) {
     seq.push_back(argmax());
     out.push_back(seq.back());
     cudaProfilerStart();   // nsys --capture-range=cudaProfilerApi profiles the decode loop only
-    const auto td = Clock::now();
-    for (int i = 0; i < gen; ++i) {
-        fwd.forward(seq.data(), 1, 0, logits_dev);
-        seq.push_back(argmax());
-        out.push_back(seq.back());
+    for (int wi = 0; wi < windows; ++wi) {
+        const long hits0 = host.hits, misses0 = host.misses;
+        const int depth = int(seq.size()) - 1;
+        const auto td = Clock::now();
+        for (int i = 0; i < gen; ++i) {
+            fwd.forward(seq.data(), 1, 0, logits_dev);
+            seq.push_back(argmax());
+            out.push_back(seq.back());
+        }
+        const double dec_s = std::chrono::duration<double>(Clock::now() - td).count();
+        std::printf("decode: %d tokens at depth %d in %.2f s: %.2f tok/s (%s)", gen, depth, dec_s, gen / dec_s,
+                    reference ? "reference path" : doorbell ? "fast path, doorbell" : "fast path, host sync per layer");
+        if (windows > 1 && !reference)
+            std::printf(", window %d, hit rate %.2f%%", wi + 1,
+                        100.0 * (host.hits - hits0) / std::max(1L, host.hits - hits0 + host.misses - misses0));
+        std::printf("\n");
     }
-    const double dec_s = std::chrono::duration<double>(Clock::now() - td).count();
     cudaProfilerStop();
-    std::printf("decode: %d tokens at depth %d in %.2f s: %.2f tok/s (%s)\n", gen, n_prompt, dec_s, gen / dec_s,
-                reference ? "reference path" : doorbell ? "fast path, doorbell" : "fast path, host sync per layer");
     if (!reference)
         std::printf("expert cache hit rate %.2f%% (%ld hits, %ld misses)\n", 100.0 * host.hits / std::max(1L, host.hits + host.misses),
                     host.hits, host.misses);
     if (!reference)
-        std::printf("host per token: %.2f ms waiting for routing, %.2f ms running misses\n", 1e3 * host.wait_s / gen,
-                    1e3 * host.cpu_s / gen);
+        std::printf("host per token: %.2f ms waiting for routing, %.2f ms running misses\n", 1e3 * host.wait_s / (gen * windows),
+                    1e3 * host.cpu_s / (gen * windows));
     if (!reference) {
         std::printf("misses per layer: count (share of layers) and mean host miss time\n");
         long nl = 0;

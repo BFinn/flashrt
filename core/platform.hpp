@@ -35,6 +35,9 @@ std::vector<int> physical_cpus();
 
 // Pin the calling thread to one logical CPU. Returns false on failure.
 bool pin_current_thread(int cpu);
+// Let the calling thread run on every online CPU (helper threads: a thread inherits its
+// creator's affinity, which may be a pinned pool CPU).
+bool unpin_current_thread();
 
 PageMode    parse_page_mode(const std::string& s);   // "4k" | "thp" | "hugetlb"
 const char* page_mode_name(PageMode m);

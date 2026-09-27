@@ -112,6 +112,14 @@ bool pin_current_thread(int cpu) {
     return pthread_setaffinity_np(pthread_self(), sizeof(set), &set) == 0;
 }
 
+bool unpin_current_thread() {
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    const int n = int(std::thread::hardware_concurrency());
+    for (int cpu = 0; cpu < n && cpu < CPU_SETSIZE; ++cpu) CPU_SET(cpu, &set);
+    return pthread_setaffinity_np(pthread_self(), sizeof(set), &set) == 0;
+}
+
 PageMode parse_page_mode(const std::string& s) {
     if (s == "thp") return PageMode::THP;
     if (s == "hugetlb") return PageMode::HugeTLB;

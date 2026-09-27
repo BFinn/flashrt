@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "core/row_reader.hpp"
 
+#include "core/platform.hpp"
+
 #include <fcntl.h>
 #include <unistd.h>
 
@@ -80,6 +82,7 @@ size_t RowReader::fetch(const uint32_t* rows, size_t n, uint8_t* out) {
 }
 
 void RowReader::worker() {
+    unpin_current_thread();   // not on the creator's (possibly pinned) CPU
     uint8_t* buf = static_cast<uint8_t*>(std::aligned_alloc(kPage, 2 * kPage));
     uint64_t seen = 0;
     for (;;) {

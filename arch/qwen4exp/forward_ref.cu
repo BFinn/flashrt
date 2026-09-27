@@ -2,6 +2,7 @@
 #include "arch/qwen4exp/forward_ref.hpp"
 
 #include "core/gguf.hpp"
+#include "core/platform.hpp"
 
 #include <future>
 #include <set>
@@ -89,7 +90,10 @@ void ForwardRef::forward(const int32_t* seq, int T, int out_from, float* logits_
     // the PLE rows come from the SSD: read them on another thread while the embedding and the
     // layers before the first PLE layer are enqueued
     std::future<void> ple_rows;
-    if (!s.ple_layers.empty()) ple_rows = std::async(std::launch::async, [&] { ple_fetch(ple_host_, seq, pos_, T); });
+    if (!s.ple_layers.empty()) ple_rows = std::async(std::launch::async, [&] {
+            unpin_current_thread();
+            ple_fetch(ple_host_, seq, pos_, T);
+        });
     embed(c, seq + pos_, T, emb_);
     for (int t = 0; t < T; ++t)
         for (int st = 0; st < hc; ++st)
