@@ -330,8 +330,16 @@ combinations with three formats). It splits into three layers:
 - Steady state is about 74 GB: the database, the trial shard and the logits.
 - The peak is about 129 GB, while the IQ3_S reference exists. Delete it once the logits are
   written, or compute the logits elsewhere.
-- The external drive at `$EXT` is a fallback; its free space is
-  unchecked.
+- **The external drive** (checked 2026-09-27):
+  - `$EXT` is a USB spinning disk ("Expansion HDD"), 932 GB, exFAT, with
+    689 GB free.
+  - Use it for data read once: the IQ3_S reference (55 GB), an optional full BF16 copy
+    (360 GB, which fits), and trial archives.
+  - Keep the trial shard, the ternary database and the logits on the NVMe. Every trial
+    rewrites and reloads them, and a USB disk would add minutes per trial.
+  - exFAT has no symlinks and no POSIX permissions. Its throughput is unmeasured.
+- **the box reaches the Hub** (HTTP 200 from `huggingface.co`, 2026-09-27). It can stream
+  or download the BF16 experts itself, between benchmark windows.
 
 **Building the ternary database without local disk.**
 - The BF16 checkpoint (131 shards, 360 GB) stores experts fused per layer:
@@ -344,7 +352,9 @@ combinations with three formats). It splits into three layers:
     the Hub. It uploads the database to a private repo. It needs a positive credit
     balance, and the default timeout is 30 min, so set a longer one.
   - **This Mac:** 403 GB free, but an M1 with 16 GB. Stream-quantize, then scp the result.
-  - **the box**, if it can reach the Hub. That is unverified; it cannot reach GitHub.
+  - **the box**, which does reach the Hub. Stream the experts, or first copy the BF16
+    shards to the external drive. It must not run during benchmark windows, and it must
+    stay inside the RAM rules.
 
 **What exists vs what must be written:**
 
