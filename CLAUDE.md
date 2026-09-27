@@ -12,11 +12,17 @@ Machine-specific details live in `CLAUDE.local.md`, which is not committed.
 
 - **This checkout (the Mac) is the source of truth.** Edit, commit, and push to GitHub
   from here. The research vault is reachable only from here.
-- **The GPU box is a build and benchmark target.** It cannot reach GitHub or the vault.
+- **The GPU box is a build and benchmark target.** It reaches GitHub (`origin`, over SSH)
+  and the Hugging Face Hub, but not the vault.
   - Deploy with `git push the box main`. The remote checkout updates its files on push.
   - Then build and run over ssh.
-- **Bring results back.** Copy anything worth keeping (benchmark JSON, logs, summaries)
-  into `bench/results/<date>-<topic>/` with `scp`, and commit it here.
+  - **The box never commits to `main`.** A commit there diverges its checkout, and the
+    next `git push the box main` fails.
+- **Bring results back.** Put anything worth keeping (benchmark JSON, logs, summaries) in
+  `bench/results/<date>-<topic>/`.
+  - Either push it from the box to a `results/<date>-<topic>` branch on `origin`, then
+    merge that branch into `main` here;
+  - or copy it with `scp` and commit it here.
 
 ## Build (on the GPU box)
 
