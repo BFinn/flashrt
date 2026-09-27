@@ -20,7 +20,8 @@ find_package(Threads REQUIRED)
 # ---- core: platform services shared by the engine and the tools
 add_library(flashrt_core STATIC
   core/platform.cpp
-  core/gguf.cpp)
+  core/gguf.cpp
+  core/expert_arena.cpp)
 target_include_directories(flashrt_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(flashrt_core PUBLIC Threads::Threads)
 
@@ -35,8 +36,10 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
 endif()
 
 # ---- architectures
-add_library(flashrt_qwen4exp STATIC arch/qwen4exp/spec.cpp)
-target_link_libraries(flashrt_qwen4exp PUBLIC flashrt_core)
+add_library(flashrt_qwen4exp STATIC
+  arch/qwen4exp/spec.cpp
+  arch/qwen4exp/experts.cpp)
+target_link_libraries(flashrt_qwen4exp PUBLIC flashrt_core flashrt_q2_0)
 
 # ---- engine process (protocol skeleton; generation arrives in P1)
 add_executable(flashrt-engine engine/main.cpp)
@@ -49,6 +52,8 @@ add_executable(ssdrand tools/ssdrand.cpp)
 target_link_libraries(ssdrand PRIVATE Threads::Threads)
 add_executable(bench_q2_0 tools/bench_q2_0.cpp)
 target_link_libraries(bench_q2_0 PRIVATE flashrt_q2_0)
+add_executable(fr_load tools/fr_load.cpp)
+target_link_libraries(fr_load PRIVATE flashrt_qwen4exp)
 add_executable(fr_inspect tools/fr_inspect.cpp)
 target_link_libraries(fr_inspect PRIVATE flashrt_qwen4exp flashrt_q2_0)
 add_executable(gguf_dump tools/gguf_dump.cpp)

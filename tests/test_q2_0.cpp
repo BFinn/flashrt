@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <random>
 #include <vector>
 
@@ -68,6 +69,21 @@ int main() {
     check(fp32_to_fp16(1.0f) == 0x3c00 && fp32_to_fp16(-2.0f) == 0xc000 && fp32_to_fp16(65504.0f) == 0x7bff &&
               fp16_to_fp32(0x3555) == 0.333251953125f && fp16_to_fp32(0x0001) == 5.960464477539063e-08f,
           "fp16 conversions", 0);
+
+    // repack against a direct element-by-element placement
+    {
+        auto blocks = random_blocks(rng, 8, 4096);
+        std::vector<uint8_t> packed(mat_bytes(8, 4096));
+        const Mat w = repack(blocks.data(), 8, 4096, packed.data());
+        bool same = true;
+        for (size_t i = 0; i < blocks.size(); ++i) {
+            uint8_t ref[16] = {};
+            for (int j = 0; j < kBlock; ++j)
+                ref[j % 16] |= uint8_t(((blocks[i].qs[j / 4] >> (2 * (j % 4))) & 3) << (2 * (j / 16)));
+            same &= std::memcmp(ref, w.codes + i * 16, 16) == 0 && w.scales[i] == blocks[i].d;
+        }
+        check(same, "table repack == element-wise placement", 0);
+    }
 
     const int d_model = 2560, d_ff = 640;
     for (auto [rows, cols] : {std::pair{96, d_model}, std::pair{160, d_ff}}) {

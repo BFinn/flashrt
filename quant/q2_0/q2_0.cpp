@@ -18,13 +18,24 @@ namespace {
 constexpr size_t kAlign = 64;
 size_t up64(size_t x) { return (x + kAlign - 1) & ~(kAlign - 1); }
 
-// ggml element j (byte j/4, bit 2*(j%4)) -> planar byte j%16, bit 2*(j/16)
-void repack_block(const GgmlBlock& b, uint8_t* out16) {
-    std::memset(out16, 0, 16);
-    for (int j = 0; j < kBlock; ++j) {
-        const int q = (b.qs[j / 4] >> (2 * (j % 4))) & 3;
-        out16[j % 16] |= uint8_t(q << (2 * (j / 16)));
+// ggml element j (byte j/4, bit 2*(j%4)) -> planar byte j%16, bit 2*(j/16).
+// Element j = 16g + 4w + f sits in input byte 4g + w at field f and goes to output byte
+// 4w + f at bit 2g. So output word w (bytes 4w..4w+3) = OR over g of expand(in[4g + w]) << 2g,
+// where expand() spreads a byte's four 2-bit fields into the low bits of four bytes.
+struct ExpandLut {
+    uint32_t v[256];
+    constexpr ExpandLut() : v() {
+        for (int b = 0; b < 256; ++b)
+            v[b] = uint32_t(b & 3) | uint32_t((b >> 2) & 3) << 8 | uint32_t((b >> 4) & 3) << 16 | uint32_t((b >> 6) & 3) << 24;
     }
+};
+constexpr ExpandLut kExpand;
+
+void repack_block(const GgmlBlock& b, uint8_t* out16) {
+    uint32_t w[4];
+    for (int k = 0; k < 4; ++k)
+        w[k] = kExpand.v[b.qs[k]] | kExpand.v[b.qs[4 + k]] << 2 | kExpand.v[b.qs[8 + k]] << 4 | kExpand.v[b.qs[12 + k]] << 6;
+    std::memcpy(out16, w, 16);   // little-endian: word k covers output bytes 4k..4k+3
 }
 int planar_code(const uint8_t* blk16, int j) { return (blk16[j % 16] >> (2 * (j / 16))) & 3; }
 }  // namespace
