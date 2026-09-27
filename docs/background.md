@@ -30,8 +30,23 @@ P0 windows A and B (`bench/results/2026-09-27-p0/`) replaced several estimates b
   - Belady 93.8%.
 - **QSA locality supports KV streaming.** A 4× hot set misses 5.6% at 32K and 14.7% at 131K,
   about 4 MB per token.
-- **Reference numbers on wikitext:** Strata 0.1.6 greedy (1 run) decodes at
-  86 / 87 / 101 tok/s and prefills at 538 / 683 / 823 at 1K / 32K / 131K.
+- **Reference numbers on wikitext (window C, `bench/results/2026-09-27-p0c`):** decode tok/s
+  at 1K / 32K / 131K / 245K.
+
+  | Engine | Decode | Runs |
+  |---|---|---:|
+  | Strata 0.1.6, greedy | 84.0 / 90.1 / 95.7 / 103.0 | 2 |
+  | Strata 0.1.6, t=1.0 | 72.5 / 74.7 / 70.7 / 62.2 | 2 |
+  | llama.cpp dev tree | 39.4 / 42.2 / 38.9 / 32.8 | 1 |
+
+  - Speed at depth follows draft acceptance (95% greedy at 245K), so report acceptance
+    too.
+  - Greedy Strata output is not reproducible run to run.
+- **Strata's 32K prefill is 45% PLE stalls.** Its n-gram-table reads run at queue depth 1
+  (16K IOPS). The 990 PRO does 714K IOPS at depth 64 (`tools/ssdrand`).
+- **Strata's dense GPU path takes 7.65 ms per token,** against about 3.6 ms at full VRAM
+  bandwidth (estimate). A decode round is about 19.6 ms: 10.9 ms waiting on the GPU work,
+  5.2 ms in the CPU pool.
 
 ## Measured baselines [M]
 

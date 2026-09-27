@@ -1,0 +1,5 @@
+ssdrand qd=1 (threads 1 x depth 1) bytes=4096: 16001 IOPS, 65.5 MB/s, p50 63 us, p99 88 us
+ssdrand qd=16 (threads 8 x depth 2) bytes=4096: 243331 IOPS, 996.7 MB/s, p50 64 us, p99 128 us
+ssdrand qd=64 (threads 16 x depth 4) bytes=4096: 713684 IOPS, 2923.2 MB/s, p50 80 us, p99 236 us
+ssdrand qd=256 (threads 32 x depth 8) bytes=4096: 1090009 IOPS, 4464.7 MB/s, p50 179 us, p99 960 us
+ssdrand qd=512 (threads 64 x depth 8) bytes=4096: 1115626 IOPS, 4569.6 MB/s, p50 228 us, p99 2677 us

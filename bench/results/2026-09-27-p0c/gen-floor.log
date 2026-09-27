@@ -1,0 +1,4 @@
+strata generate: 1879 MiB of weights loaded from $STRATA/packs/q2_0 (301 canonical tensors skipped: served natively)
+strata generate: 301 native projection matrices, 1376.20 MiB of weights
+strata generate: KV streaming: 32768 of 262144 cells per QSA layer in VRAM, the K/V in 3.09 GiB of pinned RAM
+strata generate: PLE on, table 320001536 rows of $MODELS/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00002-of-00002.gguf

@@ -1,0 +1,13 @@
+
+== tokenize wikitext (14:48:20)
+tokenized wiki.txt: 2437436 bytes -> 558604 tokens
+wiki prompt: 250000 tokens
+START 14:48:22
+out=$BENCH/p0c-20260927
+
+== strata generate breakdowns (14:48:22)
+gen-stats: exit 0 (57 log lines)
+$FLASHRT/bench/p0/window_c.sh: line 36: 102123 Killed                  ( cd $STRATA && LD_LIBRARY_PATH=/usr/local/cuda-12.9/lib64 timeout 900 systemd-run --user --scope --quiet -p MemoryMax=56G -p MemorySwapMax=0 -- engine/strata "${SARGS[@]}" --tokens-file "$OUT/wiki_32000.txt" --max-new 384 --vram-reserve-mib 1024 --pcie-frac 0.35 --pool-workers 8 "$@" ) > "$label.log" 2>&1
+gen-floor: exit 137 (4 log lines)
+VRAM still in use after 120 s
+RESTARTED_LIVE 14:52:49 active
