@@ -282,3 +282,134 @@ void gdn_mixer(const BlockCtx& c, int il, const float* x, int T, GdnState& st, f
 }
 
 }  // namespace flashrt::qwen4exp
+
+namespace flashrt::qwen4exp {
+
+namespace {
+
+// per (token, head): RMS norm over dim with weight w, then NEOX rope on the first n_rot dims
+// at position pos0 + token; src rows are `src_stride` floats apart per token and `head_stride`
+// per head, dst is [T][heads][dim]
+__global__ void k_norm_rope(const float* src, int src_stride, int head_stride, const float* w, float* dst, int heads,
+                            int dim, int n_rot, int pos0, float theta_scale, float eps) {
+    const int t = blockIdx.x / heads, h = blockIdx.x % heads;
+    const float* x = src + size_t(t) * src_stride + size_t(h) * head_stride;
+    float* y = dst + (size_t(t) * heads + h) * dim;
+    float ss = 0.0f;
+    for (int i = threadIdx.x; i < dim; i += blockDim.x) ss += x[i] * x[i];
+    ss = block_sum(ss);
+    const float inv = rsqrtf(ss / dim + eps);
+    const int half = n_rot / 2;
+    const float pos = float(pos0 + t);
+    for (int i = threadIdx.x; i < dim; i += blockDim.x) {
+        if (i < half) {
+            const float theta = pos * powf(theta_scale, float(i));
+            float sn, cs;
+            sincosf(theta, &sn, &cs);
+            const float x0 = x[i] * inv * w[i], x1 = x[i + half] * inv * w[i + half];
+            y[i] = x0 * cs - x1 * sn;
+            y[i + half] = x0 * sn + x1 * cs;
+        } else if (i >= n_rot) {
+            y[i] = x[i] * inv * w[i];
+        }
+    }
+}
+
+// dense causal attention, one block per (token, head), blockDim = dim threads:
+// scores over cells 0..pos (pos = pos0 + t), softmax, weighted V; output gated by sigmoid(gate)
+__global__ void k_attn_dense(const float* q, const float* K, const float* V, const float* qfull, float* o, int heads,
+                             int kv_heads, int dim, int pos0, float scale, int gate_stride, int gate_head_stride,
+                             int gate_off) {
+    extern __shared__ float sc[];   // scores [pos + 1]
+    const int t = blockIdx.x / heads, h = blockIdx.x % heads, hk = h / (heads / kv_heads);
+    const int n = pos0 + t + 1;
+    const float* qh = q + (size_t(t) * heads + h) * dim;
+    // scores: each thread takes cells j = tid, tid + blockDim, ...
+    float mx = -INFINITY;
+    for (int j = threadIdx.x; j < n; j += blockDim.x) {
+        const float* kj = K + (size_t(j) * kv_heads + hk) * dim;
+        float d = 0.0f;
+        for (int i = 0; i < dim; ++i) d += qh[i] * kj[i];
+        d *= scale;
+        sc[j] = d;
+        mx = fmaxf(mx, d);
+    }
+    // block max
+    __shared__ float red[32];
+    for (int of = 16; of > 0; of >>= 1) mx = fmaxf(mx, __shfl_xor_sync(0xffffffff, mx, of));
+    if ((threadIdx.x & 31) == 0) red[threadIdx.x >> 5] = mx;
+    __syncthreads();
+    if (threadIdx.x < 32) {
+        float m = threadIdx.x < (blockDim.x + 31) / 32 ? red[threadIdx.x] : -INFINITY;
+        for (int of = 16; of > 0; of >>= 1) m = fmaxf(m, __shfl_xor_sync(0xffffffff, m, of));
+        if (threadIdx.x == 0) red[0] = m;
+    }
+    __syncthreads();
+    mx = red[0];
+    __syncthreads();
+    float sum = 0.0f;
+    for (int j = threadIdx.x; j < n; j += blockDim.x) {
+        const float e = __expf(sc[j] - mx);
+        sc[j] = e;
+        sum += e;
+    }
+    sum = block_sum(sum);
+    __syncthreads();
+    // output dim i = threadIdx.x
+    for (int i = threadIdx.x; i < dim; i += blockDim.x) {
+        float acc = 0.0f;
+        for (int j = 0; j < n; ++j) acc += sc[j] * V[(size_t(j) * kv_heads + hk) * dim + i];
+        const float g = qfull[size_t(t) * gate_stride + size_t(h) * gate_head_stride + gate_off + i];
+        o[(size_t(t) * heads + h) * dim + i] = acc / sum / (1.0f + __expf(-g));
+    }
+}
+
+}  // namespace
+
+QsaCache alloc_qsa_cache(const Spec& s, int capacity) {
+    QsaCache kv;
+    kv.capacity = capacity;
+    const size_t n = size_t(capacity) * s.n_head_kv * s.head_dim_k;
+    ck(cudaMalloc(&kv.K, n * 4), "cudaMalloc K cache");
+    ck(cudaMalloc(&kv.V, n * 4), "cudaMalloc V cache");
+    return kv;
+}
+
+void free_qsa_cache(QsaCache& kv) {
+    if (kv.K) cudaFree(kv.K);
+    if (kv.V) cudaFree(kv.V);
+    kv = QsaCache{};
+}
+
+void qsa_mixer(const BlockCtx& c, int il, const float* x, int T, int pos0, QsaCache& kv, float* out) {
+    const Spec& s = c.s;
+    const int H = s.n_head, KH = s.n_head_kv, D = s.head_dim_k;
+    const int width = s.idx_top_k + s.qsa_block - 1;
+    if (pos0 + T > width) throw std::runtime_error("qsa_mixer: contexts beyond the selection width need the indexer (not implemented yet)");
+    if (pos0 + T > kv.capacity) throw std::runtime_error("qsa_mixer: KV cache full");
+    if (s.head_dim_v != D) throw std::runtime_error("qsa_mixer: head_dim_v != head_dim_k");
+    float* qfull = c.scratch.f32;                   // [T][H * 2D]  (q | gate per head)
+    float* kraw = qfull + size_t(T) * H * 2 * D;    // [T][KH * D]
+    float* vraw = kraw + size_t(T) * KH * D;        // [T][KH * D]
+    float* q = vraw + size_t(T) * KH * D;           // [T][H][D]
+    float* o = q + size_t(T) * H * D;               // [T][H][D]
+    if (size_t(o + size_t(T) * H * D - c.scratch.f32) > c.scratch.f32_elems) throw std::runtime_error("qsa_mixer: scratch too small");
+
+    linear(c, c.w.layer(il, "attn_q.weight"), x, qfull, T);
+    linear(c, c.w.layer(il, "attn_k.weight"), x, kraw, T);
+    linear(c, c.w.layer(il, "attn_v.weight"), x, vraw, T);
+    const float theta_scale = powf(float(s.rope_base), -2.0f / float(s.rope_dims));
+    const float eps = float(s.rms_eps);
+    k_norm_rope<<<T * H, 128, 0, c.stream>>>(qfull, H * 2 * D, 2 * D, static_cast<const float*>(c.w.layer(il, "attn_q_norm.weight").dev),
+                                            q, H, D, s.rope_dims, pos0, theta_scale, eps);
+    // K goes straight into the cache rows pos0.. (cell = position); V is copied as is
+    k_norm_rope<<<T * KH, 128, 0, c.stream>>>(kraw, KH * D, D, static_cast<const float*>(c.w.layer(il, "attn_k_norm.weight").dev),
+                                             kv.K + size_t(pos0) * KH * D, KH, D, s.rope_dims, pos0, theta_scale, eps);
+    ck(cudaMemcpyAsync(kv.V + size_t(pos0) * KH * D, vraw, size_t(T) * KH * D * 4, cudaMemcpyDeviceToDevice, c.stream), "V append");
+    const size_t smem = size_t(pos0 + T) * 4;
+    k_attn_dense<<<T * H, D, smem, c.stream>>>(q, kv.K, kv.V, qfull, o, H, KH, D, pos0, 1.0f / sqrtf(float(D)), H * 2 * D, 2 * D, D);
+    linear(c, c.w.layer(il, "attn_output.weight"), o, out, T);
+    ck(cudaGetLastError(), "qsa_mixer");
+}
+
+}  // namespace flashrt::qwen4exp

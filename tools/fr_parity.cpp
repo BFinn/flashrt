@@ -2,7 +2,7 @@
 // fr_parity: run flashrt's GPU blocks on llama.cpp's recorded inputs (tools/ref_dump) and
 // compare the outputs, block by block.
 //
-//   fr_parity MODEL.gguf REF.frd [test ...]      tests: hc (default), gdn
+//   fr_parity MODEL.gguf REF.frd [test ...]      tests: hc (default), gdn, qsa
 //
 // Every step of the dump is used (-1 = the prompt batch, 0.. = decode steps). The metric is
 // relative L2, ||ours - ref|| / ||ref||, per layer; the tool fails if any exceeds the tolerance.
@@ -148,6 +148,33 @@ void test_gdn(const BlockCtx& c, const Frd& ref, const std::vector<int>& steps, 
     for (int il : s.gdn_layers) free_gdn_state(st[il]);
 }
 
+// QSA mixers: KV caches and positions carried across the steps in order.
+void test_qsa(const BlockCtx& c, const Frd& ref, const std::vector<int>& steps, Checker& ck) {
+    const Spec& s = c.s;
+    std::vector<QsaCache> kv(s.n_layer);
+    for (int il : s.qsa_layers) kv[il] = alloc_qsa_cache(s, 4096);
+    int pos = 0;
+    for (int step : steps) {
+        const int T = int(ref.get("model.input_embed", step).ne[1]);
+        std::printf("qsa: step %d (%d tokens at %d)\n", step, T, pos);
+        for (int il : s.qsa_layers) {
+            const std::string L = "-" + std::to_string(il);
+            Dev x(ref.floats(ref.get("hc_mixed" + L, step, 0)));
+            Dev out(size_t(T) * s.d_model);
+            qsa_mixer(c, il, x.p, T, pos, kv[il], out.p);
+            cudaStreamSynchronize(c.stream);
+            std::vector<float> want = ref.floats(ref.get("attn_output" + L, step));
+            std::vector<float> got = out.host();
+            if (want.size() != got.size()) {   // last layer of a prompt batch keeps the output row only
+                got.erase(got.begin(), got.end() - want.size());
+            }
+            ck.check("qsa attn_output" + L, got, want, il < 12);
+        }
+        pos += T;
+    }
+    for (int il : s.qsa_layers) free_qsa_cache(kv[il]);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -178,6 +205,7 @@ int main(int argc, char** argv) {
     for (const std::string& t : tests) {
         if (t == "hc") test_hc(c, ref, steps, ck);
         else if (t == "gdn") test_gdn(c, ref, steps, ck);
+        else if (t == "qsa") test_qsa(c, ref, steps, ck);
         else { std::fprintf(stderr, "unknown test %s\n", t.c_str()); return 2; }
     }
     std::printf("fr_parity: %d checks, %d over tolerance %.0e; worst %.3e (%s)\n", ck.checks, ck.fails, ck.tol, ck.worst,

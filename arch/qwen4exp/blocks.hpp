@@ -60,4 +60,21 @@ void free_gdn_state(GdnState& st);
 // before the gated norm, [T][heads][state] (llama.cpp's "attn_output" in GDN layers).
 void gdn_mixer(const BlockCtx& c, int il, const float* x, int T, GdnState& st, float* out, float* o_inner = nullptr);
 
+// KV cache of one QSA layer for one sequence: post-norm, post-rope K and V, [cell][kv_head][dim].
+// Cell index = position. F32 for now (the parity reference uses F16 KV).
+struct QsaCache {
+    float* K = nullptr;
+    float* V = nullptr;
+    int capacity = 0;
+};
+QsaCache alloc_qsa_cache(const Spec& s, int capacity);
+void free_qsa_cache(QsaCache& kv);
+
+// QSA mixer for T consecutive tokens at positions pos0 .. pos0+T-1: projections, q/k RMS
+// norms, rope, KV append, attention and the sigmoid output gate, then the output projection.
+// The indexer's top-k is not implemented yet: while the context fits the selection width
+// (indexer.top_k + block - 1 cells) QSA selects every cell, i.e. it is dense causal attention,
+// and longer contexts throw.
+void qsa_mixer(const BlockCtx& c, int il, const float* x, int T, int pos0, QsaCache& kv, float* out);
+
 }  // namespace flashrt::qwen4exp
