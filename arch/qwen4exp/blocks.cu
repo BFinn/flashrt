@@ -70,17 +70,69 @@ __global__ void k_grouped_rms_norm_v4(const float* x, const float* w, float* y, 
     reinterpret_cast<float4*>(y + size_t(row) * n)[i] = make_float4(v.x * inv * wv.x, v.y * inv * wv.y, v.z * inv * wv.z, v.w * inv * wv.w);
 }
 
+// Decode (one token): the hyper-connection RMS norm, down-projection and inject projection in
+// one kernel. Block (rb, g) normalises stream g (xn = x * inv_g * w) into shared memory (block
+// row 0 also writes it out), then its 8 warps take rows rb*8 .. +7 of [W_down; W_inject] (BF16,
+// rank + n_inject rows of hc*n columns) over stream g's n columns. part[g][row] holds the
+// per-stream partial dot products; consumers sum them over g in order (deterministic).
+__global__ void k_hc_down(const float* x, const float* w_norm, const uint16_t* Wd, const uint16_t* Wi, float* xn_out,
+                          float* part, int n, int rank, int n_inject, float eps) {
+    extern __shared__ __align__(16) float xs[];   // [n]
+    const int g = blockIdx.y, rows = rank + n_inject;
+    const float* xg = x + size_t(g) * n;
+    float ss = 0.0f;
+    for (int i = threadIdx.x; i < n; i += blockDim.x) ss += xg[i] * xg[i];
+    ss = block_sum(ss);
+    const float inv = rsqrtf(ss / n + eps);
+    for (int i = threadIdx.x; i < n; i += blockDim.x) {
+        const float v = xg[i] * inv * w_norm[size_t(g) * n + i];
+        xs[i] = v;
+        if (blockIdx.x == 0) xn_out[size_t(g) * n + i] = v;
+    }
+    __syncthreads();
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, r = blockIdx.x * (blockDim.x >> 5) + warp;
+    if (r >= rows) return;
+    const size_t hcn = size_t(gridDim.y) * n;
+    const uint16_t* wr = (r < rank ? Wd + size_t(r) * hcn : Wi + size_t(r - rank) * hcn) + size_t(g) * n;
+    const uint4* w4 = reinterpret_cast<const uint4*>(wr);
+    float acc = 0.0f;
+    for (int ch = lane; ch < n / 8; ch += 32) {
+        const uint4 u = w4[ch];
+        const float* xv = xs + ch * 8;
+        const uint32_t wv[4] = {u.x, u.y, u.z, u.w};
+#pragma unroll
+        for (int e = 0; e < 4; ++e) {
+            acc += __uint_as_float(wv[e] << 16) * xv[2 * e];
+            acc += __uint_as_float(wv[e] & 0xffff0000u) * xv[2 * e + 1];
+        }
+    }
+    for (int o = 16; o > 0; o >>= 1) acc += __shfl_xor_sync(0xffffffff, acc, o);
+    if (lane == 0) part[size_t(g) * rows + r] = acc;
+}
+
 // Decode (one token), hc == 4: the hyper-connection up-projection fused with its neighbours.
 // gate = W_up (BF16, [hc * n rows][rank]) * silu(lo * scale); mixed[i] = mean_s xn[s][i] *
 // sigmoid(gate[s][i]). One block covers columns i0 .. i0+7 of all 4 streams (32 rows); 8 lanes
 // per row, each lane 16-byte loads of 8 weights. Needs rank % 64 == 0 and rank <= 1024.
-__global__ void k_hc_up_mix(const uint16_t* W, const float* lo, float scale, const float* xn, float* mixed, int n, int rank) {
+// lo comes as k_hc_down's partials [HC][rank + n_inject]; block 0 also sums the inject rows.
+__global__ void k_hc_up_mix(const uint16_t* W, const float* part, int n_inject, float scale, const float* xn, float* mixed,
+                            float* inject, int n, int rank) {
     constexpr int HC = 4;
     __shared__ __align__(16) float xs[1024];
     __shared__ float contrib[HC][8];
+    const int prow = rank + n_inject;
     for (int j = threadIdx.x; j < rank; j += blockDim.x) {
-        const float v = lo[j] * scale;
+        float lo = 0.0f;
+#pragma unroll
+        for (int g = 0; g < HC; ++g) lo += part[size_t(g) * prow + j];
+        const float v = lo * scale;
         xs[j] = v / (1.0f + __expf(-v));
+    }
+    if (blockIdx.x == 0 && threadIdx.x < n_inject) {
+        float a = 0.0f;
+#pragma unroll
+        for (int g = 0; g < HC; ++g) a += part[size_t(g) * prow + rank + threadIdx.x];
+        inject[threadIdx.x] = a;
     }
     __syncthreads();
     const int grp = threadIdx.x >> 3, l8 = threadIdx.x & 7;
@@ -332,19 +384,30 @@ void hc_mix(const BlockCtx& c, int il, int which, const float* x, int T, float* 
     float* xn = xn_out ? xn_out : c.scratch.f32;                          // [T][hcd]
     float* lo = c.scratch.f32 + size_t(T) * hcd;                          // [T][rank]
     float* gate = lo + size_t(T) * s.hc_rank;                             // [T][hcd]
+    const GpuTensor* w_inj = which != 2 ? &c.w.get(pre + "inject.weight") : nullptr;
+    constexpr uint32_t kBF16 = 30;   // GGML_TYPE_BF16
+    if (T == 1 && hc == 4 && s.hc_rank % 64 == 0 && s.hc_rank <= 1024 && n % 8 == 0 && size_t(n) * 4 <= 48 * 1024 &&
+        w_up.type == kBF16 && w_down.type == kBF16 && (!w_inj || w_inj->type == kBF16)) {
+        // decode: norm + down + inject in one kernel, then up + silu + gated mean in another
+        const int n_inj = w_inj ? hc : 0, rows = s.hc_rank + n_inj;
+        float* part = lo;   // [hc][rows], fits: lo is followed by gate [hcd]
+        k_hc_down<<<dim3((rows + 7) / 8, hc), 256, size_t(n) * 4, c.stream>>>(
+            x, static_cast<const float*>(w_norm.dev), static_cast<const uint16_t*>(w_down.dev),
+            w_inj ? static_cast<const uint16_t*>(w_inj->dev) : nullptr, xn, part, n, s.hc_rank, n_inj, float(s.rms_eps));
+        k_hc_up_mix<<<(n + 7) / 8, 256, 0, c.stream>>>(static_cast<const uint16_t*>(w_up.dev), part, n_inj, 1.0f / hc, xn, mixed,
+                                                       inject, n, s.hc_rank);
+        ck(cudaGetLastError(), "hc_mix");
+        return;
+    }
     if (n % 4 == 0 && n / 4 <= 1024 && (n / 4) % 32 == 0)
         k_grouped_rms_norm_v4<<<T * hc, n / 4, 0, c.stream>>>(x, static_cast<const float*>(w_norm.dev), xn, n, hc, float(s.rms_eps));
     else
         k_grouped_rms_norm<<<T * hc, 256, 0, c.stream>>>(x, static_cast<const float*>(w_norm.dev), xn, n, hc, float(s.rms_eps));
     linear(c, w_down, xn, lo, T);
-    if (T == 1 && hc == 4 && s.hc_rank % 64 == 0 && s.hc_rank <= 1024 && w_up.type == 30 /* GGML_TYPE_BF16 */) {
-        k_hc_up_mix<<<(n + 7) / 8, 256, 0, c.stream>>>(static_cast<const uint16_t*>(w_up.dev), lo, 1.0f / hc, xn, mixed, n, s.hc_rank);
-    } else {
-        k_scale_silu<<<(T * s.hc_rank + 255) / 256, 256, 0, c.stream>>>(lo, T * s.hc_rank, 1.0f / hc);
-        linear(c, w_up, lo, gate, T);
-        k_gated_mean<<<dim3((n + 255) / 256, T), 256, 0, c.stream>>>(xn, gate, mixed, n, hc, T);
-    }
-    if (which != 2) linear(c, c.w.get(pre + "inject.weight"), xn, inject, T);
+    k_scale_silu<<<(T * s.hc_rank + 255) / 256, 256, 0, c.stream>>>(lo, T * s.hc_rank, 1.0f / hc);
+    linear(c, w_up, lo, gate, T);
+    k_gated_mean<<<dim3((n + 255) / 256, T), 256, 0, c.stream>>>(xn, gate, mixed, n, hc, T);
+    if (w_inj) linear(c, *w_inj, xn, inject, T);
     ck(cudaGetLastError(), "hc_mix");
 }
 
@@ -1045,6 +1108,63 @@ void ple_embed(const BlockCtx& c, PleHost& h, const int32_t* seq, int64_t pos0, 
     const int64_t per_row = int64_t(p.row_bytes) / 18 * 32;
     gemv::dequantize(20 /* IQ4_NL */, h.raw_dev, emb, int64_t(h.rows.size()) * per_row, c.stream);
     ck(cudaStreamSynchronize(c.stream), "ple_embed");   // h.raw is reused by the next call
+}
+
+void ple_fetch(PleHost& h, const int32_t* seq, int64_t pos0, int T) {
+    const Ple& p = *h.ple;
+    h.rows.resize(size_t(T) * p.n_heads);
+    for (int t = 0; t < T; ++t) ple_rows(p, seq, pos0 + t, h.rows.data() + size_t(t) * p.n_heads);
+    const size_t bytes = h.rows.size() * p.row_bytes;
+    if (h.raw_pinned_bytes < bytes) {
+        if (h.raw_pinned) cudaFreeHost(h.raw_pinned);
+        ck(cudaHostAlloc(&h.raw_pinned, bytes, cudaHostAllocDefault), "cudaHostAlloc ple rows");
+        h.raw_pinned_bytes = bytes;
+    }
+    h.reader->fetch(h.rows.data(), h.rows.size(), h.raw_pinned);
+}
+
+void ple_upload(const BlockCtx& c, PleHost& h, int T, float* emb) {
+    const Ple& p = *h.ple;
+    const size_t bytes = size_t(T) * p.n_heads * p.row_bytes;
+    if (h.raw_dev_bytes < bytes) {
+        if (h.raw_dev) cudaFree(h.raw_dev);
+        ck(cudaMalloc(&h.raw_dev, bytes), "cudaMalloc ple rows");
+        h.raw_dev_bytes = bytes;
+    }
+    ck(cudaMemcpyAsync(h.raw_dev, h.raw_pinned, bytes, cudaMemcpyHostToDevice, c.stream), "ple rows to device");
+    const int64_t per_row = int64_t(p.row_bytes) / 18 * 32;
+    gemv::dequantize(20 /* IQ4_NL */, h.raw_dev, emb, int64_t(T) * p.n_heads * per_row, c.stream);
+}
+
+namespace {
+// one block of 1024 threads: argmax over x[0 .. n), lowest index on ties
+__global__ void k_argmax(const float* x, int n, int32_t* out) {
+    __shared__ float bv[32];
+    __shared__ int bi[32];
+    float v = -INFINITY;
+    int idx = 0x7fffffff;
+    for (int i = threadIdx.x; i < n; i += blockDim.x) {
+        const float xi = x[i];
+        if (xi > v) { v = xi; idx = i; }   // i rises, so ties keep the lowest index
+    }
+    for (int o = 16; o > 0; o >>= 1) {
+        const float v2 = __shfl_xor_sync(0xffffffff, v, o);
+        const int i2 = __shfl_xor_sync(0xffffffff, idx, o);
+        if (v2 > v || (v2 == v && i2 < idx)) { v = v2; idx = i2; }
+    }
+    if ((threadIdx.x & 31) == 0) { bv[threadIdx.x >> 5] = v; bi[threadIdx.x >> 5] = idx; }
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        for (int w = 1; w < (blockDim.x >> 5); ++w)
+            if (bv[w] > v || (bv[w] == v && bi[w] < idx)) { v = bv[w]; idx = bi[w]; }
+        out[0] = idx;
+    }
+}
+}  // namespace
+
+void argmax_dev(cudaStream_t stream, const float* x, int n, int32_t* out_dev) {
+    k_argmax<<<1, 1024, 0, stream>>>(x, n, out_dev);
+    ck(cudaGetLastError(), "argmax");
 }
 
 void ple_block(const BlockCtx& c, int il, const Ple& p, const float* emb, float* x, int T, PleState& st) {

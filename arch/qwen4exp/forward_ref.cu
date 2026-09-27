@@ -3,6 +3,7 @@
 
 #include "core/gguf.hpp"
 
+#include <future>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -47,6 +48,8 @@ ForwardRef::ForwardRef(const Gguf& g, const Spec& s, const GpuWeights& w, const 
     blk_ = dalloc(B * n);
     pemb_ = dalloc(B * n);
     norm_ = dalloc(B * n);
+    ck(cudaMalloc(&argmax_dev_, 4), "cudaMalloc argmax");
+    ck(cudaHostAlloc(&argmax_host_, 4, cudaHostAllocDefault), "cudaHostAlloc argmax");
 }
 
 ForwardRef::~ForwardRef() {
@@ -56,7 +59,17 @@ ForwardRef::~ForwardRef() {
     free_block_scratch(scratch_);
     for (float* p : {emb_, x_, mixed_, inject_, blk_, pemb_, norm_}) cudaFree(p);
     if (ple_host_.raw_dev) cudaFree(ple_host_.raw_dev);
+    if (ple_host_.raw_pinned) cudaFreeHost(ple_host_.raw_pinned);
+    cudaFree(argmax_dev_);
+    cudaFreeHost(argmax_host_);
     cudaStreamDestroy(stream_);
+}
+
+int32_t ForwardRef::argmax(const float* logits_row_dev) {
+    argmax_dev(stream_, logits_row_dev, s_.n_vocab, argmax_dev_);
+    ck(cudaMemcpyAsync(argmax_host_, argmax_dev_, 4, cudaMemcpyDeviceToHost, stream_), "argmax to host");
+    ck(cudaStreamSynchronize(stream_), "argmax");
+    return *argmax_host_;
 }
 
 void ForwardRef::reset() {
@@ -73,15 +86,22 @@ void ForwardRef::forward(const int32_t* seq, int T, int out_from, float* logits_
     const Spec& s = s_;
     const int n = s.d_model, hc = s.hc_count;
     const BlockCtx c{s, w_, scratch_, stream_};
+    // the PLE rows come from the SSD: read them on another thread while the embedding and the
+    // layers before the first PLE layer are enqueued
+    std::future<void> ple_rows;
+    if (!s.ple_layers.empty()) ple_rows = std::async(std::launch::async, [&] { ple_fetch(ple_host_, seq, pos_, T); });
     embed(c, seq + pos_, T, emb_);
     for (int t = 0; t < T; ++t)
         for (int st = 0; st < hc; ++st)
             ck(cudaMemcpyAsync(x_ + (size_t(t) * hc + st) * n, emb_ + size_t(t) * n, size_t(n) * 4, cudaMemcpyDeviceToDevice, stream_),
                "hc init");
-    if (!s.ple_layers.empty()) ple_embed(c, ple_host_, seq, pos_, T, pemb_);
     const bool db = T == 1 && fast_cache_ && fast_host_->doorbell;
     if (db) doorbell_begin_token(*fast_host_);
     for (int il = 0; il < s.n_layer; ++il) {
+        if (ple_rows.valid() && il == s.ple_layers.front()) {
+            ple_rows.get();
+            ple_upload(c, ple_host_, T, pemb_);
+        }
         for (int pl : s.ple_layers)
             if (pl == il) ple_block(c, il, ple_, pemb_, x_, T, ple_state_[il]);
         hc_mix(c, il, 0, x_, T, mixed_, inject_);

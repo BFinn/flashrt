@@ -80,11 +80,7 @@ int main(int argc, char** argv) {
 
     float* logits_dev = nullptr;
     cudaMalloc(&logits_dev, size_t(s.n_vocab) * 4);
-    std::vector<float> logits(s.n_vocab);
-    auto argmax = [&]() {
-        cudaMemcpy(logits.data(), logits_dev, logits.size() * 4, cudaMemcpyDeviceToHost);
-        return int32_t(std::max_element(logits.begin(), logits.end()) - logits.begin());
-    };
+    auto argmax = [&]() { return fwd.argmax(logits_dev); };
 
     // prefill
     const auto tp = Clock::now();

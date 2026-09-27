@@ -133,6 +133,8 @@ struct PleHost {
     std::vector<uint8_t> raw;
     void* raw_dev = nullptr;
     size_t raw_dev_bytes = 0;
+    uint8_t* raw_pinned = nullptr;    // ple_fetch's destination (pinned, so the upload is async)
+    size_t raw_pinned_bytes = 0;
 };
 struct PleState {
     float* hist = nullptr;   // [(kernel-1)*ngram][hc*d_model], oldest first
@@ -144,6 +146,14 @@ void free_ple_state(PleState& st);
 // emb [T][d_model]: the concatenated n-gram rows for tokens seq[pos0 .. pos0+T-1] (seq holds
 // the whole sequence so far, for the n-gram context).
 void ple_embed(const BlockCtx& c, PleHost& h, const int32_t* seq, int64_t pos0, int T, float* emb);
+// The same in two halves, so the SSD read can overlap GPU work: ple_fetch (host only, any
+// thread) reads the rows into h.raw_pinned; ple_upload enqueues the copy and the dequantize.
+// h.raw_pinned must not be refetched until the stream has passed the upload.
+void ple_fetch(PleHost& h, const int32_t* seq, int64_t pos0, int T);
+void ple_upload(const BlockCtx& c, PleHost& h, int T, float* emb);
+
+// out_dev[0] = index of the largest of x[0 .. n) (the lowest index on ties), on the GPU.
+void argmax_dev(cudaStream_t stream, const float* x, int n, int32_t* out_dev);
 // x [T][hc][d_model] += gated value + conv(normalised gated value), per llama.cpp's build_ple.
 void ple_block(const BlockCtx& c, int il, const Ple& p, const float* emb, float* x, int T, PleState& st);
 

@@ -44,6 +44,9 @@ public:
     void set_fast_moe(const ExpertCache* cache, MoeFastHost* host) { fast_cache_ = cache; fast_host_ = host; }
     std::vector<uint32_t>& counts() { return counts_; }
 
+    // Greedy token from a logits row on the device (GPU argmax; 4 bytes come back).
+    int32_t argmax(const float* logits_row_dev);
+
     int pos() const { return pos_; }
     cudaStream_t stream() const { return stream_; }
 
@@ -66,6 +69,8 @@ private:
     const ExpertCache* fast_cache_ = nullptr;
     MoeFastHost* fast_host_ = nullptr;
     std::vector<uint32_t> counts_;
+    int32_t* argmax_dev_ = nullptr;
+    int32_t* argmax_host_ = nullptr;   // pinned
 };
 
 }  // namespace flashrt::qwen4exp
