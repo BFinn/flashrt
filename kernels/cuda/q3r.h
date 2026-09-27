@@ -27,4 +27,7 @@ void repack(const void* q3k, void* q3r, int64_t rows, int64_t K, cudaStream_t st
 // y[rows] = W x for one token, float activations (no Q8_1 rounding). K <= 11264.
 void matvec(const void* q3r, const float* x, float* y, int64_t rows, int64_t K, cudaStream_t stream);
 
+// Kernel variants for bench_gemv --q3r (1 = matvec's current kernel).
+void matvec_variant(int v, const void* q3r, const float* x, float* y, int64_t rows, int64_t K, cudaStream_t stream);
+
 }  // namespace flashrt::q3r
