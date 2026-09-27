@@ -106,6 +106,16 @@ depth, unless noted.
 - **At 250K the expert cache is the limit:** the fp16 KV takes 6 GB, leaving 14% of the experts
   resident and a 55-58% hit rate. KV compression and offload (P4) is the next lever.
 
+**P4 KV work so far (2026-09-28), all exact within the KLD gate:**
+- **q8_0 KV** (`--kv q8`): fast-path KLD 0.0092. 245K decodes at 70.2 / 63.5 / 71.5 tok/s
+  (`bench/results/2026-09-28-sw18-kv-q8`).
+- **Host-resident q8 KV with a GPU hot set** (`--kv-hot 4096`): fast-path KLD 0.0087-0.0090.
+  - At 245K it frees VRAM for about 7,700-7,900 expert slots, as many as at 32K.
+  - Decode over 6 windows: 66-80 tok/s (`2026-09-28-sw20-kv-hot`, `2026-09-28-sw21-warmup`,
+    `2026-09-28-sw22-defaults`).
+  - The hit rate at depth is still set by cache warm-up and by the generated text.
+- **Not done:** Q4 KV with a Hadamard rotation. Given the hot set, it matters less than P4 assumed.
+
 **How the KLD gate is measured** (set 2026-09-27, `bench/results/2026-09-27-p1-kld`):
 - **Protocol:** llama-perplexity's KL-divergence protocol on wikitext-2 test, 8,192-token chunks,
   2 chunks, scoring the second half of each chunk.
