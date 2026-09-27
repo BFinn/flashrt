@@ -110,8 +110,11 @@ if(FLASHRT_CUDA)
     set_target_properties(test_gemv PROPERTIES BUILD_RPATH ${LLAMA_LIB_DIR})
     add_test(NAME gemv COMMAND test_gemv)
   endif()
-  add_executable(bench_gemv tools/bench_gemv.cpp)   # also proves flashrt_gemv links without libggml
-  target_link_libraries(bench_gemv PRIVATE flashrt_gemv)
+  # stubs for binaries that do not link libggml (never next to libggml: see the file)
+  add_library(flashrt_ggml_stubs STATIC kernels/cuda/ggml_stubs.cpp)
+  target_include_directories(flashrt_ggml_stubs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ggml/include)
+  add_executable(bench_gemv tools/bench_gemv.cpp)
+  target_link_libraries(bench_gemv PRIVATE flashrt_gemv flashrt_ggml_stubs)
 endif()
 
 # ---- tests
