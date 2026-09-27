@@ -82,7 +82,10 @@ void free_qsa_cache(QsaCache& kv);
 // The indexer's top-k is not implemented yet: while the context fits the selection width
 // (indexer.top_k + block - 1 cells) QSA selects every cell, i.e. it is dense causal attention,
 // and longer contexts throw.
-void qsa_mixer(const BlockCtx& c, int il, const float* x, int T, int pos0, QsaCache& kv, float* out);
+// gated_out, if given, gets the gated attention output before the output projection,
+// [T][heads * dim] (llama.cpp's "attn_gated").
+void qsa_mixer(const BlockCtx& c, int il, const float* x, int T, int pos0, QsaCache& kv, float* out,
+               float* gated_out = nullptr);
 
 // The MoE block, correctness path: the GPU computes the router logits and the shared expert;
 // the host computes the routing (softmax over all experts, top-k, weights renormalised) and

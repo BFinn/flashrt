@@ -167,9 +167,11 @@ void test_qsa(const BlockCtx& c, const Frd& ref, const std::vector<int>& steps, 
         for (int il : s.qsa_layers) {
             const std::string L = "-" + std::to_string(il);
             Dev x(ref.floats(ref.get("hc_mixed" + L, step, 0)));
-            Dev out(size_t(T) * s.d_model);
-            qsa_mixer(c, il, x.p, T, pos, kv[il], out.p);
+            Dev out(size_t(T) * s.d_model), gated(size_t(T) * s.n_head * s.head_dim_k);
+            qsa_mixer(c, il, x.p, T, pos, kv[il], out.p, gated.p);
             cudaStreamSynchronize(c.stream);
+            if (const Frd::Rec* ag = ref.find("attn_gated" + L, step))
+                ck.check("qsa attn_gated" + L, gated.host(), ref.floats(*ag), true);
             std::vector<float> want = ref.floats(ref.get("attn_output" + L, step));
             std::vector<float> got = out.host();
             if (want.size() != got.size()) {   // last layer of a prompt batch keeps the output row only

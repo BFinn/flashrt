@@ -393,7 +393,7 @@ void free_qsa_cache(QsaCache& kv) {
     kv = QsaCache{};
 }
 
-void qsa_mixer(const BlockCtx& c, int il, const float* x, int T, int pos0, QsaCache& kv, float* out) {
+void qsa_mixer(const BlockCtx& c, int il, const float* x, int T, int pos0, QsaCache& kv, float* out, float* gated_out) {
     const Spec& s = c.s;
     const int H = s.n_head, KH = s.n_head_kv, D = s.head_dim_k;
     const int width = s.idx_top_k + s.qsa_block - 1;
@@ -420,6 +420,7 @@ void qsa_mixer(const BlockCtx& c, int il, const float* x, int T, int pos0, QsaCa
     k_copy_round_h<<<(T * KH * D + 255) / 256, 256, 0, c.stream>>>(vraw, kv.V + size_t(pos0) * KH * D, T * KH * D);
     const size_t smem = size_t(pos0 + T) * 4;
     k_attn_dense<<<T * H, D, smem, c.stream>>>(q, kv.K, kv.V, qfull, o, H, KH, D, pos0, 1.0f / sqrtf(float(D)), H * 2 * D, 2 * D, D);
+    if (gated_out) ck(cudaMemcpyAsync(gated_out, o, size_t(T) * H * D * 4, cudaMemcpyDeviceToDevice, c.stream), "copy gated");
     linear(c, c.w.layer(il, "attn_output.weight"), o, out, T);
     ck(cudaGetLastError(), "qsa_mixer");
 }
