@@ -1,0 +1,26 @@
+# tools/cache_sim.py, default policy parameters, global capacity in (layer, expert) slots,
+# cold start, 2048 decoded tokens per trace (sampled t=1.0, top_p 0.95, top_k 20).
+
+## p0a/trace_d1000 (filler prompt, 1K)
+   slots      lru      win     dlfu   static   belady
+    2304    0.656    0.631    0.626    0.597    0.828
+    4000    0.803    0.791    0.787    0.775    0.911
+    5500    0.880    0.874    0.870    0.871    0.948
+    7000    0.930    0.923    0.921    0.929    0.967
+    9000    0.962    0.952    0.953    0.968    0.979
+
+## p0a/trace_d32000 (filler prompt, 32K)
+   slots      lru      win     dlfu   static   belady
+    2304    0.561    0.599    0.603    0.481    0.770
+    4000    0.708    0.743    0.733    0.633    0.876
+    5500    0.830    0.813    0.799    0.730    0.920
+    7000    0.885    0.854    0.840    0.803    0.944
+    9000    0.924    0.892    0.878    0.875    0.962
+
+## p0b/wtrace_d32000 (wikitext, 32K)
+   slots      lru      win     dlfu   static   belady
+    2304    0.682    0.665    0.663    0.674    0.832
+    4000    0.795    0.788    0.787    0.808    0.906
+    5500    0.865    0.857    0.855    0.880    0.938
+    7000    0.907    0.903    0.902    0.926    0.958
+    9000    0.944    0.944    0.943    0.963    0.972

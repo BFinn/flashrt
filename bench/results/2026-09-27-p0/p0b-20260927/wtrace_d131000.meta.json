@@ -1,0 +1,1 @@
+{"model":"$MODELS/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf","n_prompt":131000,"gen":2048,"n_layer":48,"n_expert":512,"top_k":10,"temp":1,"top_p":0.95,"sample_top_k":20,"seed":42,"ubatch":2048,"threads":12,"load_s":2.56511,"prefill_s":286.26,"decode_s":77.417,"unobserved":0,"qsa_layers":[3,7,11,15,19,23,27,31,35,39,43,47]}

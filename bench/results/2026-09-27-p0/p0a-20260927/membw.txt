@@ -1,0 +1,6 @@
+membw pages=4k huge_frac=0.00 threads=1 buffer=8.0GiB seconds=5.04 read=42.62 GB/s (sink 0)
+membw pages=4k huge_frac=0.00 threads=6 buffer=8.0GiB seconds=5.10 read=48.57 GB/s (sink 0)
+membw pages=4k huge_frac=0.00 threads=12 buffer=8.0GiB seconds=5.12 read=47.02 GB/s (sink 0)
+membw pages=thp huge_frac=0.60 threads=1 buffer=8.0GiB seconds=5.10 read=48.88 GB/s (sink 0)
+membw pages=thp huge_frac=0.64 threads=6 buffer=8.0GiB seconds=5.07 read=47.40 GB/s (sink 0)
+membw pages=thp huge_frac=0.64 threads=12 buffer=8.0GiB seconds=5.09 read=45.86 GB/s (sink 0)

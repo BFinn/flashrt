@@ -1,0 +1,22 @@
+h2dbw copy-alloc   chunk=    1.38MB   45.41 GB/s
+h2dbw copy-alloc   chunk=   16.78MB   48.58 GB/s
+h2dbw copy-alloc   chunk=   67.11MB   48.68 GB/s
+h2dbw registered buffer: pages=4k huge_frac=0.00
+h2dbw copy-reg     chunk=    1.38MB   42.03 GB/s
+h2dbw copy-reg     chunk=   16.78MB   47.42 GB/s
+h2dbw copy-reg     chunk=   67.11MB   47.57 GB/s
+h2dbw zero-copy    chunk=    1.38MB   41.87 GB/s
+h2dbw zero-copy    chunk=   16.78MB   46.29 GB/s
+h2dbw zero-copy    chunk=   67.11MB   45.33 GB/s
+h2dbw done (cpu_threads=0)
+h2dbw copy-alloc   chunk=    1.38MB   46.14 GB/s
+h2dbw copy-alloc   chunk=   16.78MB   48.51 GB/s
+h2dbw copy-alloc   chunk=   67.11MB   48.76 GB/s
+h2dbw registered buffer: pages=thp huge_frac=1.00
+h2dbw copy-reg     chunk=    1.38MB   49.62 GB/s
+h2dbw copy-reg     chunk=   16.78MB   53.78 GB/s
+h2dbw copy-reg     chunk=   67.11MB   54.53 GB/s
+h2dbw zero-copy    chunk=    1.38MB   45.05 GB/s
+h2dbw zero-copy    chunk=   16.78MB   48.76 GB/s
+h2dbw zero-copy    chunk=   67.11MB   47.37 GB/s
+h2dbw done (cpu_threads=0)

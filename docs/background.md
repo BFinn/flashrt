@@ -8,6 +8,31 @@ next.
 - **[Q]** = quoted from a source.
 - **[E]** = estimate.
 
+## Corrections from P0 (2026-09-27) [M]
+
+P0 windows A and B (`bench/results/2026-09-27-p0/`) replaced several estimates below:
+
+- **Host DRAM reads run at about 50 GB/s,** not 33.6 (triad includes writes).
+- **The Gen5 link moves 45-55 GB/s,** even in 1.38 MB expert chunks, so 20 GB/s is not the
+  cap.
+- **CPU and PCIe misses share one DRAM budget.** With both running they split it about
+  25 + 25 GB/s.
+- **The depth prompts are filler:** 134 distinct tokens repeated. Prefill numbers on them
+  are optimistic (Strata at 32K: 1,134 tok/s on filler, 683 on wikitext). Use natural
+  text from now on.
+- **Verify-window expert unions are sub-linear:** 0.70 of W·k at W=3 and 0.64 at W=4.
+  "Almost linear" was wrong.
+- **Prefill chunks touch 73% of experts at 2K and 88% at 8K,** not all of them.
+- **Cache hit rates, wikitext at 32K with 5,500 slots:**
+  - LRU 86.5%;
+  - decayed-LFU 85.5%;
+  - oracle static profile 88.0%;
+  - Belady 93.8%.
+- **QSA locality supports KV streaming.** A 4× hot set misses 5.6% at 32K and 14.7% at 131K,
+  about 4 MB per token.
+- **Reference numbers on wikitext:** Strata 0.1.6 greedy (1 run) decodes at
+  86 / 87 / 101 tok/s and prefills at 538 / 683 / 823 at 1K / 32K / 131K.
+
 ## Measured baselines [M]
 
 Decode tok/s at 1K / 32K / 134K / 250K depth. Identical prompts and token ids, one growing
