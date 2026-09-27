@@ -1001,9 +1001,17 @@ __global__ void k_idx_select(const float* scores, int ld, int32_t* cells, int32_
             for (int i = threadIdx.x; i < 256; i += blockDim.x) hist[i] = 0;
             __syncthreads();
             const unsigned prefix = sh_prefix, hmask = shift == 24 ? 0u : ~0u << (shift + 8);
-            for (int b = threadIdx.x; b < nb; b += blockDim.x) {
-                const unsigned key = ordered_key(sc[b]);
-                if ((key & hmask) == prefix) atomicAdd(&hist[(key >> shift) & 255], 1);
+            // warp-aggregated: lanes with the same digit add once (scores share their top bits, so
+            // plain atomics would serialise on a few bins)
+            for (int b0 = 0; b0 < nb; b0 += blockDim.x) {
+                const int b = b0 + threadIdx.x;
+                int bin = -1;
+                if (b < nb) {
+                    const unsigned key = ordered_key(sc[b]);
+                    if ((key & hmask) == prefix) bin = int((key >> shift) & 255);
+                }
+                const unsigned same = __match_any_sync(0xffffffff, bin);
+                if (bin >= 0 && int(threadIdx.x & 31) == __ffs(same) - 1) atomicAdd(&hist[bin], __popc(same));
             }
             __syncthreads();
             if (threadIdx.x < 32) {   // warp 0: the digit holding the need-th largest key
