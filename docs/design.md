@@ -92,6 +92,19 @@ depth, unless noted.
 | P3 | Prefill with 8K chunks on borrowed slots, grouped int8 Q2_0 GEMM, tensor-core indexer, prefix cache | Prefill ≥2,000 at 32K and ≥1,700 at 250K |
 | P4 | Q4 KV with Hadamard rotation, dynamic CPU/PCIe split, huge pages; then KLD-gated cache-conditional routing and expert deferral | ≥95 / ≥85 exact; ≥110 with quality options at KLD ≤0.02 |
 
+**P1 status (2026-09-28): the decode gates are met; P1 scope is not finished.**
+
+| Gate | Target | Measured | Source |
+|---|---|---|---|
+| 32K decode | ≥ 57 tok/s | 78.5 / 77.9 / 79.5 | 3 windows, 1 prefill, adaptive cache; `bench/results/2026-09-27-sw12-adaptive` |
+| 250K decode | ≥ 47 tok/s | 55.8 / 52.0 / 62.3 (fresh prefill); 57.9 / 57.2 / 58.3 (Q3R v2, saved state) | 245,760 tokens, 3 windows; `bench/results/2026-09-28-sw15-pcie-245k`, `bench/results/2026-09-28-sw16-q3r` |
+| KLD, fast decode path | ≤ 0.03 | 0.0087 | `fr_kld --fast`; `bench/results/2026-09-28-sw16-q3r` |
+
+- **Scope items done:** the doorbell CPU miss engine, the AVX-512 Q2_0 kernel, and the
+  decayed-LFU cache (with a swap budget).
+- **Not done:** "one graph per window" (CUDA graphs). The dense path is still launched per
+  kernel (about 1,600 launches per token) with doorbells.
+
 **How the KLD gate is measured** (set 2026-09-27, `bench/results/2026-09-27-p1-kld`):
 - **Protocol:** llama-perplexity's KL-divergence protocol on wikitext-2 test, 8,192-token chunks,
   2 chunks, scoring the second half of each chunk.
