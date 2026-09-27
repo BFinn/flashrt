@@ -34,6 +34,10 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
     COMPILE_OPTIONS "-mavx512f;-mavx512bw;-mavx512vl;-mavx512vnni;-mf16c;-mfma")
 endif()
 
+# ---- architectures
+add_library(flashrt_qwen4exp STATIC arch/qwen4exp/spec.cpp)
+target_link_libraries(flashrt_qwen4exp PUBLIC flashrt_core)
+
 # ---- engine process (protocol skeleton; generation arrives in P1)
 add_executable(flashrt-engine engine/main.cpp)
 target_link_libraries(flashrt-engine PRIVATE flashrt_core)
@@ -45,6 +49,8 @@ add_executable(ssdrand tools/ssdrand.cpp)
 target_link_libraries(ssdrand PRIVATE Threads::Threads)
 add_executable(bench_q2_0 tools/bench_q2_0.cpp)
 target_link_libraries(bench_q2_0 PRIVATE flashrt_q2_0)
+add_executable(fr_inspect tools/fr_inspect.cpp)
+target_link_libraries(fr_inspect PRIVATE flashrt_qwen4exp flashrt_q2_0)
 add_executable(gguf_dump tools/gguf_dump.cpp)
 target_link_libraries(gguf_dump PRIVATE flashrt_core)
 
