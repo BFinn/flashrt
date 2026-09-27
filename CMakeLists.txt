@@ -21,7 +21,8 @@ find_package(Threads REQUIRED)
 add_library(flashrt_core STATIC
   core/platform.cpp
   core/gguf.cpp
-  core/expert_arena.cpp)
+  core/expert_arena.cpp
+  core/row_reader.cpp)
 target_include_directories(flashrt_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(flashrt_core PUBLIC Threads::Threads)
 
@@ -38,7 +39,8 @@ endif()
 # ---- architectures
 add_library(flashrt_qwen4exp STATIC
   arch/qwen4exp/spec.cpp
-  arch/qwen4exp/experts.cpp)
+  arch/qwen4exp/experts.cpp
+  arch/qwen4exp/ple.cpp)
 target_link_libraries(flashrt_qwen4exp PUBLIC flashrt_core flashrt_q2_0)
 
 # ---- engine process (protocol skeleton; generation arrives in P1)
@@ -54,6 +56,8 @@ add_executable(bench_q2_0 tools/bench_q2_0.cpp)
 target_link_libraries(bench_q2_0 PRIVATE flashrt_q2_0)
 add_executable(fr_load tools/fr_load.cpp)
 target_link_libraries(fr_load PRIVATE flashrt_qwen4exp)
+add_executable(fr_ple tools/fr_ple.cpp)
+target_link_libraries(fr_ple PRIVATE flashrt_qwen4exp)
 add_executable(fr_inspect tools/fr_inspect.cpp)
 target_link_libraries(fr_inspect PRIVATE flashrt_qwen4exp flashrt_q2_0)
 add_executable(gguf_dump tools/gguf_dump.cpp)
