@@ -468,7 +468,7 @@ int main(int argc, char** argv) {
     const Spec s = parse(g);
     const WeightPlan plan = qwen4exp::plan(g, s);
     GpuWeights w;
-    w.load(g, plan);
+    w.load(g, plan, false);   // ggml Q3_K, so projections stay bit-comparable with llama.cpp's
     const Frd ref(argv[2]);
     const std::string probe = ref.find("model.input_embed", -1) ? "model.input_embed" : "hc_mixed-" + std::to_string(s.qsa_layers[0]);
     std::vector<int> steps{-1};

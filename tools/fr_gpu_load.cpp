@@ -21,7 +21,7 @@ int main(int argc, char** argv) {
     const qwen4exp::Spec s = qwen4exp::parse(g);
     const qwen4exp::WeightPlan plan = qwen4exp::plan(g, s);
     qwen4exp::GpuWeights w;
-    w.load(g, plan);
+    w.load(g, plan, false);   // ggml types as stored (this tool times ggml's mat-vec on them)
     size_t free_b = 0, total_b = 0;
     cudaMemGetInfo(&free_b, &total_b);
     std::printf("dense weights: %.1f MiB in VRAM (with padding) in %.1f s; VRAM free %.0f of %.0f MiB\n",

@@ -3,7 +3,7 @@
 //
 //   fr_bench MODEL.gguf --ids PROMPT.txt --n-prompt N --gen G [--slots S] [--reserve-mib R]
 //            [--reference] [--workers W] [--no-doorbell] [--spin-us U] [--windows N] [--trace FILE]
-//            [--static-cache] [--swap-budget B] [--pcie-frac F] [--save-state FILE | --load-state FILE]
+//            [--static-cache] [--swap-budget B] [--pcie-frac F] [--save-state FILE | --load-state FILE] [--no-q3r]
 //
 // Prefills N prompt tokens in 64-token batches (reference path; its routing counts pick the
 // cache contents), fills the VRAM expert cache with the most-routed experts (S slots, or all
@@ -54,6 +54,7 @@ int main(int argc, char** argv) {
     bool reference = false, doorbell = true, adaptive = true;
     int swap_budget = 8;
     float pcie_frac = 0.5f;
+    bool q3r = true;
     int spin_us = 2000;
     for (int i = 2; i < argc; ++i) {
         const std::string a = argv[i];
@@ -73,6 +74,7 @@ int main(int argc, char** argv) {
         else if (a == "--swap-budget") swap_budget = std::atoi(next());
         else if (a == "--pcie-frac") pcie_frac = float(std::atof(next()));
         else if (a == "--save-state") save_state = next();
+        else if (a == "--no-q3r") q3r = false;
         else if (a == "--load-state") load_state = next();
         else { std::fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
     }
@@ -88,7 +90,7 @@ int main(int argc, char** argv) {
     const Spec s = parse(g);
     const WeightPlan plan = qwen4exp::plan(g, s);
     GpuWeights w;
-    w.load(g, plan);
+    w.load(g, plan, q3r);
     ExpertArena arena = arena_alloc(s.n_layer, s.n_expert, q2_0::expert_bytes({s.d_model, s.d_ff_expert}), PageMode::THP, 0);
     if (!arena.buf.ptr) { std::fprintf(stderr, "arena allocation failed\n"); return 1; }
     load_experts(g, s, arena, 12);
