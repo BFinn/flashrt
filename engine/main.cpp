@@ -36,7 +36,7 @@ void emit(const std::string& json) {
 
 int main() {
     std::ios::sync_with_stdio(false);
-    emit(R"({"ev":"ready","version":"0.0.1","arch":"none","max_context":0,"features":["stop"]})");
+    emit(R"J({"ev":"ready","version":"0.0.1","arch":"none","max_context":0,"features":["stop"]})J");
 
     std::string line;
     while (std::getline(std::cin, line)) {
@@ -46,10 +46,10 @@ int main() {
         if (op == "quit") break;
         if (op == "stop") continue;   // nothing is running yet
         if (op == "generate") {
-            emit(R"({"ev":"error","id":")" + id + R"(","msg":"generation is not implemented yet (phase 1)"})");
+            emit(R"J({"ev":"error","id":")J" + id + R"J(","msg":"generation is not implemented yet (phase 1)"})J");
             continue;
         }
-        emit(R"({"ev":"error","id":")" + id + R"(","msg":"unknown op"})");
+        emit(R"J({"ev":"error","id":")J" + id + R"J(","msg":"unknown op"})J");
     }
     return 0;
 }
