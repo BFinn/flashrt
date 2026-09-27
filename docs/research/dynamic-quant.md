@@ -370,6 +370,84 @@ combinations with three formats). It splits into three layers:
 | Ternary quantizer, database format, in-place trial assembler, variable-size `cache_sim` | no: ours to write |
 | An end-to-end per-expert mixed-quant search service | none found |
 
+## Prior knowledge for the allocator
+
+**From ISTA's RCO allocations on this model** [Q, computed from the four
+`rco-allocation.txt` files].
+
+- RCO chose one type per layer, optimising end-to-end KL, in three builds (2.5, 3.0 and
+  3.5 bpw). Where a layer ranks within each build is a sensitivity signal for quantization
+  noise.
+- It is one search per build, so single layers are noisy. The trends are consistent.
+
+**gate/up:**
+- **The second half of the stack gets more bits than the first.**
+  - Most sensitive, by the mean z-score of bits: layers 47 (+4.5), 28 (+3.2), 35, 44, 45
+    (+2.5), 20, 22, 33, 43 (+2.3).
+  - Most robust: 13 (−4.8), 1 and 11 (−3.5), 4, 9, 10, 19 (−3.0), 8 (−2.2).
+- **RCO accepted IQ1_M (1.75 bpw) in layers 8, 13 and 37** of the 2.5 bpw build.
+
+**down:**
+- Never lifted above Q2_0, even at 3.5 bpw: layers 1, 8, 10, 12, 13, 20, 21, 36.
+- Lifted to IQ4_NL already at 3.0 bpw: layers 0, 2, 4, 28, 29, 31, 32, 34, 35, 37-39, 42-44,
+  46, 47.
+- So down in layers 0, 2 and 4 matters early on, and down in the late half matters broadly.
+
+**Shared experts:** 21 of 48 `ffn_gate_shexp` are Q2_0 in the Q2_0 build. Raising all shared
+experts to Q8_0 costs about +0.15 GB of VRAM, a cheap "dense upgrade" knob.
+
+**From the literature and community builds** [Q, via a research agent; URLs in the vault
+draft]:
+
+- **Super experts** (arXiv 2507.23279): a handful of experts in early layers produce
+  down_proj output outliers. On Qwen3-30B, pruning 3 of 6,144 takes PPL from 8.7 to 59.9.
+  - The set does not depend on the data. Not yet studied on 512-expert models.
+  - Calibration step 4 measures it here.
+- **Layer 0 is structurally special in Flash-Next.** Its GDN output feeds attention layers
+  10-19 through the gated residual (arXiv 2608.30320). It is also the layer that loses the
+  most routing mass under REAP pruning (79.6% kept against 89.3% on average).
+- **Pruning evidence points the opposite way from quantization evidence.**
+  - Late layers are the most prunable (Qwen3.6 masking study). REAP-320 on Flash-Next held
+    HumanEval at 95-96%, while 256 experts "prunes too deep" (89.6%).
+  - Pruning that calibrates on only one or two domains fabricates (REAP-320 at 25%) or kills
+    capabilities: vision in ISTA's first Coder search; code under C4-only calibration.
+- **Keep the non-expert side high:** `ssm_out`, attention, `ssm_alpha/beta`, shared experts,
+  routers. Unsloth measured `ssm_out` at low bits as "dramatically" raising KLD, for tiny
+  savings.
+- **Router drift is the main failure mode at ≤1.5 bpw:** 35-41% of selections change.
+  GEMQ's router fine-tuning recovers most of it.
+- **Scale of KLD against BF16 for Flash-Next GGUFs (Unsloth):**
+
+  | Build | Mean KLD | Top-1 match |
+  |---|---:|---:|
+  | UD-IQ1_M | 0.315 | 79.7% |
+  | UD-Q2_K_XL | 0.225 | 82.7% |
+  | UD-Q4_K_XL | 0.047 | 92.3% |
+
+**Priors to seed the search:**
+1. gate/up ternary goes first to layers 1, 4, 8-13 and 19. Late layers (28-47, and 20-22)
+   start at Q2_0 or above.
+2. down stays ≥ Q2_0 everywhere. Down in layers 0, 2, 4 and 28-47 is the first candidate
+   for the 3-bit tier.
+3. Super experts found in step 4 are pinned at the top tier and never pruned. So is layer
+   0 as a whole.
+4. Pruning is a separate, later lever, starting with late-layer cold experts, capped at
+   about 320 kept per layer. Gate it on generative evals, not only KLD.
+5. Everything non-expert stays at its current type or higher. Raising the shared experts is
+   a cheap knob.
+6. The calibration mix must cover every domain the model is used for. Experts that are
+   never routed in calibration are unknown, not unimportant. Give them a floor (Q2_0)
+   rather than the lowest tier.
+7. Expect a bimodal optimum (GEMQ): {ternary, 3-bit} with Q2_0 in between. Seed the search
+   with it.
+
+**Contradictions to resolve with our own KLD:**
+- Pruning studies call late layers robust, but RCO's quantization search calls them
+  sensitive. Both can be true: dropping a whole expert and adding noise to it are different
+  perturbations.
+- The early-layer bump in Unsloth's recipe is not supported by RCO's gate/up choices. It is
+  partly supported for down (layers 0, 2, 4).
+
 ## Open questions
 
 - **Global routing skew over a diverse corpus.** This decides how much frequency-aware
