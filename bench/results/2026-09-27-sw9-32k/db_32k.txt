@@ -1,0 +1,20 @@
+prefill: 32768 tokens in 271.3 s (120.8 tok/s, reference path)
+expert cache: 6911 slots (28.1% of experts), filled in 0.6 s from 10136 MiB free
+decode: 128 tokens at depth 32768 in 1.62 s: 78.90 tok/s (fast path, doorbell), window 1, hit rate 85.62%
+decode: 128 tokens at depth 32896 in 1.65 s: 77.80 tok/s (fast path, doorbell), window 2, hit rate 85.06%
+decode: 128 tokens at depth 33024 in 1.81 s: 70.69 tok/s (fast path, doorbell), window 3, hit rate 74.97%
+expert cache hit rate 81.88% (150925 hits, 33395 misses)
+host per token: 9.38 ms waiting for routing, 3.15 ms running misses
+misses per layer: count (share of layers) and mean host miss time
+   0 :  28.4%     0.6 us
+   1 :  26.8%    43.0 us
+   2 :  18.3%    74.5 us
+   3 :  11.1%   105.6 us
+   4 :   6.0%   137.6 us
+   5 :   3.5%   169.8 us
+   6 :   2.4%   201.5 us
+   7 :   1.5%   234.3 us
+   8 :   1.0%   265.5 us
+   9 :   0.6%   297.0 us
+  10 :   0.4%   328.1 us
+tokens: 5820 24304 383 279 44798 641 4855 22950 8619 290 220 16 267 71136 421 551 1362 524 3222 279 2234 1691 4860 641
