@@ -715,6 +715,7 @@ void moe_block(const BlockCtx& c, int il, const float* x, int T, MoeHost& h, flo
         for (int k = 0; k < K; ++k) wsum += p[idx[k]];
         wsum = std::max(wsum, 6.103515625e-5f);
         for (int k = 0; k < K; ++k) {
+            if (h.counts) ++(*h.counts)[size_t(il) * E + idx[k]];
             routed[idx[k]].push_back({t, p[idx[k]] / wsum});
             if (trace) {
                 trace->topk[size_t(t) * K + k] = idx[k];

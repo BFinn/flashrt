@@ -5,6 +5,7 @@
 #pragma once
 
 #include "arch/qwen4exp/blocks.hpp"
+#include "arch/qwen4exp/moe_fast.hpp"
 #include "arch/qwen4exp/ple.hpp"
 #include "core/cpu_pool.hpp"
 #include "core/expert_arena.hpp"
@@ -38,6 +39,11 @@ public:
     // and advances pos(). Logits of rows [out_from, T) go to logits_dev, [T - out_from][n_vocab].
     void forward(const int32_t* seq, int T, int out_from, float* logits_dev);
 
+    // Decode (T == 1) uses the fast MoE path with this cache when set; batches keep the reference
+    // path. Routing counts of the reference path accumulate into counts() (for a cache fill).
+    void set_fast_moe(const ExpertCache* cache, MoeFastHost* host) { fast_cache_ = cache; fast_host_ = host; }
+    std::vector<uint32_t>& counts() { return counts_; }
+
     int pos() const { return pos_; }
     cudaStream_t stream() const { return stream_; }
 
@@ -57,6 +63,9 @@ private:
           *norm_ = nullptr;
     int max_batch_;
     int pos_ = 0;
+    const ExpertCache* fast_cache_ = nullptr;
+    MoeFastHost* fast_host_ = nullptr;
+    std::vector<uint32_t> counts_;
 };
 
 }  // namespace flashrt::qwen4exp

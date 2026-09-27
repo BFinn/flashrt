@@ -29,6 +29,8 @@ ForwardRef::ForwardRef(const Gguf& g, const Spec& s, const GpuWeights& w, const 
     ple_host_.reader = reader_.get();
     moe_host_.arena = &arena;
     moe_host_.pool = &pool;
+    counts_.assign(size_t(s.n_layer) * s.n_expert, 0);
+    moe_host_.counts = &counts_;
     scratch_ = alloc_block_scratch(s, max_batch);
     ck(cudaStreamCreate(&stream_), "cudaStreamCreate");
     gdn_.resize(s.n_layer);
@@ -85,7 +87,8 @@ void ForwardRef::forward(const int32_t* seq, int T, int out_from, float* logits_
         else gdn_mixer(c, il, mixed_, T, gdn_[il], blk_);
         hc_combine(c, x_, blk_, inject_, T);
         hc_mix(c, il, 1, x_, T, mixed_, inject_);
-        moe_block(c, il, mixed_, T, moe_host_, blk_);
+        if (T == 1 && fast_cache_) moe_block_fast(c, il, mixed_, *fast_cache_, *fast_host_, blk_);
+        else moe_block(c, il, mixed_, T, moe_host_, blk_);
         hc_combine(c, x_, blk_, inject_, T);
     }
     if (out_from < T && logits_dev) {

@@ -115,6 +115,22 @@ void matvec(uint32_t t, const void* W, const float* x, float* y, int64_t ncols, 
     }
 }
 
+void moe_q2_0(const void* w, const void* gate, const void* xq, const int32_t* ids, float* dst, int n_ids, int64_t ncols,
+              int64_t nrows, int64_t slot_stride_bytes, bool per_channel_act, cudaStream_t stream) {
+    if (ncols % QK2_0 || slot_stride_bytes % int64_t(sizeof(block_q2_0)) || n_ids < 1)
+        throw std::runtime_error("gemv::moe_q2_0: bad shape");
+    const int64_t act_blocks = GGML_PAD(ncols, MATRIX_ROW_PADDING) / QK8_1;   // Q8_1 blocks per activation row
+    ggml_cuda_mm_fusion_args_device fusion{};
+    fusion.gate = gate;
+    fusion.glu_op = GGML_GLU_OP_SWIGLU;
+    const int warp = ggml_cuda_info().devices[ggml_cuda_get_device()].warp_size;
+    mul_mat_vec_q_moe_launch<GGML_TYPE_Q2_0>(
+        w, xq, ids, fusion, dst, uint32_t(ncols), init_fastdiv_values(per_channel_act ? uint32_t(n_ids) : 1u), uint32_t(nrows),
+        uint32_t(ncols / QK2_0), uint32_t(act_blocks), uint32_t(nrows),
+        uint32_t(slot_stride_bytes / int64_t(sizeof(block_q2_0))), per_channel_act ? uint32_t(act_blocks) : 0u, uint32_t(nrows),
+        1u, 0u, warp, n_ids, stream);
+}
+
 void dequantize(uint32_t t, const void* src, float* dst, int64_t n, cudaStream_t stream) {
     if (!supported(t) || n % block_size(t)) throw std::runtime_error("gemv::dequantize: unsupported type or length");
     if (t == GGML_TYPE_F32) {

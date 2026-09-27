@@ -38,6 +38,15 @@ void quantize_q8_1(const float* x, int64_t ncols, int n_tok, void* xq, cudaStrea
 void matvec_q(uint32_t ggml_type, const void* W, const void* xq, float* y, int64_t ncols, int64_t nrows, int n_tok,
               cudaStream_t stream);
 
+// Grouped Q2_0 mat-vec over experts held in equally strided slots (the VRAM expert cache):
+// for channel i < n_ids, dst[i][rows] = W_{ids[i]} x_i, where W_e starts at w + e * slot_stride
+// bytes (a whole number of Q2_0 blocks). With gate != nullptr the result is
+// silu(G_{ids[i]} x_i) * (W_{ids[i]} x_i), G_e at gate + e * slot_stride (fused SwiGLU).
+// xq holds Q8_1 activations (quantize_q8_1): one row shared by every channel, or, with
+// per_channel_act, row i for channel i. dst is [n_ids][nrows].
+void moe_q2_0(const void* w, const void* gate, const void* xq, const int32_t* ids, float* dst, int n_ids, int64_t ncols,
+              int64_t nrows, int64_t slot_stride_bytes, bool per_channel_act, cudaStream_t stream);
+
 // Dequantize n contiguous elements (whole blocks) of a ggml-typed buffer to F32.
 void dequantize(uint32_t ggml_type, const void* src, float* dst, int64_t n, cudaStream_t stream);
 

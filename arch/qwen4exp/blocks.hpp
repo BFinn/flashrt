@@ -109,6 +109,7 @@ struct MoeHost {
     CpuPool* pool = nullptr;
     std::vector<float> x, logits, out;         // host staging
     std::vector<uint8_t> act_mem, scratch;     // Q8 activations, moe_cpu scratch
+    std::vector<uint32_t>* counts = nullptr;   // optional: routes per (layer * n_expert + expert)
 };
 struct MoeTrace {                              // routing, for parity checks
     std::vector<int32_t> topk;                 // [T][top_k]
