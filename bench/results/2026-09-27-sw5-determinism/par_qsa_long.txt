@@ -1,0 +1,245 @@
+qsa: step 0 (1 tokens at 1)
+  qsa attn_output-3 step 0                     rel L2 0.000e+00
+  qsa attn_output-7 step 0                     rel L2 0.000e+00
+  qsa attn_output-43 step 155                  rel L2 2.353e-03  FAIL
+qsa: step 256 (1 tokens at 257)
+  qsa attn_output-3 step 256                   rel L2 6.798e-05
+  qsa attn_output-7 step 256                   rel L2 0.000e+00
+  qsa attn_output-23 step 259                  rel L2 2.314e-03  FAIL
+  qsa attn_output-27 step 384                  rel L2 2.071e-03  FAIL
+  qsa attn_output-43 step 422                  rel L2 2.091e-03  FAIL
+  qsa attn_output-27 step 424                  rel L2 2.143e-03  FAIL
+qsa: step 512 (1 tokens at 513)
+  qsa attn_output-3 step 512                   rel L2 2.531e-05
+  qsa attn_output-7 step 512                   rel L2 2.469e-04
+  qsa attn_output-27 step 539                  rel L2 2.256e-03  FAIL
+  qsa attn_output-27 step 552                  rel L2 2.388e-03  FAIL
+  qsa attn_output-27 step 598                  rel L2 2.135e-03  FAIL
+  qsa attn_output-43 step 634                  rel L2 2.396e-03  FAIL
+  qsa attn_output-31 step 652                  rel L2 2.392e-03  FAIL
+  qsa attn_output-27 step 671                  rel L2 2.155e-03  FAIL
+  qsa attn_output-23 step 691                  rel L2 2.794e-03  FAIL
+  qsa attn_output-19 step 706                  rel L2 3.122e-03  FAIL
+  qsa attn_output-27 step 746                  rel L2 2.226e-03  FAIL
+qsa: step 768 (1 tokens at 769)
+  qsa attn_output-3 step 768                   rel L2 3.413e-04
+  qsa attn_output-7 step 768                   rel L2 1.367e-03
+  qsa attn_output-27 step 793                  rel L2 2.215e-03  FAIL
+  qsa attn_output-35 step 848                  rel L2 2.103e-03  FAIL
+  qsa attn_output-27 step 931                  rel L2 2.218e-03  FAIL
+  qsa attn_output-31 step 933                  rel L2 2.270e-03  FAIL
+  qsa attn_output-31 step 1023                 rel L2 2.559e-03  FAIL
+qsa: step 1024 (1 tokens at 1025)
+  qsa attn_output-3 step 1024                  rel L2 2.661e-04
+  qsa attn_output-7 step 1024                  rel L2 0.000e+00
+  qsa attn_output-31 step 1053                 rel L2 3.147e-03  FAIL
+  qsa attn_output-31 step 1071                 rel L2 2.584e-03  FAIL
+  qsa attn_output-15 step 1110                 rel L2 2.257e-03  FAIL
+  qsa attn_output-35 step 1129                 rel L2 2.012e-03  FAIL
+  qsa attn_output-31 step 1224                 rel L2 2.007e-03  FAIL
+  qsa attn_output-27 step 1227                 rel L2 2.423e-03  FAIL
+  qsa attn_output-27 step 1256                 rel L2 2.432e-03  FAIL
+qsa: step 1280 (1 tokens at 1281)
+  qsa attn_output-3 step 1280                  rel L2 3.628e-04
+  qsa attn_output-7 step 1280                  rel L2 1.615e-03
+  qsa attn_output-23 step 1283                 rel L2 2.150e-03  FAIL
+  qsa attn_output-27 step 1295                 rel L2 2.034e-03  FAIL
+  qsa attn_output-31 step 1303                 rel L2 2.022e-03  FAIL
+  qsa attn_output-19 step 1311                 rel L2 2.228e-03  FAIL
+  qsa attn_output-23 step 1312                 rel L2 2.683e-03  FAIL
+  qsa attn_output-19 step 1321                 rel L2 2.653e-03  FAIL
+  qsa attn_output-27 step 1364                 rel L2 2.114e-03  FAIL
+  qsa attn_output-31 step 1366                 rel L2 2.309e-03  FAIL
+  qsa attn_output-31 step 1370                 rel L2 2.574e-03  FAIL
+  qsa attn_output-27 step 1380                 rel L2 2.123e-03  FAIL
+  qsa attn_output-31 step 1380                 rel L2 2.145e-03  FAIL
+  qsa attn_output-27 step 1382                 rel L2 2.432e-03  FAIL
+  qsa attn_output-31 step 1383                 rel L2 2.136e-03  FAIL
+  qsa attn_output-31 step 1386                 rel L2 2.126e-03  FAIL
+  qsa attn_output-31 step 1387                 rel L2 2.892e-03  FAIL
+  qsa attn_output-31 step 1388                 rel L2 2.056e-03  FAIL
+  qsa attn_output-31 step 1391                 rel L2 2.319e-03  FAIL
+  qsa attn_output-27 step 1397                 rel L2 2.280e-03  FAIL
+  qsa attn_output-31 step 1403                 rel L2 2.158e-03  FAIL
+  qsa attn_output-31 step 1426                 rel L2 2.259e-03  FAIL
+  qsa attn_output-31 step 1448                 rel L2 2.223e-03  FAIL
+  qsa attn_output-31 step 1455                 rel L2 2.065e-03  FAIL
+  qsa attn_output-23 step 1456                 rel L2 2.231e-03  FAIL
+  qsa attn_output-31 step 1456                 rel L2 2.237e-03  FAIL
+  qsa attn_output-31 step 1463                 rel L2 2.056e-03  FAIL
+  qsa attn_output-23 step 1468                 rel L2 2.124e-03  FAIL
+  qsa attn_output-19 step 1487                 rel L2 2.076e-03  FAIL
+  qsa attn_output-27 step 1487                 rel L2 2.065e-03  FAIL
+  qsa attn_output-31 step 1487                 rel L2 2.115e-03  FAIL
+  qsa attn_output-35 step 1500                 rel L2 2.022e-03  FAIL
+  qsa attn_output-27 step 1517                 rel L2 2.506e-03  FAIL
+  qsa attn_output-31 step 1524                 rel L2 2.667e-03  FAIL
+  qsa attn_output-47 step 1526                 rel L2 2.055e-03  FAIL
+  qsa attn_output-39 step 1533                 rel L2 2.070e-03  FAIL
+  qsa attn_output-31 step 1535                 rel L2 2.023e-03  FAIL
+qsa: step 1536 (1 tokens at 1537)
+  qsa attn_output-3 step 1536                  rel L2 2.350e-04
+  qsa attn_output-7 step 1536                  rel L2 5.785e-04
+  qsa attn_output-27 step 1537                 rel L2 2.308e-03  FAIL
+  qsa attn_output-27 step 1555                 rel L2 2.023e-03  FAIL
+  qsa attn_output-31 step 1565                 rel L2 2.189e-03  FAIL
+  qsa attn_output-31 step 1566                 rel L2 2.629e-03  FAIL
+  qsa attn_output-23 step 1577                 rel L2 2.527e-03  FAIL
+  qsa attn_output-31 step 1578                 rel L2 2.177e-03  FAIL
+  qsa attn_output-23 step 1596                 rel L2 2.276e-03  FAIL
+  qsa attn_output-27 step 1596                 rel L2 2.228e-03  FAIL
+  qsa attn_output-27 step 1629                 rel L2 2.017e-03  FAIL
+  qsa attn_output-27 step 1635                 rel L2 2.012e-03  FAIL
+  qsa attn_output-27 step 1641                 rel L2 2.084e-03  FAIL
+  qsa attn_output-31 step 1660                 rel L2 2.080e-03  FAIL
+  qsa attn_output-39 step 1677                 rel L2 2.087e-03  FAIL
+  qsa attn_output-31 step 1690                 rel L2 2.353e-03  FAIL
+  qsa attn_output-19 step 1694                 rel L2 2.054e-03  FAIL
+  qsa attn_output-35 step 1708                 rel L2 2.719e-03  FAIL
+  qsa attn_output-27 step 1709                 rel L2 2.057e-03  FAIL
+  qsa attn_output-31 step 1720                 rel L2 2.103e-03  FAIL
+  qsa attn_output-27 step 1725                 rel L2 2.122e-03  FAIL
+  qsa attn_output-27 step 1728                 rel L2 2.029e-03  FAIL
+  qsa attn_output-39 step 1732                 rel L2 2.207e-03  FAIL
+  qsa attn_output-19 step 1734                 rel L2 2.476e-03  FAIL
+  qsa attn_output-23 step 1736                 rel L2 2.323e-03  FAIL
+  qsa attn_output-39 step 1737                 rel L2 2.219e-03  FAIL
+  qsa attn_output-23 step 1743                 rel L2 2.172e-03  FAIL
+  qsa attn_output-35 step 1743                 rel L2 2.722e-03  FAIL
+  qsa attn_output-23 step 1745                 rel L2 2.009e-03  FAIL
+  qsa attn_output-27 step 1747                 rel L2 2.256e-03  FAIL
+  qsa attn_output-27 step 1750                 rel L2 2.123e-03  FAIL
+  qsa attn_output-31 step 1757                 rel L2 2.040e-03  FAIL
+  qsa attn_output-39 step 1769                 rel L2 3.232e-03  FAIL
+  qsa attn_output-35 step 1783                 rel L2 2.209e-03  FAIL
+qsa: step 1792 (1 tokens at 1793)
+  qsa attn_output-3 step 1792                  rel L2 2.592e-04
+  qsa attn_output-7 step 1792                  rel L2 8.091e-05
+  qsa attn_output-39 step 1793                 rel L2 2.166e-03  FAIL
+  qsa attn_output-35 step 1805                 rel L2 2.072e-03  FAIL
+  qsa attn_output-35 step 1806                 rel L2 2.008e-03  FAIL
+  qsa attn_output-19 step 1820                 rel L2 2.155e-03  FAIL
+  qsa attn_output-31 step 1824                 rel L2 2.068e-03  FAIL
+  qsa attn_output-27 step 1845                 rel L2 2.641e-03  FAIL
+  qsa attn_output-27 step 1850                 rel L2 2.235e-03  FAIL
+  qsa attn_output-27 step 1876                 rel L2 2.027e-03  FAIL
+  qsa attn_output-23 step 1883                 rel L2 2.119e-03  FAIL
+  qsa attn_output-27 step 1883                 rel L2 2.060e-03  FAIL
+  qsa attn_output-39 step 1886                 rel L2 2.110e-03  FAIL
+  qsa attn_output-19 step 1904                 rel L2 2.014e-03  FAIL
+  qsa attn_output-27 step 1909                 rel L2 2.900e-03  FAIL
+  qsa attn_output-31 step 1909                 rel L2 2.162e-03  FAIL
+  qsa attn_output-27 step 1912                 rel L2 2.135e-03  FAIL
+  qsa attn_output-27 step 1927                 rel L2 2.040e-03  FAIL
+  qsa attn_output-27 step 1939                 rel L2 2.258e-03  FAIL
+  qsa attn_output-19 step 1947                 rel L2 2.390e-03  FAIL
+  qsa attn_output-43 step 1949                 rel L2 2.477e-03  FAIL
+  qsa attn_output-31 step 1964                 rel L2 2.040e-03  FAIL
+  qsa attn_output-27 step 1967                 rel L2 2.075e-03  FAIL
+  qsa attn_output-27 step 1976                 rel L2 2.274e-03  FAIL
+  qsa attn_output-35 step 1987                 rel L2 2.120e-03  FAIL
+  qsa attn_output-15 step 1991                 rel L2 2.320e-03  FAIL
+  qsa attn_output-27 step 1992                 rel L2 2.383e-03  FAIL
+  qsa attn_output-27 step 2016                 rel L2 2.138e-03  FAIL
+  qsa attn_output-7 step 2028                  rel L2 2.038e-03  FAIL
+  qsa attn_output-27 step 2040                 rel L2 2.099e-03  FAIL
+qsa: step 2048 (1 tokens at 2049)
+  qsa attn_output-3 step 2048                  rel L2 4.211e-04
+  qsa attn_output-7 step 2048                  rel L2 9.075e-04
+  qsa attn_output-11 step 2050                 rel L2 2.332e-03  FAIL
+  qsa attn_output-23 step 2050                 rel L2 2.164e-03  FAIL
+  qsa attn_output-27 step 2050                 rel L2 2.417e-03  FAIL
+  qsa attn_output-23 step 2054                 rel L2 2.554e-03  FAIL
+  qsa attn_output-27 step 2054                 rel L2 2.134e-03  FAIL
+  qsa attn_output-11 step 2058                 rel L2 2.597e-03  FAIL
+  qsa attn_output-23 step 2058                 rel L2 3.837e-03  FAIL
+  qsa attn_output-27 step 2058                 rel L2 3.662e-03  FAIL
+  qsa attn_output-35 step 2058                 rel L2 2.190e-03  FAIL
+  qsa attn_output-23 step 2062                 rel L2 2.631e-03  FAIL
+  qsa attn_output-19 step 2064                 rel L2 2.218e-03  FAIL
+  qsa attn_output-23 step 2066                 rel L2 3.013e-03  FAIL
+  qsa attn_output-27 step 2066                 rel L2 3.140e-03  FAIL
+  qsa attn_output-27 step 2074                 rel L2 2.445e-03  FAIL
+  qsa attn_output-27 step 2076                 rel L2 3.056e-03  FAIL
+  qsa attn_output-27 step 2078                 rel L2 4.997e-03  FAIL
+  qsa attn_output-35 step 2078                 rel L2 2.902e-03  FAIL
+  qsa attn_output-3 step 2082                  rel L2 2.193e-03  FAIL
+  qsa attn_output-7 step 2086                  rel L2 2.162e-03  FAIL
+  qsa attn_output-11 step 2086                 rel L2 2.348e-03  FAIL
+  qsa attn_output-19 step 2090                 rel L2 2.159e-03  FAIL
+  qsa attn_output-43 step 2090                 rel L2 3.049e-03  FAIL
+  qsa attn_output-11 step 2094                 rel L2 2.121e-03  FAIL
+  qsa attn_output-35 step 2096                 rel L2 2.087e-03  FAIL
+  qsa attn_output-23 step 2098                 rel L2 2.372e-03  FAIL
+  qsa attn_output-27 step 2098                 rel L2 2.710e-03  FAIL
+  qsa attn_output-35 step 2098                 rel L2 2.050e-03  FAIL
+  qsa attn_output-39 step 2098                 rel L2 2.077e-03  FAIL
+  qsa attn_output-11 step 2102                 rel L2 2.596e-03  FAIL
+  qsa attn_output-35 step 2102                 rel L2 2.039e-03  FAIL
+  qsa attn_output-23 step 2104                 rel L2 2.321e-03  FAIL
+  qsa attn_output-3 step 2106                  rel L2 2.182e-03  FAIL
+  qsa attn_output-23 step 2106                 rel L2 2.482e-03  FAIL
+  qsa attn_output-43 step 2106                 rel L2 2.702e-03  FAIL
+  qsa attn_output-27 step 2108                 rel L2 2.324e-03  FAIL
+  qsa attn_output-23 step 2110                 rel L2 2.070e-03  FAIL
+  qsa attn_output-27 step 2116                 rel L2 2.764e-03  FAIL
+  qsa attn_output-39 step 2118                 rel L2 2.374e-03  FAIL
+  qsa attn_output-43 step 2118                 rel L2 2.076e-03  FAIL
+  qsa attn_output-3 step 2119                  rel L2 2.102e-03  FAIL
+  qsa attn_output-3 step 2122                  rel L2 2.196e-03  FAIL
+  qsa attn_output-43 step 2122                 rel L2 2.498e-03  FAIL
+  qsa attn_output-31 step 2126                 rel L2 2.806e-03  FAIL
+  qsa attn_output-31 step 2129                 rel L2 2.345e-03  FAIL
+  qsa attn_output-3 step 2130                  rel L2 2.364e-03  FAIL
+  qsa attn_output-27 step 2130                 rel L2 3.176e-03  FAIL
+  qsa attn_output-35 step 2138                 rel L2 2.292e-03  FAIL
+  qsa attn_output-39 step 2142                 rel L2 2.070e-03  FAIL
+  qsa attn_output-27 step 2148                 rel L2 2.187e-03  FAIL
+  qsa attn_output-3 step 2150                  rel L2 2.259e-03  FAIL
+  qsa attn_output-31 step 2152                 rel L2 2.262e-03  FAIL
+  qsa attn_output-7 step 2156                  rel L2 2.372e-03  FAIL
+  qsa attn_output-3 step 2158                  rel L2 2.954e-03  FAIL
+  qsa attn_output-7 step 2158                  rel L2 3.435e-03  FAIL
+  qsa attn_output-23 step 2158                 rel L2 2.534e-03  FAIL
+  qsa attn_output-35 step 2158                 rel L2 2.182e-03  FAIL
+  qsa attn_output-43 step 2162                 rel L2 2.840e-03  FAIL
+  qsa attn_output-23 step 2166                 rel L2 3.311e-03  FAIL
+  qsa attn_output-27 step 2166                 rel L2 2.196e-03  FAIL
+  qsa attn_output-43 step 2166                 rel L2 2.163e-03  FAIL
+  qsa attn_output-19 step 2172                 rel L2 2.014e-03  FAIL
+  qsa attn_output-43 step 2174                 rel L2 4.968e-03  FAIL
+  qsa attn_output-27 step 2178                 rel L2 3.233e-03  FAIL
+  qsa attn_output-39 step 2178                 rel L2 2.270e-03  FAIL
+  qsa attn_output-43 step 2178                 rel L2 3.029e-03  FAIL
+  qsa attn_output-35 step 2181                 rel L2 2.110e-03  FAIL
+  qsa attn_output-23 step 2183                 rel L2 2.364e-03  FAIL
+  qsa attn_output-39 step 2186                 rel L2 2.014e-03  FAIL
+  qsa attn_output-43 step 2186                 rel L2 2.157e-03  FAIL
+  qsa attn_output-23 step 2188                 rel L2 2.140e-03  FAIL
+  qsa attn_output-23 step 2190                 rel L2 2.795e-03  FAIL
+  qsa attn_output-39 step 2190                 rel L2 2.335e-03  FAIL
+  qsa attn_output-19 step 2192                 rel L2 2.155e-03  FAIL
+  qsa attn_output-15 step 2198                 rel L2 2.275e-03  FAIL
+  qsa attn_output-31 step 2198                 rel L2 3.549e-03  FAIL
+  qsa attn_output-35 step 2198                 rel L2 2.337e-03  FAIL
+  qsa attn_output-3 step 2200                  rel L2 2.140e-03  FAIL
+  qsa attn_output-3 step 2202                  rel L2 2.276e-03  FAIL
+  qsa attn_output-15 step 2202                 rel L2 2.305e-03  FAIL
+  qsa attn_output-3 step 2206                  rel L2 3.673e-03  FAIL
+  qsa attn_output-27 step 2206                 rel L2 3.179e-03  FAIL
+  qsa attn_output-31 step 2210                 rel L2 2.211e-03  FAIL
+  qsa attn_output-35 step 2210                 rel L2 2.363e-03  FAIL
+qsa: step 2212 (1 tokens at 2213)
+  qsa attn_output-3 step 2212                  rel L2 5.375e-04
+  qsa attn_output-7 step 2212                  rel L2 4.802e-04
+qsa: step 2213 (1 tokens at 2214)
+  qsa attn_output-3 step 2213                  rel L2 1.933e-04
+  qsa attn_output-7 step 2213                  rel L2 1.091e-04
+qsa: step 2214 (1 tokens at 2215)
+  qsa attn_output-3 step 2214                  rel L2 1.885e-03
+  qsa attn_output-7 step 2214                  rel L2 2.347e-03  FAIL
+  qsa attn_output-19 step 2214                 rel L2 2.411e-03  FAIL
+  qsa attn_output-23 step 2214                 rel L2 2.680e-03  FAIL
+  qsa attn_output-31 step 2214                 rel L2 2.269e-03  FAIL
+qsa: indexer selection over 1980 (layer, step) pairs: 99.9481% of cells identical, worst pair 99.8048%
+fr_parity: 26592 checks, 208 over tolerance 2e-03; worst 4.997e-03 (qsa attn_output-27 step 2078)

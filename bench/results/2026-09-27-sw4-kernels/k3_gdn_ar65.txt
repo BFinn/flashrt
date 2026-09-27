@@ -1,0 +1,456 @@
+gdn: step -1 (1 tokens)
+  gdn attn_output-0                            rel L2 1.905e-07
+  linear_attn_out-0                            rel L2 0.000e+00
+  gdn attn_output-1                            rel L2 1.647e-07
+  linear_attn_out-1                            rel L2 0.000e+00
+  gdn attn_output-2                            rel L2 1.572e-07
+  linear_attn_out-2                            rel L2 0.000e+00
+gdn: step 0 (1 tokens)
+  gdn attn_output-0                            rel L2 1.466e-07
+  linear_attn_out-0                            rel L2 0.000e+00
+  gdn attn_output-1                            rel L2 2.368e-07
+  linear_attn_out-1                            rel L2 0.000e+00
+  gdn attn_output-2                            rel L2 2.134e-07
+  linear_attn_out-2                            rel L2 1.207e-04
+gdn: step 1 (1 tokens)
+  gdn attn_output-0                            rel L2 3.594e-07
+  linear_attn_out-0                            rel L2 0.000e+00
+  gdn attn_output-1                            rel L2 3.402e-07
+  linear_attn_out-1                            rel L2 1.885e-05
+  gdn attn_output-2                            rel L2 2.367e-07
+  linear_attn_out-2                            rel L2 1.926e-04
+gdn: step 2 (1 tokens)
+  gdn attn_output-0                            rel L2 6.378e-07
+  linear_attn_out-0                            rel L2 0.000e+00
+  gdn attn_output-1                            rel L2 3.479e-07
+  linear_attn_out-1                            rel L2 0.000e+00
+  gdn attn_output-2                            rel L2 2.396e-07
+  linear_attn_out-2                            rel L2 0.000e+00
+gdn: step 3 (1 tokens)
+  gdn attn_output-0                            rel L2 9.717e-07
+  linear_attn_out-0                            rel L2 0.000e+00
+  gdn attn_output-1                            rel L2 6.081e-07
+  linear_attn_out-1                            rel L2 0.000e+00
+  gdn attn_output-2                            rel L2 2.131e-07
+  linear_attn_out-2                            rel L2 0.000e+00
+gdn: step 4 (1 tokens)
+  gdn attn_output-0                            rel L2 1.330e-06
+  linear_attn_out-0                            rel L2 0.000e+00
+  gdn attn_output-1                            rel L2 5.902e-07
+  linear_attn_out-1                            rel L2 0.000e+00
+  gdn attn_output-2                            rel L2 2.808e-07
+  linear_attn_out-2                            rel L2 0.000e+00
+gdn: step 5 (1 tokens)
+  gdn attn_output-0                            rel L2 1.597e-06
+  linear_attn_out-0                            rel L2 0.000e+00
+  gdn attn_output-1                            rel L2 5.976e-07
+  linear_attn_out-1                            rel L2 0.000e+00
+  gdn attn_output-2                            rel L2 3.828e-07
+  linear_attn_out-2                            rel L2 2.715e-04
+gdn: step 6 (1 tokens)
+  gdn attn_output-0                            rel L2 1.839e-06
+  linear_attn_out-0                            rel L2 0.000e+00
+  gdn attn_output-1                            rel L2 4.544e-07
+  linear_attn_out-1                            rel L2 0.000e+00
+  gdn attn_output-2                            rel L2 3.893e-07
+  linear_attn_out-2                            rel L2 0.000e+00
+gdn: step 7 (1 tokens)
+  gdn attn_output-0                            rel L2 1.566e-06
+  linear_attn_out-0                            rel L2 0.000e+00
+  gdn attn_output-1                            rel L2 3.898e-07
+  linear_attn_out-1                            rel L2 0.000e+00
+  gdn attn_output-2                            rel L2 4.502e-07
+  linear_attn_out-2                            rel L2 0.000e+00
+gdn: step 8 (1 tokens)
+  gdn attn_output-0                            rel L2 2.202e-06
+  linear_attn_out-0                            rel L2 0.000e+00
+  gdn attn_output-1                            rel L2 4.580e-07
+  linear_attn_out-1                            rel L2 0.000e+00
+  gdn attn_output-2                            rel L2 5.604e-07
+  linear_attn_out-2                            rel L2 2.118e-04
+gdn: step 9 (1 tokens)
+  gdn attn_output-0                            rel L2 2.267e-06
+  linear_attn_out-0                            rel L2 0.000e+00
+  gdn attn_output-1                            rel L2 4.202e-07
+  linear_attn_out-1                            rel L2 0.000e+00
+  gdn attn_output-2                            rel L2 5.264e-07
+  linear_attn_out-2                            rel L2 3.228e-05
+gdn: step 10 (1 tokens)
+  gdn attn_output-0                            rel L2 2.355e-06
+  linear_attn_out-0                            rel L2 0.000e+00
+  gdn attn_output-1                            rel L2 5.479e-07
+  linear_attn_out-1                            rel L2 1.009e-04
+  gdn attn_output-2                            rel L2 6.942e-07
+  linear_attn_out-2                            rel L2 0.000e+00
+gdn: step 11 (1 tokens)
+  gdn attn_output-0                            rel L2 2.552e-06
+  linear_attn_out-0                            rel L2 0.000e+00
+  gdn attn_output-1                            rel L2 7.787e-07
+  linear_attn_out-1                            rel L2 0.000e+00
+  gdn attn_output-2                            rel L2 7.261e-07
+  linear_attn_out-2                            rel L2 0.000e+00
+gdn: step 12 (1 tokens)
+  gdn attn_output-0                            rel L2 2.548e-06
+  linear_attn_out-0                            rel L2 0.000e+00
+  gdn attn_output-1                            rel L2 9.504e-07
+  linear_attn_out-1                            rel L2 0.000e+00
+  gdn attn_output-2                            rel L2 6.359e-07
+  linear_attn_out-2                            rel L2 0.000e+00
+gdn: step 13 (1 tokens)
+  gdn attn_output-0                            rel L2 2.016e-06
+  linear_attn_out-0                            rel L2 0.000e+00
+  gdn attn_output-1                            rel L2 6.555e-07
+  linear_attn_out-1                            rel L2 1.473e-05
+  gdn attn_output-2                            rel L2 4.944e-07
+  linear_attn_out-2                            rel L2 0.000e+00
+gdn: step 14 (1 tokens)
+  gdn attn_output-0                            rel L2 1.629e-06
+  linear_attn_out-0                            rel L2 0.000e+00
+  gdn attn_output-1                            rel L2 5.377e-07
+  linear_attn_out-1                            rel L2 0.000e+00
+  gdn attn_output-2                            rel L2 6.373e-07
+  linear_attn_out-2                            rel L2 0.000e+00
+gdn: step 15 (1 tokens)
+  gdn attn_output-0                            rel L2 2.265e-06
+  linear_attn_out-0                            rel L2 0.000e+00
+  gdn attn_output-1                            rel L2 5.768e-07
+  linear_attn_out-1                            rel L2 0.000e+00
+  gdn attn_output-2                            rel L2 7.634e-07
+  linear_attn_out-2                            rel L2 0.000e+00
+gdn: step 16 (1 tokens)
+  gdn attn_output-0                            rel L2 2.193e-06
+  linear_attn_out-0                            rel L2 0.000e+00
+  gdn attn_output-1                            rel L2 1.004e-06
+  linear_attn_out-1                            rel L2 0.000e+00
+  gdn attn_output-2                            rel L2 7.564e-07
+  linear_attn_out-2                            rel L2 0.000e+00
+gdn: step 17 (1 tokens)
+  gdn attn_output-0                            rel L2 1.709e-06
+  linear_attn_out-0                            rel L2 0.000e+00
+  gdn attn_output-1                            rel L2 7.271e-07
+  linear_attn_out-1                            rel L2 0.000e+00
+  gdn attn_output-2                            rel L2 7.111e-07
+  linear_attn_out-2                            rel L2 0.000e+00
+gdn: step 18 (1 tokens)
+  gdn attn_output-0                            rel L2 1.715e-06
+  linear_attn_out-0                            rel L2 0.000e+00
+  gdn attn_output-1                            rel L2 8.557e-07
+  linear_attn_out-1                            rel L2 0.000e+00
+  gdn attn_output-2                            rel L2 7.708e-07
+  linear_attn_out-2                            rel L2 0.000e+00
+gdn: step 19 (1 tokens)
+  gdn attn_output-0                            rel L2 1.242e-06
+  linear_attn_out-0                            rel L2 0.000e+00
+  gdn attn_output-1                            rel L2 5.805e-07
+  linear_attn_out-1                            rel L2 1.226e-04
+  gdn attn_output-2                            rel L2 7.825e-07
+  linear_attn_out-2                            rel L2 0.000e+00
+gdn: step 20 (1 tokens)
+  gdn attn_output-0                            rel L2 1.109e-06
+  linear_attn_out-0                            rel L2 0.000e+00
+  gdn attn_output-1                            rel L2 4.998e-07
+  linear_attn_out-1                            rel L2 0.000e+00
+  gdn attn_output-2                            rel L2 7.987e-07
+  linear_attn_out-2                            rel L2 0.000e+00
+gdn: step 21 (1 tokens)
+  gdn attn_output-0                            rel L2 1.048e-06
+  linear_attn_out-0                            rel L2 0.000e+00
+  gdn attn_output-1                            rel L2 7.752e-07
+  linear_attn_out-1                            rel L2 0.000e+00
+  gdn attn_output-2                            rel L2 9.755e-07
+  linear_attn_out-2                            rel L2 0.000e+00
+gdn: step 22 (1 tokens)
+  gdn attn_output-0                            rel L2 1.229e-06
+  linear_attn_out-0                            rel L2 0.000e+00
+  gdn attn_output-1                            rel L2 1.522e-06
+  linear_attn_out-1                            rel L2 0.000e+00
+  gdn attn_output-2                            rel L2 1.226e-06
+  linear_attn_out-2                            rel L2 0.000e+00
+gdn: step 23 (1 tokens)
+  gdn attn_output-0                            rel L2 9.052e-07
+  linear_attn_out-0                            rel L2 0.000e+00
+  gdn attn_output-1                            rel L2 2.429e-06
+  linear_attn_out-1                            rel L2 0.000e+00
+  gdn attn_output-2                            rel L2 9.559e-07
+  linear_attn_out-2                            rel L2 0.000e+00
+gdn: step 24 (1 tokens)
+  gdn attn_output-0                            rel L2 5.975e-07
+  linear_attn_out-0                            rel L2 0.000e+00
+  gdn attn_output-1                            rel L2 2.308e-06
+  linear_attn_out-1                            rel L2 1.443e-05
+  gdn attn_output-2                            rel L2 1.551e-06
+  linear_attn_out-2                            rel L2 0.000e+00
+gdn: step 25 (1 tokens)
+  gdn attn_output-0                            rel L2 3.056e-07
+  linear_attn_out-0                            rel L2 0.000e+00
+  gdn attn_output-1                            rel L2 2.129e-06
+  linear_attn_out-1                            rel L2 1.070e-05
+  gdn attn_output-2                            rel L2 9.268e-07
+  linear_attn_out-2                            rel L2 0.000e+00
+gdn: step 26 (1 tokens)
+  gdn attn_output-0                            rel L2 5.252e-07
+  linear_attn_out-0                            rel L2 0.000e+00
+  gdn attn_output-1                            rel L2 1.290e-06
+  linear_attn_out-1                            rel L2 0.000e+00
+  gdn attn_output-2                            rel L2 1.034e-06
+  linear_attn_out-2                            rel L2 0.000e+00
+gdn: step 27 (1 tokens)
+  gdn attn_output-0                            rel L2 6.399e-07
+  linear_attn_out-0                            rel L2 0.000e+00
+  gdn attn_output-1                            rel L2 1.240e-06
+  linear_attn_out-1                            rel L2 0.000e+00
+  gdn attn_output-2                            rel L2 9.473e-07
+  linear_attn_out-2                            rel L2 4.806e-05
+gdn: step 28 (1 tokens)
+  gdn attn_output-0                            rel L2 7.346e-07
+  linear_attn_out-0                            rel L2 0.000e+00
+  gdn attn_output-1                            rel L2 1.095e-06
+  linear_attn_out-1                            rel L2 0.000e+00
+  gdn attn_output-2                            rel L2 9.976e-07
+  linear_attn_out-2                            rel L2 0.000e+00
+gdn: step 29 (1 tokens)
+  gdn attn_output-0                            rel L2 7.465e-07
+  linear_attn_out-0                            rel L2 0.000e+00
+  gdn attn_output-1                            rel L2 9.726e-07
+  linear_attn_out-1                            rel L2 0.000e+00
+  gdn attn_output-2                            rel L2 1.141e-06
+  linear_attn_out-2                            rel L2 2.638e-06
+gdn: step 30 (1 tokens)
+  gdn attn_output-0                            rel L2 5.764e-07
+  linear_attn_out-0                            rel L2 0.000e+00
+  gdn attn_output-1                            rel L2 1.082e-06
+  linear_attn_out-1                            rel L2 0.000e+00
+  gdn attn_output-2                            rel L2 9.668e-07
+  linear_attn_out-2                            rel L2 0.000e+00
+gdn: step 31 (1 tokens)
+  gdn attn_output-0                            rel L2 6.887e-07
+  linear_attn_out-0                            rel L2 1.226e-05
+  gdn attn_output-1                            rel L2 9.337e-07
+  linear_attn_out-1                            rel L2 0.000e+00
+  gdn attn_output-2                            rel L2 1.045e-06
+  linear_attn_out-2                            rel L2 0.000e+00
+gdn: step 32 (1 tokens)
+  gdn attn_output-0                            rel L2 8.560e-07
+  linear_attn_out-0                            rel L2 0.000e+00
+  gdn attn_output-1                            rel L2 1.946e-06
+  linear_attn_out-1                            rel L2 0.000e+00
+  gdn attn_output-2                            rel L2 1.144e-06
+  linear_attn_out-2                            rel L2 2.786e-05
+gdn: step 33 (1 tokens)
+  gdn attn_output-0                            rel L2 8.918e-07
+  linear_attn_out-0                            rel L2 0.000e+00
+  gdn attn_output-1                            rel L2 1.811e-06
+  linear_attn_out-1                            rel L2 1.731e-05
+  gdn attn_output-2                            rel L2 1.211e-06
+  linear_attn_out-2                            rel L2 0.000e+00
+gdn: step 34 (1 tokens)
+  gdn attn_output-0                            rel L2 6.644e-07
+  linear_attn_out-0                            rel L2 2.052e-04
+  gdn attn_output-1                            rel L2 2.208e-06
+  linear_attn_out-1                            rel L2 0.000e+00
+  gdn attn_output-2                            rel L2 1.396e-06
+  linear_attn_out-2                            rel L2 0.000e+00
+gdn: step 35 (1 tokens)
+  gdn attn_output-0                            rel L2 4.463e-07
+  linear_attn_out-0                            rel L2 0.000e+00
+  gdn attn_output-1                            rel L2 2.144e-06
+  linear_attn_out-1                            rel L2 0.000e+00
+  gdn attn_output-2                            rel L2 1.783e-06
+  linear_attn_out-2                            rel L2 0.000e+00
+gdn: step 36 (1 tokens)
+  gdn attn_output-0                            rel L2 4.072e-07
+  linear_attn_out-0                            rel L2 0.000e+00
+  gdn attn_output-1                            rel L2 1.837e-06
+  linear_attn_out-1                            rel L2 3.485e-05
+  gdn attn_output-2                            rel L2 1.405e-06
+  linear_attn_out-2                            rel L2 2.122e-04
+gdn: step 37 (1 tokens)
+  gdn attn_output-0                            rel L2 7.092e-07
+  linear_attn_out-0                            rel L2 0.000e+00
+  gdn attn_output-1                            rel L2 1.353e-06
+  linear_attn_out-1                            rel L2 0.000e+00
+  gdn attn_output-2                            rel L2 1.703e-06
+  linear_attn_out-2                            rel L2 1.963e-04
+gdn: step 38 (1 tokens)
+  gdn attn_output-0                            rel L2 6.643e-07
+  linear_attn_out-0                            rel L2 0.000e+00
+  gdn attn_output-1                            rel L2 9.616e-07
+  linear_attn_out-1                            rel L2 0.000e+00
+  gdn attn_output-2                            rel L2 1.303e-06
+  linear_attn_out-2                            rel L2 0.000e+00
+gdn: step 39 (1 tokens)
+  gdn attn_output-0                            rel L2 7.092e-07
+  linear_attn_out-0                            rel L2 0.000e+00
+  gdn attn_output-1                            rel L2 9.233e-07
+  linear_attn_out-1                            rel L2 2.813e-05
+  gdn attn_output-2                            rel L2 1.440e-06
+  linear_attn_out-2                            rel L2 0.000e+00
+gdn: step 40 (1 tokens)
+  gdn attn_output-0                            rel L2 6.802e-07
+  linear_attn_out-0                            rel L2 0.000e+00
+  gdn attn_output-1                            rel L2 9.223e-07
+  linear_attn_out-1                            rel L2 0.000e+00
+  gdn attn_output-2                            rel L2 1.638e-06
+  linear_attn_out-2                            rel L2 2.323e-04
+gdn: step 41 (1 tokens)
+  gdn attn_output-0                            rel L2 6.692e-07
+  linear_attn_out-0                            rel L2 0.000e+00
+  gdn attn_output-1                            rel L2 1.280e-06
+  linear_attn_out-1                            rel L2 0.000e+00
+  gdn attn_output-2                            rel L2 1.493e-06
+  linear_attn_out-2                            rel L2 0.000e+00
+gdn: step 42 (1 tokens)
+  gdn attn_output-0                            rel L2 7.077e-07
+  linear_attn_out-0                            rel L2 0.000e+00
+  gdn attn_output-1                            rel L2 2.015e-06
+  linear_attn_out-1                            rel L2 4.424e-05
+  gdn attn_output-2                            rel L2 1.480e-06
+  linear_attn_out-2                            rel L2 0.000e+00
+gdn: step 43 (1 tokens)
+  gdn attn_output-0                            rel L2 6.969e-07
+  linear_attn_out-0                            rel L2 0.000e+00
+  gdn attn_output-1                            rel L2 2.047e-06
+  linear_attn_out-1                            rel L2 0.000e+00
+  gdn attn_output-2                            rel L2 1.721e-06
+  linear_attn_out-2                            rel L2 0.000e+00
+gdn: step 44 (1 tokens)
+  gdn attn_output-0                            rel L2 4.750e-07
+  linear_attn_out-0                            rel L2 0.000e+00
+  gdn attn_output-1                            rel L2 1.625e-06
+  linear_attn_out-1                            rel L2 2.985e-04
+  gdn attn_output-2                            rel L2 1.859e-06
+  linear_attn_out-2                            rel L2 0.000e+00
+gdn: step 45 (1 tokens)
+  gdn attn_output-0                            rel L2 4.791e-07
+  linear_attn_out-0                            rel L2 0.000e+00
+  gdn attn_output-1                            rel L2 1.129e-06
+  linear_attn_out-1                            rel L2 5.387e-06
+  gdn attn_output-2                            rel L2 1.974e-06
+  linear_attn_out-2                            rel L2 4.689e-05
+gdn: step 46 (1 tokens)
+  gdn attn_output-0                            rel L2 4.979e-07
+  linear_attn_out-0                            rel L2 0.000e+00
+  gdn attn_output-1                            rel L2 9.755e-07
+  linear_attn_out-1                            rel L2 0.000e+00
+  gdn attn_output-2                            rel L2 2.106e-06
+  linear_attn_out-2                            rel L2 0.000e+00
+gdn: step 47 (1 tokens)
+  gdn attn_output-0                            rel L2 4.000e-07
+  linear_attn_out-0                            rel L2 0.000e+00
+  gdn attn_output-1                            rel L2 1.131e-06
+  linear_attn_out-1                            rel L2 0.000e+00
+  gdn attn_output-2                            rel L2 2.013e-06
+  linear_attn_out-2                            rel L2 0.000e+00
+gdn: step 48 (1 tokens)
+  gdn attn_output-0                            rel L2 6.931e-07
+  linear_attn_out-0                            rel L2 0.000e+00
+  gdn attn_output-1                            rel L2 1.124e-06
+  linear_attn_out-1                            rel L2 4.279e-06
+  gdn attn_output-2                            rel L2 2.028e-06
+  linear_attn_out-2                            rel L2 0.000e+00
+gdn: step 49 (1 tokens)
+  gdn attn_output-0                            rel L2 6.335e-07
+  linear_attn_out-0                            rel L2 0.000e+00
+  gdn attn_output-1                            rel L2 1.406e-06
+  linear_attn_out-1                            rel L2 1.705e-05
+  gdn attn_output-2                            rel L2 1.962e-06
+  linear_attn_out-2                            rel L2 0.000e+00
+gdn: step 50 (1 tokens)
+  gdn attn_output-0                            rel L2 7.243e-07
+  linear_attn_out-0                            rel L2 0.000e+00
+  gdn attn_output-1                            rel L2 1.459e-06
+  linear_attn_out-1                            rel L2 0.000e+00
+  gdn attn_output-2                            rel L2 1.992e-06
+  linear_attn_out-2                            rel L2 2.033e-04
+gdn: step 51 (1 tokens)
+  gdn attn_output-0                            rel L2 7.169e-07
+  linear_attn_out-0                            rel L2 3.483e-05
+  gdn attn_output-1                            rel L2 1.389e-06
+  linear_attn_out-1                            rel L2 1.171e-04
+  gdn attn_output-2                            rel L2 2.142e-06
+  linear_attn_out-2                            rel L2 0.000e+00
+gdn: step 52 (1 tokens)
+  gdn attn_output-0                            rel L2 9.501e-07
+  linear_attn_out-0                            rel L2 0.000e+00
+  gdn attn_output-1                            rel L2 1.593e-06
+  linear_attn_out-1                            rel L2 1.184e-05
+  gdn attn_output-2                            rel L2 2.138e-06
+  linear_attn_out-2                            rel L2 0.000e+00
+gdn: step 53 (1 tokens)
+  gdn attn_output-0                            rel L2 9.576e-07
+  linear_attn_out-0                            rel L2 9.312e-06
+  gdn attn_output-1                            rel L2 2.537e-06
+  linear_attn_out-1                            rel L2 0.000e+00
+  gdn attn_output-2                            rel L2 2.443e-06
+  linear_attn_out-2                            rel L2 0.000e+00
+gdn: step 54 (1 tokens)
+  gdn attn_output-0                            rel L2 7.502e-07
+  linear_attn_out-0                            rel L2 0.000e+00
+  gdn attn_output-1                            rel L2 2.236e-06
+  linear_attn_out-1                            rel L2 0.000e+00
+  gdn attn_output-2                            rel L2 2.656e-06
+  linear_attn_out-2                            rel L2 0.000e+00
+gdn: step 55 (1 tokens)
+  gdn attn_output-0                            rel L2 6.545e-07
+  linear_attn_out-0                            rel L2 0.000e+00
+  gdn attn_output-1                            rel L2 1.709e-06
+  linear_attn_out-1                            rel L2 0.000e+00
+  gdn attn_output-2                            rel L2 2.797e-06
+  linear_attn_out-2                            rel L2 0.000e+00
+gdn: step 56 (1 tokens)
+  gdn attn_output-0                            rel L2 5.939e-07
+  linear_attn_out-0                            rel L2 0.000e+00
+  gdn attn_output-1                            rel L2 1.718e-06
+  linear_attn_out-1                            rel L2 2.824e-05
+  gdn attn_output-2                            rel L2 2.964e-06
+  linear_attn_out-2                            rel L2 0.000e+00
+gdn: step 57 (1 tokens)
+  gdn attn_output-0                            rel L2 5.864e-07
+  linear_attn_out-0                            rel L2 0.000e+00
+  gdn attn_output-1                            rel L2 1.700e-06
+  linear_attn_out-1                            rel L2 0.000e+00
+  gdn attn_output-2                            rel L2 2.453e-06
+  linear_attn_out-2                            rel L2 0.000e+00
+gdn: step 58 (1 tokens)
+  gdn attn_output-0                            rel L2 4.722e-07
+  linear_attn_out-0                            rel L2 0.000e+00
+  gdn attn_output-1                            rel L2 1.285e-06
+  linear_attn_out-1                            rel L2 0.000e+00
+  gdn attn_output-2                            rel L2 2.741e-06
+  linear_attn_out-2                            rel L2 0.000e+00
+gdn: step 59 (1 tokens)
+  gdn attn_output-0                            rel L2 6.570e-07
+  linear_attn_out-0                            rel L2 2.182e-04
+  gdn attn_output-1                            rel L2 1.758e-06
+  linear_attn_out-1                            rel L2 0.000e+00
+  gdn attn_output-2                            rel L2 2.409e-06
+  linear_attn_out-2                            rel L2 0.000e+00
+gdn: step 60 (1 tokens)
+  gdn attn_output-0                            rel L2 8.240e-07
+  linear_attn_out-0                            rel L2 0.000e+00
+  gdn attn_output-1                            rel L2 3.694e-06
+  linear_attn_out-1                            rel L2 0.000e+00
+  gdn attn_output-2                            rel L2 3.162e-06
+  linear_attn_out-2                            rel L2 0.000e+00
+gdn: step 61 (1 tokens)
+  gdn attn_output-0                            rel L2 6.888e-07
+  linear_attn_out-0                            rel L2 0.000e+00
+  gdn attn_output-1                            rel L2 3.517e-06
+  linear_attn_out-1                            rel L2 2.065e-05
+  gdn attn_output-2                            rel L2 2.515e-06
+  linear_attn_out-2                            rel L2 0.000e+00
+gdn: step 62 (1 tokens)
+  gdn attn_output-0                            rel L2 7.267e-07
+  linear_attn_out-0                            rel L2 0.000e+00
+  gdn attn_output-1                            rel L2 3.199e-06
+  linear_attn_out-1                            rel L2 5.902e-05
+  gdn attn_output-2                            rel L2 2.708e-06
+  linear_attn_out-2                            rel L2 0.000e+00
+gdn: step 63 (1 tokens)
+  gdn attn_output-0                            rel L2 7.583e-07
+  linear_attn_out-0                            rel L2 0.000e+00
+  gdn attn_output-1                            rel L2 2.046e-06
+  linear_attn_out-1                            rel L2 0.000e+00
+  gdn attn_output-2                            rel L2 2.322e-06
+  linear_attn_out-2                            rel L2 0.000e+00
+fr_parity: 4680 checks, 0 over tolerance 2e-03; worst 8.866e-04 (linear_attn_out-20)

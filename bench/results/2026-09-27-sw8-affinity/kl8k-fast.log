@@ -1,0 +1,15 @@
+fast path: 7782 cache slots (31.7% of experts)
+chunk 0 pos  5120: 1024 scored, mean KLD 0.00901, same top 97.36%, 106.1 tok/s
+chunk 0 pos  6144: 2048 scored, mean KLD 0.01104, same top 97.02%, 98.4 tok/s
+chunk 0 pos  7168: 3072 scored, mean KLD 0.01245, same top 96.03%, 92.5 tok/s
+chunk 0 pos  8191: 4095 scored, mean KLD 0.01132, same top 95.92%, 88.2 tok/s
+chunk 1 pos  5120: 5119 scored, mean KLD 0.01012, same top 95.98%, 90.6 tok/s
+chunk 1 pos  6144: 6143 scored, mean KLD 0.00940, same top 96.35%, 85.7 tok/s
+chunk 1 pos  7168: 7167 scored, mean KLD 0.00901, same top 96.43%, 82.7 tok/s
+chunk 1 pos  8191: 8190 scored, mean KLD 0.00867, same top 96.47%, 79.9 tok/s
+
+fr_kld: 8190 tokens over 2 chunk(s) of 8192
+  PPL flashrt 2.5215, base 2.5238, ratio 0.99908
+  KLD mean 0.008672, median 0.001146, p99 0.117502, p99.9 0.278979, max 0.769150
+  same top token 96.471%
+  fast path: expert cache hit rate 65.61%

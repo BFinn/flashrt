@@ -1,0 +1,4 @@
+CUDA error: unspecified launch failure
+  in ggml_cuda_kernel_launch at $FLASHRT/third_party/ggml/src/ggml-cuda/common.cuh:1701
+  cudaLaunchKernelEx(&pdl_cfg.cfg, kernel, std::forward<Args>(args)... )
+timeout: the monitored command dumped core

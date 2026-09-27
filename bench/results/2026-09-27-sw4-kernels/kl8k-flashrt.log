@@ -1,0 +1,13 @@
+chunk 0 pos  5120: 1024 scored, mean KLD 0.01008, same top 97.36%, 118.0 tok/s
+chunk 0 pos  6144: 2048 scored, mean KLD 0.01167, same top 96.97%, 114.9 tok/s
+chunk 0 pos  7168: 3072 scored, mean KLD 0.01337, same top 96.42%, 112.8 tok/s
+chunk 0 pos  8192: 4095 scored, mean KLD 0.01198, same top 96.39%, 110.9 tok/s
+chunk 1 pos  5120: 5119 scored, mean KLD 0.01061, same top 96.44%, 113.0 tok/s
+chunk 1 pos  6144: 6143 scored, mean KLD 0.00963, same top 96.78%, 112.0 tok/s
+chunk 1 pos  7168: 7167 scored, mean KLD 0.00919, same top 96.83%, 111.0 tok/s
+chunk 1 pos  8192: 8190 scored, mean KLD 0.00890, same top 96.74%, 110.3 tok/s
+
+fr_kld: 8190 tokens over 2 chunk(s) of 8192
+  PPL flashrt 2.5253, base 2.5238, ratio 1.00058
+  KLD mean 0.008901, median 0.001206, p99 0.115371, p99.9 0.278409, max 0.532406
+  same top token 96.740%

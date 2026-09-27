@@ -1,0 +1,46 @@
+hc: step -1 (64 tokens)
+  hc_mixed-0 (attn)                            rel L2 6.487e-04
+  hc_mixed-0 (ffn)                             rel L2 1.258e-03
+  hc_mixed-1 (ffn)                             rel L2 8.100e-04
+  hc_mixed-2 (attn)                            rel L2 6.180e-04
+  hc_mixed-2 (ffn)                             rel L2 6.735e-04
+  hc_mixed-3 (attn)                            rel L2 7.753e-04
+  hc_mixed-3 (ffn)                             rel L2 5.815e-04
+  result_norm (head mix)                       rel L2 6.259e-08
+hc: step 0 (1 tokens)
+  hc_mixed-0 (attn)                            rel L2 6.270e-08
+  hc_mixed-0 (ffn)                             rel L2 1.003e-07
+  hc_mixed-1 (ffn)                             rel L2 1.046e-07
+  hc_mixed-2 (attn)                            rel L2 7.960e-08
+  hc_mixed-2 (ffn)                             rel L2 8.747e-08
+  hc_mixed-3 (attn)                            rel L2 1.145e-07
+  hc_mixed-3 (ffn)                             rel L2 1.035e-07
+  result_norm (head mix)                       rel L2 7.868e-08
+hc: step 1 (1 tokens)
+  hc_mixed-0 (attn)                            rel L2 5.896e-08
+  hc_mixed-0 (ffn)                             rel L2 9.957e-08
+  hc_mixed-1 (ffn)                             rel L2 8.523e-08
+  hc_mixed-2 (attn)                            rel L2 7.134e-08
+  hc_mixed-2 (ffn)                             rel L2 1.158e-07
+  hc_mixed-3 (attn)                            rel L2 8.797e-08
+  hc_mixed-3 (ffn)                             rel L2 9.102e-08
+  result_norm (head mix)                       rel L2 7.499e-08
+hc: step 2 (1 tokens)
+  hc_mixed-0 (attn)                            rel L2 5.896e-08
+  hc_mixed-0 (ffn)                             rel L2 1.507e-07
+  hc_mixed-1 (ffn)                             rel L2 1.375e-07
+  hc_mixed-2 (attn)                            rel L2 7.541e-08
+  hc_mixed-2 (ffn)                             rel L2 7.948e-08
+  hc_mixed-3 (attn)                            rel L2 1.222e-07
+  hc_mixed-3 (ffn)                             rel L2 7.331e-08
+  result_norm (head mix)                       rel L2 6.351e-08
+hc: step 3 (1 tokens)
+  hc_mixed-0 (attn)                            rel L2 7.678e-08
+  hc_mixed-0 (ffn)                             rel L2 9.534e-08
+  hc_mixed-1 (ffn)                             rel L2 8.774e-08
+  hc_mixed-2 (attn)                            rel L2 6.867e-08
+  hc_mixed-2 (ffn)                             rel L2 1.286e-07
+  hc_mixed-3 (attn)                            rel L2 1.116e-07
+  hc_mixed-3 (ffn)                             rel L2 9.369e-08
+  result_norm (head mix)                       rel L2 5.904e-08
+fr_parity: 1664 checks, 0 over tolerance 2e-03; worst 1.258e-03 (hc_mixed-0 (ffn))
