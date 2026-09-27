@@ -3,6 +3,7 @@
 // points (ggml_cuda_mul_mat_vec_q and friends), which flashrt never calls. Link this into
 // flashrt binaries that do not link libggml. Do NOT link it next to libggml: a definition in
 // the executable would interpose on libggml's own internal calls.
+#include "ggml-backend.h"
 #include "ggml.h"
 
 #include <cstdarg>
