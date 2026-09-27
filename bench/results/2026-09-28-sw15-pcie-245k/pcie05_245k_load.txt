@@ -1,0 +1,17 @@
+state: loaded $BENCH/state-245k.bin (245759 positions) in 1.4 s
+expert cache: 3511 slots (14.3% of experts), filled in 0.3 s from 5654 MiB free
+adaptive cache: decayed LFU, swap budget 8 (arena registered in 0.0 s)
+decode: 128 tokens at depth 245760 in 2.32 s: 55.27 tok/s (fast path, doorbell), window 1, hit rate 57.09%, swaps 391
+decode: 128 tokens at depth 245888 in 2.35 s: 54.43 tok/s (fast path, doorbell), window 2, hit rate 56.47%, swaps 1381
+decode: 128 tokens at depth 246016 in 2.27 s: 56.27 tok/s (fast path, doorbell), window 3, hit rate 59.71%, swaps 2318
+expert cache hit rate 57.76% (106460 hits, 77860 misses: 43827 on the CPU, 34033 read over PCIe)
+host per token: 11.00 ms waiting for routing, 6.35 ms running misses
+misses per layer: count (share of layers) and mean host miss time
+   0 :   4.0%     0.7 us
+   1 :  21.8%    54.5 us
+   2 :  30.9%   108.8 us
+   3 :  25.3%   168.9 us
+   4 :  13.3%   226.3 us
+   5 :   2.9%   282.3 us
+   6 :   1.8%   328.5 us
+tokens: 279 803 557 65531 430 328 239708 23639 328 641 561 803 557 13849 494 279 2136 9575 3992 328 46973 84 16094 2770

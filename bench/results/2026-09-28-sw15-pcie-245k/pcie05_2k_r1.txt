@@ -1,0 +1,14 @@
+prefill: 2048 tokens in 16.8 s (121.9 tok/s, reference path)
+expert cache: 8096 slots (32.9% of experts), filled in 0.7 s from 11698 MiB free
+adaptive cache: decayed LFU, swap budget 8 (arena registered in 0.0 s)
+decode: 256 tokens at depth 2048 in 2.95 s: 86.73 tok/s (fast path, doorbell), swaps 889
+expert cache hit rate 91.18% (112042 hits, 10838 misses: 7736 on the CPU, 3102 read over PCIe)
+host per token: 9.30 ms waiting for routing, 1.55 ms running misses
+misses per layer: count (share of layers) and mean host miss time
+   0 :  45.3%     0.6 us
+   1 :  47.1%    49.9 us
+   2 :   7.0%   106.4 us
+   3 :   0.6%   166.5 us
+   4 :   0.0%   221.1 us
+   6 :   0.0%   347.2 us
+tokens: 279 58773 26183 593 240991 2982 2502 1439 33060 1116 321 264 2843 1116 777 30713 11285 1472 12694 276 321 243693 318 864
