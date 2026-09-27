@@ -1,0 +1,230 @@
+  step -1 model.input_embed rel L2 0.000e+00
+    layer  0 (GDN): l_last rel L2 7.839e-08, routing 10/10
+    layer  1 (GDN): l_last rel L2 8.413e-08, routing 10/10
+    layer  2 (GDN): l_last rel L2 8.326e-08, routing 10/10
+    layer  3 (QSA): l_last rel L2 3.558e-04, routing 10/10
+    layer  4 (GDN): l_last rel L2 1.305e-03, routing 10/10
+    layer  5 (GDN): l_last rel L2 9.048e-04, routing 10/10
+    layer  6 (GDN): l_last rel L2 1.143e-03, routing 10/10
+    layer  7 (QSA): l_last rel L2 1.276e-03, routing 10/10
+    layer  8 (GDN): l_last rel L2 1.438e-03, routing 10/10
+    layer  9 (GDN): l_last rel L2 1.454e-03, routing 10/10
+    layer 10 (GDN): l_last rel L2 1.558e-03, routing 10/10
+    layer 11 (QSA): l_last rel L2 1.603e-03, routing 10/10
+    layer 12 (GDN): l_last rel L2 1.662e-03, routing 10/10
+    layer 13 (GDN): l_last rel L2 1.693e-03, routing 10/10
+    layer 14 (GDN): l_last rel L2 1.630e-03, routing 10/10
+    layer 15 (QSA): l_last rel L2 1.932e-03, routing 10/10
+    layer 16 (GDN): l_last rel L2 2.279e-03, routing 10/10
+    layer 17 (GDN): l_last rel L2 2.304e-03, routing 10/10
+    layer 18 (GDN): l_last rel L2 2.403e-03, routing 10/10
+    layer 19 (QSA): l_last rel L2 2.465e-03, routing 10/10
+    layer 20 (GDN): l_last rel L2 2.324e-03, routing 10/10
+    layer 21 (GDN): l_last rel L2 2.359e-03, routing 10/10
+    layer 22 (GDN): l_last rel L2 2.548e-03, routing 10/10
+    layer 23 (QSA): l_last rel L2 3.684e-03, routing 9/10
+    layer 24 (GDN): l_last rel L2 3.798e-03, routing 10/10
+    layer 25 (GDN): l_last rel L2 3.883e-03, routing 10/10
+    layer 26 (GDN): l_last rel L2 3.722e-03, routing 10/10
+    layer 27 (QSA): l_last rel L2 3.946e-03, routing 10/10
+    layer 28 (GDN): l_last rel L2 4.207e-03, routing 10/10
+    layer 29 (GDN): l_last rel L2 5.105e-03, routing 10/10
+    layer 30 (GDN): l_last rel L2 5.094e-03, routing 10/10
+    layer 31 (QSA): l_last rel L2 5.714e-03, routing 10/10
+    layer 32 (GDN): l_last rel L2 7.036e-03, routing 10/10
+    layer 33 (GDN): l_last rel L2 7.184e-03, routing 10/10
+    layer 34 (GDN): l_last rel L2 7.416e-03, routing 10/10
+    layer 35 (QSA): l_last rel L2 7.681e-03, routing 10/10
+    layer 36 (GDN): l_last rel L2 2.461e-02, routing 9/10
+    layer 37 (GDN): l_last rel L2 2.352e-02, routing 10/10
+    layer 38 (GDN): l_last rel L2 2.513e-02, routing 10/10
+    layer 39 (QSA): l_last rel L2 2.751e-02, routing 10/10
+    layer 40 (GDN): l_last rel L2 2.783e-02, routing 10/10
+    layer 41 (GDN): l_last rel L2 2.879e-02, routing 10/10
+    layer 42 (GDN): l_last rel L2 3.544e-02, routing 9/10
+    layer 43 (QSA): l_last rel L2 4.070e-02, routing 9/10
+    layer 44 (GDN): l_last rel L2 3.565e-02, routing 10/10
+    layer 45 (GDN): l_last rel L2 4.046e-02, routing 10/10
+    layer 46 (GDN): l_last rel L2 4.385e-02, routing 10/10
+    layer 47 (QSA): l_last rel L2 5.461e-02, routing 9/10
+  logits step -1                               rel L2 7.673e-02  FAIL
+full: step  -1 ( 1 tok at   0): worst layer rel L2 5.46e-02, logits rel L2 7.67e-02, KLD 0.01326, argmax 262 vs 262
+  step 0 model.input_embed rel L2 0.000e+00
+    layer  0 (GDN): l_last rel L2 8.441e-08, routing 10/10
+    layer  1 (GDN): l_last rel L2 1.574e-07, routing 10/10
+    layer  2 (GDN): l_last rel L2 1.813e-07, routing 10/10
+    layer  3 (QSA): l_last rel L2 1.900e-07, routing 10/10
+    layer  4 (GDN): l_last rel L2 1.549e-03, routing 10/10
+    layer  5 (GDN): l_last rel L2 2.659e-03, routing 10/10
+    layer  6 (GDN): l_last rel L2 4.036e-03, routing 10/10
+    layer  7 (QSA): l_last rel L2 4.755e-03, routing 10/10
+    layer  8 (GDN): l_last rel L2 4.833e-03, routing 10/10
+    layer  9 (GDN): l_last rel L2 4.862e-03, routing 10/10
+    layer 10 (GDN): l_last rel L2 5.085e-03, routing 10/10
+    layer 11 (QSA): l_last rel L2 5.294e-03, routing 10/10
+    layer 12 (GDN): l_last rel L2 5.414e-03, routing 10/10
+    layer 13 (GDN): l_last rel L2 5.633e-03, routing 10/10
+    layer 14 (GDN): l_last rel L2 5.669e-03, routing 10/10
+    layer 15 (QSA): l_last rel L2 6.346e-03, routing 10/10
+    layer 16 (GDN): l_last rel L2 5.969e-03, routing 10/10
+    layer 17 (GDN): l_last rel L2 6.035e-03, routing 10/10
+    layer 18 (GDN): l_last rel L2 6.230e-03, routing 10/10
+    layer 19 (QSA): l_last rel L2 6.591e-03, routing 10/10
+    layer 20 (GDN): l_last rel L2 6.992e-03, routing 10/10
+    layer 21 (GDN): l_last rel L2 7.402e-03, routing 10/10
+    layer 22 (GDN): l_last rel L2 8.219e-03, routing 10/10
+    layer 23 (QSA): l_last rel L2 8.401e-03, routing 10/10
+    layer 24 (GDN): l_last rel L2 9.236e-03, routing 10/10
+    layer 25 (GDN): l_last rel L2 1.031e-02, routing 10/10
+    layer 26 (GDN): l_last rel L2 9.163e-03, routing 10/10
+    layer 27 (QSA): l_last rel L2 1.066e-02, routing 10/10
+    layer 28 (GDN): l_last rel L2 1.109e-02, routing 10/10
+    layer 29 (GDN): l_last rel L2 1.096e-02, routing 10/10
+    layer 30 (GDN): l_last rel L2 1.075e-02, routing 10/10
+    layer 31 (QSA): l_last rel L2 1.372e-02, routing 10/10
+    layer 32 (GDN): l_last rel L2 1.345e-02, routing 10/10
+    layer 33 (GDN): l_last rel L2 1.099e-02, routing 10/10
+    layer 34 (GDN): l_last rel L2 1.142e-02, routing 10/10
+    layer 35 (QSA): l_last rel L2 1.354e-02, routing 10/10
+    layer 36 (GDN): l_last rel L2 1.405e-02, routing 10/10
+    layer 37 (GDN): l_last rel L2 1.455e-02, routing 10/10
+    layer 38 (GDN): l_last rel L2 1.500e-02, routing 10/10
+    layer 39 (QSA): l_last rel L2 1.691e-02, routing 10/10
+    layer 40 (GDN): l_last rel L2 1.724e-02, routing 10/10
+    layer 41 (GDN): l_last rel L2 1.829e-02, routing 10/10
+    layer 42 (GDN): l_last rel L2 1.970e-02, routing 10/10
+    layer 43 (QSA): l_last rel L2 1.998e-02, routing 10/10
+    layer 44 (GDN): l_last rel L2 2.338e-02, routing 10/10
+    layer 45 (GDN): l_last rel L2 2.445e-02, routing 10/10
+    layer 46 (GDN): l_last rel L2 4.075e-02, routing 10/10
+    layer 47 (QSA): l_last rel L2 4.369e-02, routing 10/10
+  logits step 0                                rel L2 2.996e-02  FAIL
+full: step   0 ( 1 tok at   1): worst layer rel L2 4.37e-02, logits rel L2 3.00e-02, KLD 0.00286, argmax 460 vs 653  DIFFERENT
+  logits step 1                                rel L2 1.015e-01  FAIL
+full: step   1 ( 1 tok at   2): worst layer rel L2 1.24e-01, logits rel L2 1.02e-01, KLD 0.11249, argmax 12931 vs 79790  DIFFERENT
+  logits step 2                                rel L2 1.424e-01  FAIL
+full: step   2 ( 1 tok at   3): worst layer rel L2 1.30e-01, logits rel L2 1.42e-01, KLD 0.09577, argmax 316 vs 316
+  logits step 3                                rel L2 7.091e-02  FAIL
+full: step   3 ( 1 tok at   4): worst layer rel L2 6.16e-02, logits rel L2 7.09e-02, KLD 0.00223, argmax 4747 vs 4747
+  logits step 4                                rel L2 1.658e-01  FAIL
+full: step   4 ( 1 tok at   5): worst layer rel L2 1.56e-01, logits rel L2 1.66e-01, KLD 0.00003, argmax 91 vs 91
+  logits step 5                                rel L2 1.467e-01  FAIL
+full: step   5 ( 1 tok at   6): worst layer rel L2 1.57e-01, logits rel L2 1.47e-01, KLD 0.73462, argmax 29 vs 65489  DIFFERENT
+  logits step 6                                rel L2 1.505e-01  FAIL
+full: step   6 ( 1 tok at   7): worst layer rel L2 1.35e-01, logits rel L2 1.50e-01, KLD 0.00000, argmax 91 vs 91
+  logits step 7                                rel L2 1.314e-01  FAIL
+full: step   7 ( 1 tok at   8): worst layer rel L2 1.33e-01, logits rel L2 1.31e-01, KLD 0.00001, argmax 316 vs 316
+  logits step 8                                rel L2 2.485e-01  FAIL
+full: step   8 ( 1 tok at   9): worst layer rel L2 1.85e-01, logits rel L2 2.49e-01, KLD 0.17853, argmax 6018 vs 6018
+  logits step 9                                rel L2 1.480e-01  FAIL
+full: step   9 ( 1 tok at  10): worst layer rel L2 1.36e-01, logits rel L2 1.48e-01, KLD 0.00000, argmax 91 vs 91
+  logits step 10                               rel L2 1.903e-01  FAIL
+full: step  10 ( 1 tok at  11): worst layer rel L2 1.85e-01, logits rel L2 1.90e-01, KLD 0.01800, argmax 29 vs 29
+  logits step 11                               rel L2 1.424e-01  FAIL
+full: step  11 ( 1 tok at  12): worst layer rel L2 1.51e-01, logits rel L2 1.42e-01, KLD 0.34192, argmax 318 vs 318
+  logits step 12                               rel L2 1.159e-01  FAIL
+full: step  12 ( 1 tok at  13): worst layer rel L2 1.08e-01, logits rel L2 1.16e-01, KLD 0.04037, argmax 7949 vs 15006  DIFFERENT
+  logits step 13                               rel L2 7.177e-02  FAIL
+full: step  13 ( 1 tok at  14): worst layer rel L2 7.51e-02, logits rel L2 7.18e-02, KLD 0.01557, argmax 40253 vs 40253
+  logits step 14                               rel L2 1.130e-01  FAIL
+full: step  14 ( 1 tok at  15): worst layer rel L2 1.06e-01, logits rel L2 1.13e-01, KLD 0.00146, argmax 27896 vs 27896
+  logits step 15                               rel L2 1.027e-01  FAIL
+full: step  15 ( 1 tok at  16): worst layer rel L2 1.15e-01, logits rel L2 1.03e-01, KLD 0.05189, argmax 11 vs 11
+  logits step 16                               rel L2 1.252e-01  FAIL
+full: step  16 ( 1 tok at  17): worst layer rel L2 1.55e-01, logits rel L2 1.25e-01, KLD 0.08562, argmax 8341 vs 8341
+  logits step 17                               rel L2 1.229e-01  FAIL
+full: step  17 ( 1 tok at  18): worst layer rel L2 1.37e-01, logits rel L2 1.23e-01, KLD 0.02737, argmax 430 vs 430
+  logits step 18                               rel L2 7.813e-02  FAIL
+full: step  18 ( 1 tok at  19): worst layer rel L2 1.02e-01, logits rel L2 7.81e-02, KLD 0.08197, argmax 3568 vs 3568
+  logits step 19                               rel L2 1.104e-01  FAIL
+full: step  19 ( 1 tok at  20): worst layer rel L2 1.21e-01, logits rel L2 1.10e-01, KLD 0.05558, argmax 10885 vs 3175  DIFFERENT
+  logits step 20                               rel L2 1.311e-01  FAIL
+full: step  20 ( 1 tok at  21): worst layer rel L2 1.51e-01, logits rel L2 1.31e-01, KLD 0.25584, argmax 13746 vs 10885  DIFFERENT
+  logits step 21                               rel L2 9.189e-02  FAIL
+full: step  21 ( 1 tok at  22): worst layer rel L2 1.28e-01, logits rel L2 9.19e-02, KLD 0.03091, argmax 553 vs 553
+  logits step 22                               rel L2 1.202e-01  FAIL
+full: step  22 ( 1 tok at  23): worst layer rel L2 1.67e-01, logits rel L2 1.20e-01, KLD 0.00010, argmax 198 vs 198
+  logits step 23                               rel L2 1.910e-01  FAIL
+full: step  23 ( 1 tok at  24): worst layer rel L2 1.78e-01, logits rel L2 1.91e-01, KLD 0.00000, argmax 262 vs 262
+  logits step 24                               rel L2 1.210e-01  FAIL
+full: step  24 ( 1 tok at  25): worst layer rel L2 1.66e-01, logits rel L2 1.21e-01, KLD 0.00063, argmax 364 vs 364
+  logits step 25                               rel L2 1.133e-01  FAIL
+full: step  25 ( 1 tok at  26): worst layer rel L2 1.29e-01, logits rel L2 1.13e-01, KLD 0.07520, argmax 6365 vs 10811  DIFFERENT
+  logits step 26                               rel L2 1.006e-01  FAIL
+full: step  26 ( 1 tok at  27): worst layer rel L2 1.13e-01, logits rel L2 1.01e-01, KLD 0.00014, argmax 303 vs 303
+  logits step 27                               rel L2 1.362e-01  FAIL
+full: step  27 ( 1 tok at  28): worst layer rel L2 1.36e-01, logits rel L2 1.36e-01, KLD 0.01802, argmax 3376 vs 3376
+  logits step 28                               rel L2 1.121e-01  FAIL
+full: step  28 ( 1 tok at  29): worst layer rel L2 1.05e-01, logits rel L2 1.12e-01, KLD 0.00000, argmax 248045 vs 248045
+  logits step 29                               rel L2 2.052e-01  FAIL
+full: step  29 ( 1 tok at  30): worst layer rel L2 1.23e-01, logits rel L2 2.05e-01, KLD 0.00000, argmax 487 vs 487
+  logits step 30                               rel L2 1.071e-01  FAIL
+full: step  30 ( 1 tok at  31): worst layer rel L2 1.03e-01, logits rel L2 1.07e-01, KLD 0.00003, argmax 328 vs 328
+  logits step 31                               rel L2 1.027e-01  FAIL
+full: step  31 ( 1 tok at  32): worst layer rel L2 9.22e-02, logits rel L2 1.03e-01, KLD 0.00008, argmax 248046 vs 248046
+  logits step 32                               rel L2 1.246e-01  FAIL
+full: step  32 ( 1 tok at  33): worst layer rel L2 1.14e-01, logits rel L2 1.25e-01, KLD 0.00000, argmax 35821 vs 35821
+  logits step 33                               rel L2 7.427e-02  FAIL
+full: step  33 ( 1 tok at  34): worst layer rel L2 1.45e-01, logits rel L2 7.43e-02, KLD 0.00000, argmax 198 vs 198
+  logits step 34                               rel L2 1.511e-01  FAIL
+full: step  34 ( 1 tok at  35): worst layer rel L2 1.74e-01, logits rel L2 1.51e-01, KLD 0.00000, argmax 285 vs 285
+  logits step 35                               rel L2 1.496e-01  FAIL
+full: step  35 ( 1 tok at  36): worst layer rel L2 1.83e-01, logits rel L2 1.50e-01, KLD 0.08648, argmax 413 vs 413
+  logits step 36                               rel L2 1.351e-01  FAIL
+full: step  36 ( 1 tok at  37): worst layer rel L2 1.65e-01, logits rel L2 1.35e-01, KLD 0.00010, argmax 10811 vs 10811
+  logits step 37                               rel L2 1.233e-01  FAIL
+full: step  37 ( 1 tok at  38): worst layer rel L2 1.34e-01, logits rel L2 1.23e-01, KLD 0.00046, argmax 524 vs 524
+  logits step 38                               rel L2 8.660e-02  FAIL
+full: step  38 ( 1 tok at  39): worst layer rel L2 1.47e-01, logits rel L2 8.66e-02, KLD 0.00000, argmax 303 vs 303
+  logits step 39                               rel L2 1.242e-01  FAIL
+full: step  39 ( 1 tok at  40): worst layer rel L2 2.03e-01, logits rel L2 1.24e-01, KLD 0.36025, argmax 9341 vs 23075  DIFFERENT
+  logits step 40                               rel L2 1.404e-01  FAIL
+full: step  40 ( 1 tok at  41): worst layer rel L2 1.18e-01, logits rel L2 1.40e-01, KLD 0.00467, argmax 25 vs 25
+  logits step 41                               rel L2 1.732e-01  FAIL
+full: step  41 ( 1 tok at  42): worst layer rel L2 2.39e-01, logits rel L2 1.73e-01, KLD 0.00000, argmax 198 vs 198
+  logits step 42                               rel L2 1.346e-01  FAIL
+full: step  42 ( 1 tok at  43): worst layer rel L2 1.46e-01, logits rel L2 1.35e-01, KLD 0.00003, argmax 309 vs 309
+  logits step 43                               rel L2 1.384e-01  FAIL
+full: step  43 ( 1 tok at  44): worst layer rel L2 3.79e-01, logits rel L2 1.38e-01, KLD 0.09856, argmax 23075 vs 23075
+  logits step 44                               rel L2 1.713e-01  FAIL
+full: step  44 ( 1 tok at  45): worst layer rel L2 1.54e-01, logits rel L2 1.71e-01, KLD 0.00798, argmax 58 vs 58
+  logits step 45                               rel L2 1.992e-01  FAIL
+full: step  45 ( 1 tok at  46): worst layer rel L2 4.27e-01, logits rel L2 1.99e-01, KLD 0.00254, argmax 26843 vs 26843
+  logits step 46                               rel L2 1.340e-01  FAIL
+full: step  46 ( 1 tok at  47): worst layer rel L2 1.79e-01, logits rel L2 1.34e-01, KLD 0.00001, argmax 60 vs 60
+  logits step 47                               rel L2 1.049e-01  FAIL
+full: step  47 ( 1 tok at  48): worst layer rel L2 1.57e-01, logits rel L2 1.05e-01, KLD 0.00004, argmax 283 vs 283
+  logits step 48                               rel L2 1.121e-01  FAIL
+full: step  48 ( 1 tok at  49): worst layer rel L2 1.61e-01, logits rel L2 1.12e-01, KLD 0.00101, argmax 2343 vs 2343
+  logits step 49                               rel L2 1.126e-01  FAIL
+full: step  49 ( 1 tok at  50): worst layer rel L2 1.21e-01, logits rel L2 1.13e-01, KLD 0.00005, argmax 3620 vs 3620
+  logits step 50                               rel L2 1.412e-01  FAIL
+full: step  50 ( 1 tok at  51): worst layer rel L2 1.56e-01, logits rel L2 1.41e-01, KLD 0.00000, argmax 19872 vs 19872
+  logits step 51                               rel L2 1.612e-01  FAIL
+full: step  51 ( 1 tok at  52): worst layer rel L2 1.89e-01, logits rel L2 1.61e-01, KLD 0.00018, argmax 8 vs 8
+  logits step 52                               rel L2 8.929e-02  FAIL
+full: step  52 ( 1 tok at  53): worst layer rel L2 1.52e-01, logits rel L2 8.93e-02, KLD 0.00003, argmax 198 vs 198
+  logits step 53                               rel L2 1.471e-01  FAIL
+full: step  53 ( 1 tok at  54): worst layer rel L2 1.63e-01, logits rel L2 1.47e-01, KLD 0.20667, argmax 309 vs 309
+  logits step 54                               rel L2 9.781e-02  FAIL
+full: step  54 ( 1 tok at  55): worst layer rel L2 1.35e-01, logits rel L2 9.78e-02, KLD 0.00073, argmax 3568 vs 3568
+  logits step 55                               rel L2 1.703e-01  FAIL
+full: step  55 ( 1 tok at  56): worst layer rel L2 1.68e-01, logits rel L2 1.70e-01, KLD 0.03508, argmax 27896 vs 27896
+  logits step 56                               rel L2 2.306e-01  FAIL
+full: step  56 ( 1 tok at  57): worst layer rel L2 2.25e-01, logits rel L2 2.31e-01, KLD 0.06529, argmax 1989 vs 1989
+  logits step 57                               rel L2 1.983e-01  FAIL
+full: step  57 ( 1 tok at  58): worst layer rel L2 1.95e-01, logits rel L2 1.98e-01, KLD 0.65926, argmax 16371 vs 53159  DIFFERENT
+  logits step 58                               rel L2 1.394e-01  FAIL
+full: step  58 ( 1 tok at  59): worst layer rel L2 1.50e-01, logits rel L2 1.39e-01, KLD 0.00000, argmax 8 vs 8
+  logits step 59                               rel L2 1.074e-01  FAIL
+full: step  59 ( 1 tok at  60): worst layer rel L2 1.67e-01, logits rel L2 1.07e-01, KLD 0.00812, argmax 271 vs 271
+  logits step 60                               rel L2 1.231e-01  FAIL
+full: step  60 ( 1 tok at  61): worst layer rel L2 1.63e-01, logits rel L2 1.23e-01, KLD 0.00000, argmax 262 vs 262
+  logits step 61                               rel L2 9.575e-02  FAIL
+full: step  61 ( 1 tok at  62): worst layer rel L2 1.31e-01, logits rel L2 9.58e-02, KLD 0.08987, argmax 44424 vs 653  DIFFERENT
+  logits step 62                               rel L2 1.038e-01  FAIL
+full: step  62 ( 1 tok at  63): worst layer rel L2 1.26e-01, logits rel L2 1.04e-01, KLD 0.03370, argmax 10588 vs 10588
+  logits step 63                               rel L2 8.357e-02  FAIL
+full: step  63 ( 1 tok at  64): worst layer rel L2 1.13e-01, logits rel L2 8.36e-02, KLD 0.00018, argmax 11258 vs 11258
+full: greedy token agreement 55 / 65; KLD(ref || flashrt) mean 0.06003, max 0.73462 over 65 steps
+fr_parity: 65 checks, 65 over tolerance 2e-03; worst 2.485e-01 (logits step 8)

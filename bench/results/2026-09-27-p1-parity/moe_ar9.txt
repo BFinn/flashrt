@@ -1,0 +1,39 @@
+moe: expert arena loaded in 14.0 s
+moe: step -1
+  ffn_out (moe + shexp)-0                      rel L2 7.543e-08
+  ffn_out (moe + shexp)-1                      rel L2 1.092e-07
+  ffn_out (moe + shexp)-2                      rel L2 1.098e-07
+moe: step 0
+  ffn_out (moe + shexp)-0                      rel L2 9.320e-08
+  ffn_out (moe + shexp)-1                      rel L2 1.674e-07
+  ffn_out (moe + shexp)-2                      rel L2 1.320e-07
+moe: step 1
+  ffn_out (moe + shexp)-0                      rel L2 7.196e-08
+  ffn_out (moe + shexp)-1                      rel L2 1.651e-07
+  ffn_out (moe + shexp)-2                      rel L2 1.370e-07
+moe: step 2
+  ffn_out (moe + shexp)-0                      rel L2 1.225e-07
+  ffn_out (moe + shexp)-1                      rel L2 1.584e-07
+  ffn_out (moe + shexp)-2                      rel L2 1.132e-07
+moe: step 3
+  ffn_out (moe + shexp)-0                      rel L2 6.679e-08
+  ffn_out (moe + shexp)-1                      rel L2 1.527e-07
+  ffn_out (moe + shexp)-2                      rel L2 8.826e-08
+moe: step 4
+  ffn_out (moe + shexp)-0                      rel L2 1.042e-07
+  ffn_out (moe + shexp)-1                      rel L2 1.919e-07
+  ffn_out (moe + shexp)-2                      rel L2 1.042e-07
+moe: step 5
+  ffn_out (moe + shexp)-0                      rel L2 6.737e-08
+  ffn_out (moe + shexp)-1                      rel L2 1.391e-07
+  ffn_out (moe + shexp)-2                      rel L2 9.804e-08
+moe: step 6
+  ffn_out (moe + shexp)-0                      rel L2 9.026e-08
+  ffn_out (moe + shexp)-1                      rel L2 1.409e-07
+  ffn_out (moe + shexp)-2                      rel L2 9.975e-08
+moe: step 7
+  ffn_out (moe + shexp)-0                      rel L2 7.357e-08
+  ffn_out (moe + shexp)-1                      rel L2 1.701e-07
+  ffn_out (moe + shexp)-2                      rel L2 8.629e-08
+moe: 4320 of 4320 routed experts identical (100.0000%)
+fr_parity: 864 checks, 0 over tolerance 2e-03; worst 1.280e-03 (ffn_out (moe + shexp)-36)

@@ -1,0 +1,118 @@
+  step -1 model.input_embed rel L2 0.000e+00
+    layer  0 (GDN): l_last rel L2 7.839e-08, routing 10/10
+    layer  1 (GDN): l_last rel L2 8.413e-08, routing 10/10
+    layer  2 (GDN): l_last rel L2 8.326e-08, routing 10/10
+    layer  3 (QSA): l_last rel L2 3.558e-04, routing 10/10
+    layer  4 (GDN): l_last rel L2 1.305e-03, routing 10/10
+    layer  5 (GDN): l_last rel L2 9.048e-04, routing 10/10
+    layer  6 (GDN): l_last rel L2 1.143e-03, routing 10/10
+    layer  7 (QSA): l_last rel L2 1.276e-03, routing 10/10
+    layer  8 (GDN): l_last rel L2 1.438e-03, routing 10/10
+    layer  9 (GDN): l_last rel L2 1.454e-03, routing 10/10
+    layer 10 (GDN): l_last rel L2 1.558e-03, routing 10/10
+    layer 11 (QSA): l_last rel L2 1.603e-03, routing 10/10
+    layer 12 (GDN): l_last rel L2 1.662e-03, routing 10/10
+    layer 13 (GDN): l_last rel L2 1.693e-03, routing 10/10
+    layer 14 (GDN): l_last rel L2 1.630e-03, routing 10/10
+    layer 15 (QSA): l_last rel L2 1.932e-03, routing 10/10
+    layer 16 (GDN): l_last rel L2 2.279e-03, routing 10/10
+    layer 17 (GDN): l_last rel L2 2.304e-03, routing 10/10
+    layer 18 (GDN): l_last rel L2 2.403e-03, routing 10/10
+    layer 19 (QSA): l_last rel L2 2.465e-03, routing 10/10
+    layer 20 (GDN): l_last rel L2 2.324e-03, routing 10/10
+    layer 21 (GDN): l_last rel L2 2.359e-03, routing 10/10
+    layer 22 (GDN): l_last rel L2 2.548e-03, routing 10/10
+    layer 23 (QSA): l_last rel L2 3.684e-03, routing 9/10
+    layer 24 (GDN): l_last rel L2 3.798e-03, routing 10/10
+    layer 25 (GDN): l_last rel L2 3.883e-03, routing 10/10
+    layer 26 (GDN): l_last rel L2 3.722e-03, routing 10/10
+    layer 27 (QSA): l_last rel L2 3.946e-03, routing 10/10
+    layer 28 (GDN): l_last rel L2 4.207e-03, routing 10/10
+    layer 29 (GDN): l_last rel L2 5.105e-03, routing 10/10
+    layer 30 (GDN): l_last rel L2 5.094e-03, routing 10/10
+    layer 31 (QSA): l_last rel L2 5.714e-03, routing 10/10
+    layer 32 (GDN): l_last rel L2 7.036e-03, routing 10/10
+    layer 33 (GDN): l_last rel L2 7.184e-03, routing 10/10
+    layer 34 (GDN): l_last rel L2 7.416e-03, routing 10/10
+    layer 35 (QSA): l_last rel L2 7.681e-03, routing 10/10
+    layer 36 (GDN): l_last rel L2 2.461e-02, routing 9/10
+    layer 37 (GDN): l_last rel L2 2.352e-02, routing 10/10
+    layer 38 (GDN): l_last rel L2 2.513e-02, routing 10/10
+    layer 39 (QSA): l_last rel L2 2.751e-02, routing 10/10
+    layer 40 (GDN): l_last rel L2 2.783e-02, routing 10/10
+    layer 41 (GDN): l_last rel L2 2.879e-02, routing 10/10
+    layer 42 (GDN): l_last rel L2 3.544e-02, routing 9/10
+    layer 43 (QSA): l_last rel L2 4.070e-02, routing 9/10
+    layer 44 (GDN): l_last rel L2 3.565e-02, routing 10/10
+    layer 45 (GDN): l_last rel L2 4.046e-02, routing 10/10
+    layer 46 (GDN): l_last rel L2 4.385e-02, routing 10/10
+    layer 47 (QSA): l_last rel L2 5.461e-02, routing 9/10
+  logits step -1                               rel L2 7.673e-02  FAIL
+full: step  -1 ( 1 tok at   0): worst layer rel L2 5.46e-02, logits rel L2 7.67e-02, argmax 262 vs 262
+  step 0 model.input_embed rel L2 0.000e+00
+    layer  0 (GDN): l_last rel L2 8.441e-08, routing 10/10
+    layer  1 (GDN): l_last rel L2 1.574e-07, routing 10/10
+    layer  2 (GDN): l_last rel L2 1.813e-07, routing 10/10
+    layer  3 (QSA): l_last rel L2 1.900e-07, routing 10/10
+    layer  4 (GDN): l_last rel L2 1.549e-03, routing 10/10
+    layer  5 (GDN): l_last rel L2 2.659e-03, routing 10/10
+    layer  6 (GDN): l_last rel L2 4.036e-03, routing 10/10
+    layer  7 (QSA): l_last rel L2 4.755e-03, routing 10/10
+    layer  8 (GDN): l_last rel L2 4.833e-03, routing 10/10
+    layer  9 (GDN): l_last rel L2 4.862e-03, routing 10/10
+    layer 10 (GDN): l_last rel L2 5.085e-03, routing 10/10
+    layer 11 (QSA): l_last rel L2 5.294e-03, routing 10/10
+    layer 12 (GDN): l_last rel L2 5.414e-03, routing 10/10
+    layer 13 (GDN): l_last rel L2 5.633e-03, routing 10/10
+    layer 14 (GDN): l_last rel L2 5.669e-03, routing 10/10
+    layer 15 (QSA): l_last rel L2 6.346e-03, routing 10/10
+    layer 16 (GDN): l_last rel L2 5.969e-03, routing 10/10
+    layer 17 (GDN): l_last rel L2 6.035e-03, routing 10/10
+    layer 18 (GDN): l_last rel L2 6.230e-03, routing 10/10
+    layer 19 (QSA): l_last rel L2 6.591e-03, routing 10/10
+    layer 20 (GDN): l_last rel L2 6.992e-03, routing 10/10
+    layer 21 (GDN): l_last rel L2 7.402e-03, routing 10/10
+    layer 22 (GDN): l_last rel L2 8.219e-03, routing 10/10
+    layer 23 (QSA): l_last rel L2 8.401e-03, routing 10/10
+    layer 24 (GDN): l_last rel L2 9.236e-03, routing 10/10
+    layer 25 (GDN): l_last rel L2 1.031e-02, routing 10/10
+    layer 26 (GDN): l_last rel L2 9.163e-03, routing 10/10
+    layer 27 (QSA): l_last rel L2 1.066e-02, routing 10/10
+    layer 28 (GDN): l_last rel L2 1.109e-02, routing 10/10
+    layer 29 (GDN): l_last rel L2 1.096e-02, routing 10/10
+    layer 30 (GDN): l_last rel L2 1.075e-02, routing 10/10
+    layer 31 (QSA): l_last rel L2 1.372e-02, routing 10/10
+    layer 32 (GDN): l_last rel L2 1.345e-02, routing 10/10
+    layer 33 (GDN): l_last rel L2 1.099e-02, routing 10/10
+    layer 34 (GDN): l_last rel L2 1.142e-02, routing 10/10
+    layer 35 (QSA): l_last rel L2 1.354e-02, routing 10/10
+    layer 36 (GDN): l_last rel L2 1.405e-02, routing 10/10
+    layer 37 (GDN): l_last rel L2 1.455e-02, routing 10/10
+    layer 38 (GDN): l_last rel L2 1.500e-02, routing 10/10
+    layer 39 (QSA): l_last rel L2 1.691e-02, routing 10/10
+    layer 40 (GDN): l_last rel L2 1.724e-02, routing 10/10
+    layer 41 (GDN): l_last rel L2 1.829e-02, routing 10/10
+    layer 42 (GDN): l_last rel L2 1.970e-02, routing 10/10
+    layer 43 (QSA): l_last rel L2 1.998e-02, routing 10/10
+    layer 44 (GDN): l_last rel L2 2.338e-02, routing 10/10
+    layer 45 (GDN): l_last rel L2 2.445e-02, routing 10/10
+    layer 46 (GDN): l_last rel L2 4.075e-02, routing 10/10
+    layer 47 (QSA): l_last rel L2 4.369e-02, routing 10/10
+  logits step 0                                rel L2 2.996e-02  FAIL
+full: step   0 ( 1 tok at   1): worst layer rel L2 4.37e-02, logits rel L2 3.00e-02, argmax 460 vs 653  DIFFERENT
+  logits step 1                                rel L2 1.015e-01  FAIL
+full: step   1 ( 1 tok at   2): worst layer rel L2 1.24e-01, logits rel L2 1.02e-01, argmax 12931 vs 79790  DIFFERENT
+  logits step 2                                rel L2 1.424e-01  FAIL
+full: step   2 ( 1 tok at   3): worst layer rel L2 1.30e-01, logits rel L2 1.42e-01, argmax 316 vs 316
+  logits step 3                                rel L2 7.091e-02  FAIL
+full: step   3 ( 1 tok at   4): worst layer rel L2 6.16e-02, logits rel L2 7.09e-02, argmax 4747 vs 4747
+  logits step 4                                rel L2 1.658e-01  FAIL
+full: step   4 ( 1 tok at   5): worst layer rel L2 1.56e-01, logits rel L2 1.66e-01, argmax 91 vs 91
+  logits step 5                                rel L2 1.467e-01  FAIL
+full: step   5 ( 1 tok at   6): worst layer rel L2 1.57e-01, logits rel L2 1.47e-01, argmax 29 vs 65489  DIFFERENT
+  logits step 6                                rel L2 1.505e-01  FAIL
+full: step   6 ( 1 tok at   7): worst layer rel L2 1.35e-01, logits rel L2 1.50e-01, argmax 91 vs 91
+  logits step 7                                rel L2 1.314e-01  FAIL
+full: step   7 ( 1 tok at   8): worst layer rel L2 1.33e-01, logits rel L2 1.31e-01, argmax 316 vs 316
+full: greedy token agreement 6 / 9
+fr_parity: 9 checks, 9 over tolerance 2e-03; worst 1.658e-01 (logits step 4)

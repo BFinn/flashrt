@@ -1,0 +1,4 @@
+fr_parity: 1664 checks, 0 over tolerance 2e-03; worst 1.258e-03 (hc_mixed-0 (ffn))
+fr_parity: 4680 checks, 0 over tolerance 2e-03; worst 9.814e-04 (linear_attn_out-41)
+fr_parity: 780 checks, 2 over tolerance 2e-03; worst 2.797e-03 (qsa attn_output-27)
+fr_parity: 27 checks, 0 over tolerance 2e-03; worst 2.319e-07 (hc_mixed-1 (attn, after PLE))
