@@ -100,7 +100,8 @@ __global__ void k_hc_down(const float* x, const float* w_norm, const uint16_t* W
 #pragma unroll 5
     for (int ch = lane; ch < n / 8; ch += 32) {
         const uint4 u = w4[ch];
-        const float* xv = xs + ch * 8;
+        const float4 x0 = reinterpret_cast<const float4*>(xs)[2 * ch], x1 = reinterpret_cast<const float4*>(xs)[2 * ch + 1];
+        const float xv[8] = {x0.x, x0.y, x0.z, x0.w, x1.x, x1.y, x1.z, x1.w};
         const uint32_t wv[4] = {u.x, u.y, u.z, u.w};
 #pragma unroll
         for (int e = 0; e < 4; ++e) {
@@ -144,7 +145,8 @@ __global__ void k_hc_up_mix(const uint16_t* W, const float* part, int n_inject, 
         const uint4* wr = reinterpret_cast<const uint4*>(W + (size_t(st) * n + i) * rank);
         for (int ch = l8; ch < rank / 8; ch += 8) {
             const uint4 u = wr[ch];
-            const float* xv = xs + ch * 8;
+            const float4 x0 = reinterpret_cast<const float4*>(xs)[2 * ch], x1 = reinterpret_cast<const float4*>(xs)[2 * ch + 1];
+            const float xv[8] = {x0.x, x0.y, x0.z, x0.w, x1.x, x1.y, x1.z, x1.w};
             const uint32_t wv[4] = {u.x, u.y, u.z, u.w};
 #pragma unroll
             for (int e = 0; e < 4; ++e) {
