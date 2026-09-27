@@ -72,14 +72,14 @@ int main(int argc, char** argv) {
     const ExpertShape shape{s.d_model, s.d_ff_expert};
 
     const auto ta = std::chrono::steady_clock::now();
-    ExpertArena arena = arena_alloc(s.n_layer, s.n_expert, expert_bytes(shape), mode, threads);
+    ExpertArena arena = arena_alloc(s.n_layer, s.n_expert, expert_bytes(shape), mode, 0);
     if (!arena.buf.ptr) { std::fprintf(stderr, "arena allocation failed\n"); return 1; }
     const double alloc_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - ta).count();
-    std::printf("arena: %d x %d blobs of %zu B (stride %zu), %.2f GiB, pages=%s huge_frac=%.2f, allocated in %.1f s\n",
-                s.n_layer, s.n_expert, arena.blob_bytes, arena.stride, arena.total_bytes() / 1073741824.0,
-                page_mode_name(mode), huge_page_fraction(arena.buf), alloc_s);
+    std::printf("arena: %d x %d blobs of %zu B (stride %zu), %.2f GiB, pages=%s, mapped in %.2f s\n", s.n_layer,
+                s.n_expert, arena.blob_bytes, arena.stride, arena.total_bytes() / 1073741824.0, page_mode_name(mode), alloc_s);
 
     const qwen4exp::LoadStats st = qwen4exp::load_experts(g, s, arena, threads);
+    std::printf("huge-page share after load: %.2f\n", huge_page_fraction(arena.buf));
     std::printf("loaded %d experts in %.1f s: %.2f GB read at %.2f GB/s (%d threads, O_DIRECT)\n", s.n_layer * s.n_expert,
                 st.seconds, st.bytes_read / 1e9, st.bytes_read / 1e9 / st.seconds, threads);
 

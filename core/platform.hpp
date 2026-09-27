@@ -21,6 +21,7 @@ struct HostBuffer {
     PageMode    mode  = PageMode::Default;
 };
 
+// touch_threads <= 0 skips the touch, for callers that write every page themselves.
 // Anonymous mapping of `bytes` (rounded up to 2 MiB), touched by `touch_threads` threads so
 // that pages are faulted in before any timing. Returns ptr == nullptr on failure.
 HostBuffer host_alloc(std::size_t bytes, PageMode mode, int touch_threads = 1);

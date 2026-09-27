@@ -47,7 +47,7 @@ HostBuffer host_alloc(std::size_t bytes, PageMode mode, int touch_threads) {
     buf.ptr = p;
 
     // first touch in parallel: faults the pages in now, not inside a timed loop
-    touch_threads = std::max(1, touch_threads);
+    if (touch_threads <= 0) return buf;   // caller first-touches (e.g. a parallel loader)
     const std::size_t chunk = round_up(buf.bytes / touch_threads, kHuge);
     std::vector<std::thread> ts;
     for (int t = 0; t < touch_threads; ++t) {

@@ -23,7 +23,8 @@ struct ExpertArena {
     size_t total_bytes() const { return size_t(n_layer) * n_expert * stride; }
 };
 
-// Pages are touched by `touch_threads` threads so the allocation is resident before use.
+// Pages are touched by `touch_threads` threads so the allocation is resident before use;
+// pass 0 when a loader writes every blob anyway.
 // Returns an arena with buf.ptr == nullptr on failure.
 ExpertArena arena_alloc(int n_layer, int n_expert, size_t blob_bytes, PageMode mode, int touch_threads);
 void arena_free(ExpertArena& a);
