@@ -94,11 +94,25 @@ struct QsaCache {
     uint16_t* Ks = nullptr;
     uint16_t* Vs = nullptr;
     bool q8 = false;
+    // Hot-set mode (q8 only, hot_blocks > 0): the full cache lives in mapped host memory (h*, device
+    // views; h*_host for the host side) and K/V/Ks/Vs above hold only hot_blocks blocks of
+    // qsa_block cells, managed with CLOCK after each attention; slot_of_block [capacity / block]
+    // maps a block to its slot or -1.
+    int hot_blocks = 0;
+    void *hK = nullptr, *hV = nullptr;
+    uint16_t *hKs = nullptr, *hVs = nullptr;
+    void *hK_host = nullptr, *hV_host = nullptr, *hKs_host = nullptr, *hVs_host = nullptr;
+    int32_t* slot_of_block = nullptr;
+    int32_t* block_of_slot = nullptr;
+    uint8_t* refbit = nullptr;
+    int32_t* clock_hand = nullptr;
     int capacity = 0;
     float* idx_pooled = nullptr;   // [capacity / block][idx_dim]
     float* idx_ring = nullptr;     // [block][idx_dim], slot = position % block
 };
-QsaCache alloc_qsa_cache(const Spec& s, int capacity, bool q8 = false);
+QsaCache alloc_qsa_cache(const Spec& s, int capacity, bool q8 = false, int hot_blocks = 0);
+// Empties the hot set (every block misses until promoted again); no-op without one.
+void reset_qsa_hot(const Spec& s, QsaCache& kv, cudaStream_t stream);
 // fp16 rows -> Q8_0 rows (values [n_rows][dim], scales [n_rows][dim / 32]), on the GPU.
 void qsa_h2q8_rows(const void* src_f16, void* dst_q8, void* dst_scales, long n_rows, int dim, cudaStream_t stream);
 // Bytes of one cell's K (or V) over all KV heads, values plus scales.

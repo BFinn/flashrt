@@ -28,8 +28,10 @@ class ForwardRef {
 public:
     // max_ctx: KV capacity; max_batch: tokens per forward() call (scratch sizing); kv_q8: the
     // QSA KV cache in Q8_0 (llama.cpp's q8_0 cache) instead of fp16.
+    // kv_hot_blocks > 0 (q8 only): the KV cache in host memory with that many 4-cell blocks per
+    // layer hot on the GPU (see QsaCache).
     ForwardRef(const Gguf& g, const Spec& s, const GpuWeights& w, const ExpertArena& arena, CpuPool& pool, int max_ctx,
-               int max_batch, bool kv_q8 = false);
+               int max_batch, bool kv_q8 = false, int kv_hot_blocks = 0);
     ~ForwardRef();
     ForwardRef(const ForwardRef&) = delete;
     ForwardRef& operator=(const ForwardRef&) = delete;

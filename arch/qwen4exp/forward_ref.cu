@@ -25,7 +25,7 @@ float* dalloc(size_t elems) {
 }  // namespace
 
 ForwardRef::ForwardRef(const Gguf& g, const Spec& s, const GpuWeights& w, const ExpertArena& arena, CpuPool& pool,
-                       int max_ctx, int max_batch, bool kv_q8)
+                       int max_ctx, int max_batch, bool kv_q8, int kv_hot_blocks)
     : s_(s), w_(w), max_batch_(max_batch) {
     ple_ = parse_ple(g);
     reader_ = std::make_unique<RowReader>(g.shards[ple_.table_shard], ple_.table_offset, ple_.row_bytes, 16);
@@ -41,7 +41,7 @@ ForwardRef::ForwardRef(const Gguf& g, const Spec& s, const GpuWeights& w, const 
     kv_.resize(s.n_layer);
     ple_state_.resize(s.n_layer);
     for (int il : s.gdn_layers) gdn_[il] = alloc_gdn_state(s);
-    for (int il : s.qsa_layers) kv_[il] = alloc_qsa_cache(s, max_ctx, kv_q8);
+    for (int il : s.qsa_layers) kv_[il] = alloc_qsa_cache(s, max_ctx, kv_q8, kv_hot_blocks);
     for (int il : s.ple_layers) ple_state_[il] = alloc_ple_state(s, ple_);
     const size_t n = s.d_model, hc = s.hc_count, B = max_batch;
     emb_ = dalloc(B * n);
@@ -78,11 +78,11 @@ namespace {
 void state_io(FILE* f, void* dev, size_t bytes, bool save, std::vector<uint8_t>& bounce) {
     bounce.resize(bytes);
     if (save) {
-        ck(cudaMemcpy(bounce.data(), dev, bytes, cudaMemcpyDeviceToHost), "state to host");
+        ck(cudaMemcpy(bounce.data(), dev, bytes, cudaMemcpyDefault), "state to host");
         if (std::fwrite(bounce.data(), 1, bytes, f) != bytes) throw std::runtime_error("state file write failed");
     } else {
         if (std::fread(bounce.data(), 1, bytes, f) != bytes) throw std::runtime_error("state file truncated");
-        ck(cudaMemcpy(dev, bounce.data(), bytes, cudaMemcpyHostToDevice), "state to device");
+        ck(cudaMemcpy(dev, bounce.data(), bytes, cudaMemcpyDefault), "state to device");
     }
 }
 }  // namespace
@@ -130,21 +130,26 @@ void ForwardRef::state_file(const std::string& path, bool save) {
     }
     for (int il : s.qsa_layers) {
         QsaCache& kv = kv_[il];
+        void* K = kv.hot_blocks ? kv.hK : kv.K;
+        void* V = kv.hot_blocks ? kv.hV : kv.V;
+        uint16_t* Ks = kv.hot_blocks ? kv.hKs : kv.Ks;
+        uint16_t* Vs = kv.hot_blocks ? kv.hVs : kv.Vs;
+        if (kv.hot_blocks) reset_qsa_hot(s, kv, stream_);
         if (!q8) {
             state_io(f, kv.K, size_t(pos_) * kvn * 2, save, bounce);
             state_io(f, kv.V, size_t(pos_) * kvn * 2, save, bounce);
         } else if (file_q8) {
-            state_io(f, kv.K, size_t(pos_) * kvn, save, bounce);
-            state_io(f, kv.Ks, size_t(pos_) * kvn / 32 * 2, save, bounce);
-            state_io(f, kv.V, size_t(pos_) * kvn, save, bounce);
-            state_io(f, kv.Vs, size_t(pos_) * kvn / 32 * 2, save, bounce);
+            state_io(f, K, size_t(pos_) * kvn, save, bounce);
+            state_io(f, Ks, size_t(pos_) * kvn / 32 * 2, save, bounce);
+            state_io(f, V, size_t(pos_) * kvn, save, bounce);
+            state_io(f, Vs, size_t(pos_) * kvn / 32 * 2, save, bounce);
         } else {   // fp16 file into a q8 cache: convert in chunks on the GPU
             const long rows = long(pos_) * s.n_head_kv, chunk = 1L << 16;
             void* tmp = nullptr;
             ck(cudaMalloc(&tmp, size_t(chunk) * s.head_dim_k * 2), "cudaMalloc state conversion");
             for (int which = 0; which < 2; ++which) {
-                int8_t* dst = static_cast<int8_t*>(which ? kv.V : kv.K);
-                uint16_t* dsc = which ? kv.Vs : kv.Ks;
+                int8_t* dst = static_cast<int8_t*>(which ? V : K);
+                uint16_t* dsc = which ? Vs : Ks;
                 for (long r0 = 0; r0 < rows; r0 += chunk) {
                     const long nr = std::min(chunk, rows - r0);
                     state_io(f, tmp, size_t(nr) * s.head_dim_k * 2, false, bounce);
@@ -177,8 +182,10 @@ int32_t ForwardRef::argmax(const float* logits_row_dev) {
 void ForwardRef::reset() {
     for (int il : s_.gdn_layers) reset_gdn_state(s_, gdn_[il], stream_);
     for (int il : s_.ple_layers) reset_ple_state(s_, ple_, ple_state_[il], stream_);
-    for (int il : s_.qsa_layers)   // K/V and pooled keys are overwritten as positions advance; the ring is not
+    for (int il : s_.qsa_layers) {   // K/V and pooled keys are overwritten as positions advance; the ring is not
         ck(cudaMemsetAsync(kv_[il].idx_ring, 0, size_t(s_.qsa_block) * s_.idx_dim * 4, stream_), "memset ring");
+        reset_qsa_hot(s_, kv_[il], stream_);
+    }
     ck(cudaStreamSynchronize(stream_), "reset");
     pos_ = 0;
 }
