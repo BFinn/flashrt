@@ -117,11 +117,13 @@ if(FLASHRT_CUDA)
   # stubs for binaries that do not link libggml (never next to libggml: see the file)
   add_library(flashrt_ggml_stubs STATIC kernels/cuda/ggml_stubs.cpp)
   target_include_directories(flashrt_ggml_stubs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ggml/include)
-  add_library(flashrt_qwen4exp_gpu STATIC arch/qwen4exp/gpu_weights.cu arch/qwen4exp/blocks.cu)
+  add_library(flashrt_qwen4exp_gpu STATIC arch/qwen4exp/gpu_weights.cu arch/qwen4exp/blocks.cu arch/qwen4exp/forward_ref.cu)
   target_link_libraries(flashrt_qwen4exp_gpu PUBLIC flashrt_qwen4exp flashrt_gemv)
   add_executable(fr_gpu_load tools/fr_gpu_load.cpp)
   target_link_libraries(fr_gpu_load PRIVATE flashrt_qwen4exp_gpu flashrt_gemv flashrt_ggml_stubs)   # stubs last
 
+  add_executable(fr_kld tools/fr_kld.cpp)
+  target_link_libraries(fr_kld PRIVATE flashrt_qwen4exp_gpu flashrt_gemv flashrt_ggml_stubs)   # stubs last
   add_executable(fr_parity tools/fr_parity.cpp)
   target_link_libraries(fr_parity PRIVATE flashrt_qwen4exp_gpu flashrt_gemv flashrt_ggml_stubs)   # stubs last
 
