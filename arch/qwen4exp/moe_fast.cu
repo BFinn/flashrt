@@ -62,6 +62,29 @@ __global__ void k_unrepack(const uint8_t* src, uint8_t* dst, size_t nblk) {
     for (int b = 0; b < 18; ++b) dst[i * 18 + b] = out[b];
 }
 
+// Exclusive prefix count of flag over the block (blockDim.x a multiple of 32); *total = all.
+__device__ int block_scan_flags(bool flag, int* total) {
+    __shared__ int warp_tot[32];
+    const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5, nw = blockDim.x >> 5;
+    const unsigned bal = __ballot_sync(0xffffffff, flag);
+    const int in_warp = __popc(bal & ((1u << lane) - 1));
+    if (lane == 0) warp_tot[warp] = __popc(bal);
+    __syncthreads();
+    if (warp == 0) {
+        int v = lane < nw ? warp_tot[lane] : 0;
+        for (int o = 1; o < 32; o <<= 1) {
+            const int n = __shfl_up_sync(0xffffffff, v, o);
+            if (lane >= o) v += n;
+        }
+        if (lane < nw) warp_tot[lane] = v;
+    }
+    __syncthreads();
+    const int before = warp > 0 ? warp_tot[warp - 1] : 0;
+    *total = warp_tot[nw - 1];
+    __syncthreads();
+    return before + in_warp;
+}
+
 // One block of E threads (E <= 1024): softmax over the router logits, top-k by probability,
 // weights renormalised (sum clamped at 6.1e-5, as llama.cpp). Hits get their slot; the hit list
 // is padded to k with a real slot (or slot 0) at weight 0 so the grouped launches have a fixed
@@ -75,8 +98,12 @@ __global__ void k_route(const float* logits, const int32_t* table, int E, int K,
     __shared__ float red_v[32];
     __shared__ int sel[kMaxK];
     __shared__ float selp[kMaxK];
+    __shared__ int sel_slot[kMaxK];
+    __shared__ int cand_i[1024];
+    __shared__ float cand_p[1024];
     const int e = threadIdx.x;
     const float lg = e < E ? logits[e] : -INFINITY;
+    const int my_slot = e < E ? table[e] : -1;   // loaded early, used if e is selected
     // max
     float m = lg;
     for (int o = 16; o > 0; o >>= 1) m = fmaxf(m, __shfl_xor_sync(0xffffffff, m, o));
@@ -106,17 +133,44 @@ __global__ void k_route(const float* logits, const int32_t* table, int E, int K,
     p[e] = e < E ? ex / total : -1.0f;
     __syncthreads();
     // top-k by rank: expert e's rank is the number of experts ahead of it (higher probability,
-    // or equal and a lower index), so the order is that of k rounds of argmax, lowest index first
-    if (e < E) {
-        const float pe = p[e];
+    // or equal and a lower index), so the order is that of k rounds of argmax, lowest index first.
+    // Only candidates can be in the top k: p >= the k-th largest warp maximum (k warps have an
+    // element at least that large). They are compacted, and ranked among themselves.
+    const float pe = p[e];
+    {
+        float wm = pe;
+        for (int o = 16; o > 0; o >>= 1) wm = fmaxf(wm, __shfl_xor_sync(0xffffffff, wm, o));
+        if ((e & 31) == 0) red_v[e >> 5] = wm;
+    }
+    __syncthreads();
+    const int nw = blockDim.x >> 5;
+    float thr = -1.0f;
+    if (K <= nw) {   // the K-th largest of the warp maxima
+        for (int w = 0; w < nw; ++w) {
+            const float v = red_v[w];
+            int ahead = 0;
+            for (int u = 0; u < nw; ++u) ahead += (red_v[u] > v) | ((red_v[u] == v) & (u < w));
+            if (ahead == K - 1) thr = v;
+        }
+    }
+    const bool cand = e < E && pe >= thr;
+    int n_cand;
+    const int ci = block_scan_flags(cand, &n_cand);
+    if (cand) {
+        cand_i[ci] = e;
+        cand_p[ci] = pe;
+    }
+    __syncthreads();
+    if (cand) {
         int rank = 0;
-        for (int j = 0; j < E; ++j) {
-            const float pj = p[j];
-            rank += (pj > pe) | ((pj == pe) & (j < e));
+        for (int j = 0; j < n_cand; ++j) {
+            const float pj = cand_p[j];
+            rank += (pj > pe) | ((pj == pe) & (cand_i[j] < e));
         }
         if (rank < K) {
             sel[rank] = e;
             selp[rank] = pe;
+            sel_slot[rank] = my_slot;
         }
     }
     __syncthreads();
@@ -127,7 +181,7 @@ __global__ void k_route(const float* logits, const int32_t* table, int E, int K,
         int nh = 0, nm = 0;
         int pad = 0;
         for (int k = 0; k < K; ++k) {
-            const int slot = table[sel[k]];
+            const int slot = sel_slot[k];
             const float w = selp[k] / ws;
             if (slot >= 0) {
                 hit_slot[nh] = slot;

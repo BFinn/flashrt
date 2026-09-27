@@ -2,16 +2,22 @@
 // fr_kld: KL divergence of flashrt's logits against a llama-perplexity --kl-divergence-base
 // file (the P1 correctness gate), on the same tokens and chunks.
 //
-//   fr_kld MODEL.gguf BASE.bin [--ctx N] [--chunks K] [--batch B]
+//   fr_kld MODEL.gguf BASE.bin [--ctx N] [--chunks K] [--batch B] [--fast] [--reserve-mib R]
 //
 // The base file holds: the magic "_logits_", int32 ctx, int32 n_vocab, int32 n_chunk, the
 // tokens of all chunks (n_chunk * ctx int32), then for every chunk the scored positions ctx/2 .. ctx-2, each as a float scale and a
 // float minimum log-prob (4 uint16) and n_vocab uint16 log-probs (padded to even). Each chunk
 // is run from a fresh state; KLD, same-top-1 and PPL follow llama-perplexity's formulas
 // (reference probabilities below e^-16 are ignored).
+//
+// --fast scores the decode path instead: the unscored first half of each chunk is prefilled in
+// batches (reference path), and the scored half runs one token at a time on the fast path
+// (VRAM expert cache filled from chunk 0's prefill routing counts, GPU routing, doorbells),
+// fed the chunk's own tokens.
 #include "arch/qwen4exp/experts.hpp"
 #include "arch/qwen4exp/forward_ref.hpp"
 #include "arch/qwen4exp/gpu_weights.hpp"
+#include "arch/qwen4exp/moe_fast.hpp"
 #include "arch/qwen4exp/spec.hpp"
 #include "core/gguf.hpp"
 #include "quant/q2_0/q2_0.hpp"
@@ -24,6 +30,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <numeric>
 #include <stdexcept>
 #include <vector>
 
@@ -35,11 +42,15 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "usage: fr_kld MODEL.gguf BASE.bin --ctx N [--chunks K] [--batch B]\n");
         return 2;
     }
-    int ctx = 0, chunks = 0, batch = 64;
-    for (int i = 3; i + 1 < argc; i += 2) {
-        if (!std::strcmp(argv[i], "--ctx")) ctx = std::atoi(argv[i + 1]);
-        else if (!std::strcmp(argv[i], "--chunks")) chunks = std::atoi(argv[i + 1]);
-        else if (!std::strcmp(argv[i], "--batch")) batch = std::atoi(argv[i + 1]);
+    int ctx = 0, chunks = 0, batch = 64, reserve_mib = 1024;
+    bool fast = false;
+    for (int i = 3; i < argc; ++i) {
+        auto next = [&]() -> const char* { return i + 1 < argc ? argv[++i] : "0"; };
+        if (!std::strcmp(argv[i], "--ctx")) ctx = std::atoi(next());
+        else if (!std::strcmp(argv[i], "--chunks")) chunks = std::atoi(next());
+        else if (!std::strcmp(argv[i], "--batch")) batch = std::atoi(next());
+        else if (!std::strcmp(argv[i], "--fast")) fast = true;
+        else if (!std::strcmp(argv[i], "--reserve-mib")) reserve_mib = std::atoi(next());
         else { std::fprintf(stderr, "unknown argument %s\n", argv[i]); return 2; }
     }
 
@@ -70,7 +81,8 @@ int main(int argc, char** argv) {
     ExpertArena arena = arena_alloc(s.n_layer, s.n_expert, q2_0::expert_bytes({s.d_model, s.d_ff_expert}), PageMode::THP, 0);
     if (!arena.buf.ptr) { std::fprintf(stderr, "arena allocation failed\n"); return 1; }
     load_experts(g, s, arena, 12);
-    CpuPool pool(8, physical_cpus());
+    const std::vector<int> cpus = physical_cpus();
+    CpuPool pool(8, cpus);
     ForwardRef fwd(g, s, w, arena, pool, ctx + 8, batch);
 
     float* logits_dev = nullptr;
@@ -81,12 +93,41 @@ int main(int argc, char** argv) {
     double sum_nll = 0, sum_nll_base = 0;
     long same_top = 0, count = 0;
     const auto t0 = std::chrono::steady_clock::now();
+    ExpertCache cache;
+    MoeFastHost host;
 
     for (int ch = 0; ch < chunks; ++ch) {
         const int32_t* seq = tokens.data() + size_t(ch) * ctx;
         fwd.reset();
-        for (int p0 = 0; p0 < ctx; p0 += batch) {
-            const int T = std::min(batch, ctx - p0);
+        // steps (p0, T): batches, or in --fast mode batches up to `first` and then single tokens
+        std::vector<std::pair<int, int>> steps;
+        for (int p0 = 0; p0 < (fast ? first : ctx); p0 += batch) steps.push_back({p0, std::min(batch, (fast ? first : ctx) - p0)});
+        if (fast)
+            for (int p0 = first; p0 < ctx - 1; ++p0) steps.push_back({p0, 1});
+        for (size_t si = 0; si < steps.size(); ++si) {
+            const int p0 = steps[si].first, T = steps[si].second;
+            if (fast && p0 == first && !host.doorbell) {   // chunk 0's prefill is done: fill the cache, start the fast path
+                size_t free_b = 0, total_b = 0;
+                cudaMemGetInfo(&free_b, &total_b);
+                const size_t eb = q2_0::expert_bytes({s.d_model, s.d_ff_expert});
+                const int slots = int((free_b - size_t(reserve_mib) * 1048576) / eb);
+                std::vector<uint32_t>& cnt = fwd.counts();
+                std::vector<int> idx(cnt.size());
+                std::iota(idx.begin(), idx.end(), 0);
+                std::stable_sort(idx.begin(), idx.end(), [&](int a, int b) { return cnt[a] > cnt[b]; });
+                std::vector<std::pair<int, int>> order;
+                for (int i : idx) order.push_back({i / s.n_expert, i % s.n_expert});
+                cache = alloc_expert_cache(s, slots);
+                expert_cache_fill(s, cache, arena, order, fwd.stream());
+                host = alloc_moe_fast_host(s);
+                host.arena = &arena;
+                host.pool = &pool;
+                start_doorbell(s, host, cpus[0]);
+                pin_current_thread(cpus[8 % cpus.size()]);
+                pool.set_spin_us(2000);
+                fwd.set_fast_moe(&cache, &host);
+                std::printf("fast path: %d cache slots (%.1f%% of experts)\n", slots, 100.0 * slots / (s.n_layer * s.n_expert));
+            }
             // rows whose logits are scored: positions first .. ctx-2
             const int lo = std::max(first, p0), hi = std::min(ctx - 2, p0 + T - 1);
             const int out_from = lo <= hi ? lo - p0 : T;
@@ -126,7 +167,7 @@ int main(int argc, char** argv) {
                 same_top += imax == imax_b;
                 ++count;
             }
-            if ((p0 / batch) % 16 == 15 || p0 + T >= ctx) {
+            if ((fast && T == 1) ? ((p0 + 1) % 1024 == 0 || p0 + 2 >= ctx) : ((p0 / batch) % 16 == 15 || p0 + T >= ctx)) {
                 const double el = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
                 double m = 0;
                 for (double k : klds) m += k;
@@ -149,6 +190,11 @@ int main(int argc, char** argv) {
     std::printf("  KLD mean %.6f, median %.6f, p99 %.6f, p99.9 %.6f, max %.6f\n", mean, pct(0.5), pct(0.99), pct(0.999),
                 sorted.empty() ? 0.0 : sorted.back());
     std::printf("  same top token %.3f%%\n", 100.0 * same_top / std::max(1L, count));
+    if (fast) {
+        std::printf("  fast path: expert cache hit rate %.2f%%\n", 100.0 * host.hits / std::max(1L, host.hits + host.misses));
+        free_moe_fast_host(host);
+        free_expert_cache(cache);
+    }
     std::fclose(bf);
     cudaFree(logits_dev);
     arena_free(arena);
