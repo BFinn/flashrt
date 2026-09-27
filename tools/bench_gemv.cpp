@@ -114,7 +114,7 @@ int bench_q3r(int iters) {
     cudaEventCreate(&e0);
     cudaEventCreate(&e1);
     std::mt19937_64 rng(1);
-    std::printf("%-14s %8s %10s %10s %10s %10s %10s %10s\n", "shape", "MB q3k", "ggml us", "v1 us", "v2 us", "v3 us", "v4 us", "v5 us");
+    std::printf("%-14s %8s %10s %10s %10s %10s %10s %10s\n", "shape", "MB q3k", "ggml us", "v1 us", "v2 us", "v3 us", "v4 us", "read-only");
     for (const auto& sh : shapes) {
         const int K = sh[0], R = sh[1];
         const size_t wbytes = size_t(flashrt::gemv::row_bytes(11, K)) * R;

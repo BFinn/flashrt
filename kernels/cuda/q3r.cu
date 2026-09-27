@@ -185,6 +185,23 @@ __global__ void k_matvec2(Planes q, const float* x, const float* xt_g, float* y,
     }
 }
 
+// read-only probe: the loads of k_matvec2<2> without the decode (bandwidth of the access pattern)
+__global__ void k_readonly(Planes q, float* y, int64_t rows, int64_t K) {
+    const int64_t G = K / 16;
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+    const int64_t r0 = (int64_t(blockIdx.x) * (blockDim.x >> 5) + warp) * 2;
+    uint32_t acc = 0;
+    for (int64_t g2 = 2 * lane; g2 < G; g2 += 64)
+        for (int k = 0; k < 2; ++k) {
+            const int64_t r = min(r0 + k, rows - 1);
+            const uint2 lo = *reinterpret_cast<const uint2*>(q.low + r * G + g2);
+            acc ^= lo.x ^ lo.y ^ *reinterpret_cast<const uint32_t*>(q.high + r * G + g2) ^
+                   *reinterpret_cast<const uint16_t*>(q.sc + r * G + g2) ^ __half_as_ushort(q.d[r * (K / kQK) + g2 / 16]);
+        }
+    for (int o = 16; o > 0; o >>= 1) acc ^= __shfl_xor_sync(0xffffffff, acc, o);
+    if (lane == 0 && r0 < rows) y[r0] = float(acc);
+}
+
 float* g_xt = nullptr;   // k_prep's output, allocated on first use (K <= 11264)
 
 void ck(cudaError_t e, const char* what) {
@@ -218,7 +235,7 @@ void matvec_variant(int v, const void* q3r, const float* x, float* y, int64_t ro
         if (v == 3) k_matvec2<2, true><<<unsigned((rows + 15) / 16), 256, 0, stream>>>(pl, x, g_xt, y, rows, K);
         else k_matvec2<4, true><<<unsigned((rows + 31) / 32), 256, 0, stream>>>(pl, x, g_xt, y, rows, K);
     } else if (v == 5) {
-        k_matvec2<1, false><<<unsigned((rows + 7) / 8), 256, smem, stream>>>(pl, x, nullptr, y, rows, K);
+        k_readonly<<<unsigned((rows + 15) / 16), 256, 0, stream>>>(pl, y, rows, K);
     }
     ck(cudaGetLastError(), "matvec");
 }
