@@ -1,0 +1,91 @@
+// SPDX-License-Identifier: Apache-2.0
+// bench_gemv: GPU mat-vec time for qwen4exp's dense weight shapes, and the VRAM bandwidth
+// it reaches (the dense path is bandwidth-bound: ~3.5 GB read per token or verify window).
+//
+//   bench_gemv [--iters N]
+//
+// Weights are random bytes (timing only). Each case is timed with CUDA events over N calls
+// for 1 and 4 tokens; quantized cases include the Q8_1 activation quantization.
+#include "kernels/cuda/ggml_gemv.h"
+
+#include <cuda_runtime.h>
+
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <random>
+#include <vector>
+
+namespace {
+struct Case {
+    const char* name;
+    uint32_t type;   // ggml type id
+    int ncols, nrows;
+};
+// ggml type ids: F32 0, F16 1, Q4_0 2, Q5_0 6, Q8_0 8, Q3_K 11, Q4_K 12, Q5_K 13, Q6_K 14,
+// IQ4_NL 20, IQ4_XS 23, BF16 30, Q2_0 42
+const Case kCases[] = {
+    {"attn_qkv (GDN)  IQ4_XS", 23, 2560, 10240},
+    {"attn_gate       Q4_K", 12, 2560, 6144},
+    {"ssm_out         Q5_K", 13, 6144, 2560},
+    {"attn_q (QSA)    Q2_0", 42, 2560, 12288},
+    {"attn_output     Q6_K", 14, 6144, 2560},
+    {"hc_*_down       BF16", 30, 10240, 320},
+    {"hc_*_up         BF16", 30, 320, 10240},
+    {"ffn_gate_inp    BF16", 30, 2560, 512},
+    {"ffn_up_shexp    Q3_K", 11, 2560, 640},
+    {"ffn_down_shexp  Q4_0", 2, 640, 2560},
+    {"output (head)   Q5_K", 13, 2560, 248320},
+};
+}  // namespace
+
+int main(int argc, char** argv) {
+    int iters = 200;
+    for (int i = 1; i + 1 < argc; i += 2)
+        if (!std::strcmp(argv[i], "--iters")) iters = std::atoi(argv[i + 1]);
+    cudaDeviceProp prop{};
+    cudaGetDeviceProperties(&prop, 0);
+    std::printf("bench_gemv on %s, %d iterations per case\n", prop.name, iters);
+    std::printf("%-24s %8s %8s %11s %10s %10s %10s\n", "case", "cols", "rows", "MB", "us 1 tok", "GB/s", "us 4 tok");
+
+    cudaStream_t st;
+    cudaStreamCreate(&st);
+    cudaEvent_t e0, e1;
+    cudaEventCreate(&e0);
+    cudaEventCreate(&e1);
+    std::mt19937_64 rng(1);
+    for (const Case& c : kCases) {
+        const size_t wbytes = size_t(flashrt::gemv::row_bytes(c.type, c.ncols)) * c.nrows;
+        std::vector<uint64_t> host((wbytes + 7) / 8);
+        for (auto& v : host) v = rng() & 0x3f3f3f3f3f3f3f3full;   // keep float/fp16 exponents finite-ish
+        void *w, *scratch;
+        float *x, *y;
+        cudaMalloc(&w, wbytes + flashrt::gemv::kWeightTailPad);
+        cudaMemset(w, 0, wbytes + flashrt::gemv::kWeightTailPad);
+        cudaMemcpy(w, host.data(), wbytes, cudaMemcpyHostToDevice);
+        cudaMalloc(&x, size_t(4) * c.ncols * 4);
+        cudaMemset(x, 0, size_t(4) * c.ncols * 4);
+        cudaMalloc(&y, size_t(4) * c.nrows * 4);
+        cudaMalloc(&scratch, flashrt::gemv::q8_1_bytes(c.ncols, 4));
+        float us[2];
+        for (int k = 0; k < 2; ++k) {
+            const int nt = k == 0 ? 1 : 4;
+            for (int i = 0; i < 10; ++i) flashrt::gemv::matvec(c.type, w, x, y, c.ncols, c.nrows, nt, scratch, st);
+            cudaEventRecord(e0, st);
+            for (int i = 0; i < iters; ++i) flashrt::gemv::matvec(c.type, w, x, y, c.ncols, c.nrows, nt, scratch, st);
+            cudaEventRecord(e1, st);
+            cudaEventSynchronize(e1);
+            float ms = 0;
+            cudaEventElapsedTime(&ms, e0, e1);
+            us[k] = ms * 1000.0f / iters;
+        }
+        const cudaError_t err = cudaGetLastError();
+        std::printf("%-24s %8d %8d %11.2f %10.2f %10.0f %10.2f%s\n", c.name, c.ncols, c.nrows, wbytes / 1e6, us[0],
+                    wbytes / (us[0] * 1e3), us[1], err == cudaSuccess ? "" : "  CUDA ERROR");
+        cudaFree(w);
+        cudaFree(x);
+        cudaFree(y);
+        cudaFree(scratch);
+    }
+    return 0;
+}

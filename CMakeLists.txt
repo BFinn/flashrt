@@ -110,6 +110,8 @@ if(FLASHRT_CUDA)
     set_target_properties(test_gemv PROPERTIES BUILD_RPATH ${LLAMA_LIB_DIR})
     add_test(NAME gemv COMMAND test_gemv)
   endif()
+  add_executable(bench_gemv tools/bench_gemv.cpp)   # also proves flashrt_gemv links without libggml
+  target_link_libraries(bench_gemv PRIVATE flashrt_gemv)
 endif()
 
 # ---- tests
