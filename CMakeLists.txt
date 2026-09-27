@@ -138,6 +138,9 @@ if(FLASHRT_CUDA)
 endif()
 
 # ---- tests
+add_executable(test_cpu_pool tests/test_cpu_pool.cpp)
+target_link_libraries(test_cpu_pool PRIVATE flashrt_core)
+add_test(NAME cpu_pool COMMAND test_cpu_pool)
 add_executable(test_q2_0 tests/test_q2_0.cpp)
 target_link_libraries(test_q2_0 PRIVATE flashrt_q2_0)
 add_test(NAME q2_0 COMMAND test_q2_0)
