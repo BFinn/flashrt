@@ -24,11 +24,13 @@ void ck(cudaError_t e, const char* what) {
 
 size_t slot_bytes(size_t bytes) { return (bytes + gemv::kWeightTailPad + 255) & ~size_t(255); }
 
-// Q3_K matrices are converted in place to Q3R (kernels/cuda/q3r.h), except the token embedding,
-// which is read one row at a time by ggml's dequantize
+// Tall Q3_K matrices (>= 4096 rows, K <= 4096: attn_gate, attn_qkv, attn_q) are converted in
+// place to Q3R (kernels/cuda/q3r.h), where it is 1.5x faster than ggml's MMVQ. Short or wide
+// ones (ssm_out, the shared experts, attn_k/v) stay ggml Q3_K, which is faster there
+// (bench/results/2026-09-28-sw16-q3r); so does the token embedding (read one row at a time).
 bool q3r_eligible(const GgufTensor& t) {
     return t.type == 11 /* GGML_TYPE_Q3_K */ && t.name != "token_embd.weight" && t.dims.size() == 2 && t.dims[0] % 256 == 0 &&
-           t.dims[0] <= 8192;
+           t.dims[0] <= 4096 && t.dims[1] >= 4096;
 }
 size_t tensor_slot(const GgufTensor& t, bool q3r_on) {
     size_t b = t.bytes;
