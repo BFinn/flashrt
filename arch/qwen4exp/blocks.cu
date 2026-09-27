@@ -70,6 +70,53 @@ __global__ void k_grouped_rms_norm_v4(const float* x, const float* w, float* y, 
     reinterpret_cast<float4*>(y + size_t(row) * n)[i] = make_float4(v.x * inv * wv.x, v.y * inv * wv.y, v.z * inv * wv.z, v.w * inv * wv.w);
 }
 
+// Decode (one token), hc == 4: the hyper-connection up-projection fused with its neighbours.
+// gate = W_up (BF16, [hc * n rows][rank]) * silu(lo * scale); mixed[i] = mean_s xn[s][i] *
+// sigmoid(gate[s][i]). One block covers columns i0 .. i0+7 of all 4 streams (32 rows); 8 lanes
+// per row, each lane 16-byte loads of 8 weights. Needs rank % 64 == 0 and rank <= 1024.
+__global__ void k_hc_up_mix(const uint16_t* W, const float* lo, float scale, const float* xn, float* mixed, int n, int rank) {
+    constexpr int HC = 4;
+    __shared__ __align__(16) float xs[1024];
+    __shared__ float contrib[HC][8];
+    for (int j = threadIdx.x; j < rank; j += blockDim.x) {
+        const float v = lo[j] * scale;
+        xs[j] = v / (1.0f + __expf(-v));
+    }
+    __syncthreads();
+    const int grp = threadIdx.x >> 3, l8 = threadIdx.x & 7;
+    const int st = grp >> 3, il = grp & 7, i = blockIdx.x * 8 + il;
+    float acc = 0.0f;
+    if (i < n) {
+        const uint4* wr = reinterpret_cast<const uint4*>(W + (size_t(st) * n + i) * rank);
+        for (int ch = l8; ch < rank / 8; ch += 8) {
+            const uint4 u = wr[ch];
+            const float* xv = xs + ch * 8;
+            const uint32_t wv[4] = {u.x, u.y, u.z, u.w};
+#pragma unroll
+            for (int e = 0; e < 4; ++e) {
+                acc += __uint_as_float(wv[e] << 16) * xv[2 * e];
+                acc += __uint_as_float(wv[e] & 0xffff0000u) * xv[2 * e + 1];
+            }
+        }
+    }
+    acc += __shfl_xor_sync(0xffffffff, acc, 4);
+    acc += __shfl_xor_sync(0xffffffff, acc, 2);
+    acc += __shfl_xor_sync(0xffffffff, acc, 1);
+    if (l8 == 0 && i < n) {
+        const float x = xn[size_t(st) * n + i];
+        contrib[st][il] = x / (1.0f + __expf(-acc));
+    }
+    __syncthreads();
+    if (threadIdx.x < 8) {
+        const int ii = blockIdx.x * 8 + threadIdx.x;
+        if (ii < n) {
+            float m = 0.0f;
+            for (int s2 = 0; s2 < HC; ++s2) m += contrib[s2][threadIdx.x];
+            mixed[ii] = m * (1.0f / HC);
+        }
+    }
+}
+
 __global__ void k_gated_mean(const float* xn, const float* gate, float* mixed, int n, int hc, int T) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     const int t = blockIdx.y;
@@ -290,9 +337,13 @@ void hc_mix(const BlockCtx& c, int il, int which, const float* x, int T, float* 
     else
         k_grouped_rms_norm<<<T * hc, 256, 0, c.stream>>>(x, static_cast<const float*>(w_norm.dev), xn, n, hc, float(s.rms_eps));
     linear(c, w_down, xn, lo, T);
-    k_scale_silu<<<(T * s.hc_rank + 255) / 256, 256, 0, c.stream>>>(lo, T * s.hc_rank, 1.0f / hc);
-    linear(c, w_up, lo, gate, T);
-    k_gated_mean<<<dim3((n + 255) / 256, T), 256, 0, c.stream>>>(xn, gate, mixed, n, hc, T);
+    if (T == 1 && hc == 4 && s.hc_rank % 64 == 0 && s.hc_rank <= 1024 && w_up.type == 30 /* GGML_TYPE_BF16 */) {
+        k_hc_up_mix<<<(n + 7) / 8, 256, 0, c.stream>>>(static_cast<const uint16_t*>(w_up.dev), lo, 1.0f / hc, xn, mixed, n, s.hc_rank);
+    } else {
+        k_scale_silu<<<(T * s.hc_rank + 255) / 256, 256, 0, c.stream>>>(lo, T * s.hc_rank, 1.0f / hc);
+        linear(c, w_up, lo, gate, T);
+        k_gated_mean<<<dim3((n + 255) / 256, T), 256, 0, c.stream>>>(xn, gate, mixed, n, hc, T);
+    }
     if (which != 2) linear(c, c.w.get(pre + "inject.weight"), xn, inject, T);
     ck(cudaGetLastError(), "hc_mix");
 }
@@ -640,24 +691,28 @@ __global__ void k_idx_select(const float* scores, int ld, int32_t* cells, int32_
             __syncthreads();
         }
         const unsigned tau = prefix;
+        // blocks above tau, plus the lowest-index blocks equal to tau up to M, written in block
+        // order (deterministic, so the attention sums in a fixed order)
         if (threadIdx.x == 0) cnt = 0;
         __syncthreads();
-        for (int b = threadIdx.x; b < nb; b += blockDim.x)
-            if (ordered_key(sc[b]) > tau) {
-                const int slot = atomicAdd(&cnt, 1);
-                for (int k = 0; k < r; ++k) out[slot * r + k] = b * r + k;
-            }
+        int local = 0;
+        for (int b = threadIdx.x; b < nb; b += blockDim.x) local += ordered_key(sc[b]) > tau;
+        atomicAdd(&cnt, local);
         __syncthreads();
-        const int greater = cnt;
-        int taken = 0;
-        for (int base = 0; base < nb && greater + taken < M; base += blockDim.x) {
+        const int tie_budget = M - cnt;
+        int ties = 0, written = 0;
+        for (int base = 0; base < nb; base += blockDim.x) {
             const int b = base + threadIdx.x;
-            const bool flag = b < nb && ordered_key(sc[b]) == tau;
-            int total;
-            const int rank = block_scan_flags(flag, &total);
-            if (flag && greater + taken + rank < M)
-                for (int k = 0; k < r; ++k) out[(greater + taken + rank) * r + k] = b * r + k;
-            taken += total;
+            const unsigned key = b < nb ? ordered_key(sc[b]) : 0u;
+            const bool tie = b < nb && key == tau;
+            int tie_total, sel_total;
+            const int tie_rank = block_scan_flags(tie, &tie_total);
+            const bool sel = b < nb && (key > tau || (tie && ties + tie_rank < tie_budget));
+            const int pos = block_scan_flags(sel, &sel_total);
+            if (sel)
+                for (int k = 0; k < r; ++k) out[(written + pos) * r + k] = b * r + k;
+            ties += tie_total;
+            written += sel_total;
         }
         filled = M;
     }
