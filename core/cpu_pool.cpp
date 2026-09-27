@@ -66,7 +66,7 @@ void CpuPool::worker(int id, uint64_t start_gen) {
             FLASHRT_PAUSE();
             if (++k == 256) {
                 k = 0;
-                if (std::chrono::duration<double, std::micro>(Clock::now() - t0).count() > spin_us_) {
+                if (std::chrono::duration<double, std::micro>(Clock::now() - t0).count() > spin_us_.load(std::memory_order_relaxed)) {
                     gen_.wait(seen, std::memory_order_acquire);
                 }
             }

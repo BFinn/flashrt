@@ -27,12 +27,14 @@ public:
     // A barrier for all workers of the current run.
     void barrier();
     int size() const { return n_; }
+    // How long idle workers spin before they sleep (decode sets it above the layer interval).
+    void set_spin_us(int us) { spin_us_.store(us, std::memory_order_relaxed); }
 
 private:
     void worker(int id, uint64_t start_gen);
 
     int n_;
-    int spin_us_;
+    std::atomic<int> spin_us_;
     std::vector<int> cpus_;
     std::vector<std::thread> threads_;
     alignas(64) std::atomic<uint64_t> gen_{0};

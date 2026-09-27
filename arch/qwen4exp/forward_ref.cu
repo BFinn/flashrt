@@ -79,6 +79,8 @@ void ForwardRef::forward(const int32_t* seq, int T, int out_from, float* logits_
             ck(cudaMemcpyAsync(x_ + (size_t(t) * hc + st) * n, emb_ + size_t(t) * n, size_t(n) * 4, cudaMemcpyDeviceToDevice, stream_),
                "hc init");
     if (!s.ple_layers.empty()) ple_embed(c, ple_host_, seq, pos_, T, pemb_);
+    const bool db = T == 1 && fast_cache_ && fast_host_->doorbell;
+    if (db) doorbell_begin_token(*fast_host_);
     for (int il = 0; il < s.n_layer; ++il) {
         for (int pl : s.ple_layers)
             if (pl == il) ple_block(c, il, ple_, pemb_, x_, T, ple_state_[il]);
@@ -97,6 +99,7 @@ void ForwardRef::forward(const int32_t* seq, int T, int out_from, float* logits_
         head_logits(c, norm_, R, logits_dev);
     }
     ck(cudaStreamSynchronize(stream_), "forward");
+    if (db) doorbell_end_token(*fast_host_);
     pos_ += T;
 }
 

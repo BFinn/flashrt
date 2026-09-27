@@ -2,13 +2,14 @@
 // fr_bench: decode speed of flashrt at a given depth.
 //
 //   fr_bench MODEL.gguf --ids PROMPT.txt --n-prompt N --gen G [--slots S] [--reserve-mib R]
-//            [--reference] [--workers W]
+//            [--reference] [--workers W] [--no-doorbell] [--spin-us U]
 //
 // Prefills N prompt tokens in 64-token batches (reference path; its routing counts pick the
 // cache contents), fills the VRAM expert cache with the most-routed experts (S slots, or all
 // free VRAM minus R MiB), then decodes G tokens greedily on the fast path and reports tok/s and
 // the cache hit rate. --reference decodes on the reference path instead (no cache), to compare
-// the generated tokens.
+// the generated tokens. The fast path runs in doorbell mode (the whole token enqueued at once, a
+// miss-server thread on the pool's first CPU) unless --no-doorbell.
 #include "arch/qwen4exp/experts.hpp"
 #include "arch/qwen4exp/forward_ref.hpp"
 #include "arch/qwen4exp/gpu_weights.hpp"
@@ -41,7 +42,8 @@ int main(int argc, char** argv) {
     }
     std::string ids_path;
     int n_prompt = 1024, gen = 128, slots = 0, reserve_mib = 1024, workers = 8;
-    bool reference = false;
+    bool reference = false, doorbell = true;
+    int spin_us = 2000;
     for (int i = 2; i < argc; ++i) {
         const std::string a = argv[i];
         auto next = [&]() -> const char* { return i + 1 < argc ? argv[++i] : ""; };
@@ -52,6 +54,8 @@ int main(int argc, char** argv) {
         else if (a == "--reserve-mib") reserve_mib = std::atoi(next());
         else if (a == "--workers") workers = std::atoi(next());
         else if (a == "--reference") reference = true;
+        else if (a == "--no-doorbell") doorbell = false;
+        else if (a == "--spin-us") spin_us = std::atoi(next());
         else { std::fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
     }
     std::vector<int32_t> seq;
@@ -70,7 +74,8 @@ int main(int argc, char** argv) {
     ExpertArena arena = arena_alloc(s.n_layer, s.n_expert, q2_0::expert_bytes({s.d_model, s.d_ff_expert}), PageMode::THP, 0);
     if (!arena.buf.ptr) { std::fprintf(stderr, "arena allocation failed\n"); return 1; }
     load_experts(g, s, arena, 12);
-    CpuPool pool(workers, physical_cpus());
+    const std::vector<int> cpus = physical_cpus();
+    CpuPool pool(workers, cpus);   // pins this thread to cpus[0]
     ForwardRef fwd(g, s, w, arena, pool, n_prompt + gen + 16, 64);
 
     float* logits_dev = nullptr;
@@ -114,6 +119,11 @@ int main(int argc, char** argv) {
         host = alloc_moe_fast_host(s);
         host.arena = &arena;
         host.pool = &pool;
+        if (doorbell) {   // the miss server takes the pool's caller CPU; this thread moves off it
+            start_doorbell(s, host, cpus[0]);
+            pin_current_thread(cpus[size_t(workers) % cpus.size()]);
+        }
+        pool.set_spin_us(spin_us);
         fwd.set_fast_moe(&cache, &host);
     }
 
@@ -131,7 +141,7 @@ int main(int argc, char** argv) {
     const double dec_s = std::chrono::duration<double>(Clock::now() - td).count();
     cudaProfilerStop();
     std::printf("decode: %d tokens at depth %d in %.2f s: %.2f tok/s (%s)\n", gen, n_prompt, dec_s, gen / dec_s,
-                reference ? "reference path" : "fast path");
+                reference ? "reference path" : doorbell ? "fast path, doorbell" : "fast path, host sync per layer");
     if (!reference)
         std::printf("expert cache hit rate %.2f%% (%ld hits, %ld misses)\n", 100.0 * host.hits / std::max(1L, host.hits + host.misses),
                     host.hits, host.misses);

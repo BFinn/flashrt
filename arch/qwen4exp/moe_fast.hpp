@@ -38,6 +38,16 @@ struct MoeFastHost {
     float* cpu_out = nullptr;         // pinned: the CPU misses' weighted sum
     std::vector<uint8_t> act_mem, scratch;
     cudaEvent_t routed = nullptr;
+    // Doorbell mode (decode): every layer has a mailbox in mapped pinned memory. k_route writes
+    // the routing and x there and raises `routed`; a miss-server thread runs the misses as each
+    // layer's routing lands and raises `done`; the combine kernel waits for `done` on the GPU.
+    // No host sync per layer, so a whole token is enqueued at once.
+    bool doorbell = false;
+    uint8_t* mbox = nullptr;          // host view, n_layer * mbox_stride
+    uint8_t* mbox_dev = nullptr;      // device view
+    size_t mbox_stride = 0;
+    uint32_t seq = 0;                 // token sequence number, the flag value for this token
+    struct MissServer* server = nullptr;
     // statistics
     long hits = 0, misses = 0;
     double wait_s = 0, cpu_s = 0;     // host time waiting for the routing, and running the misses
@@ -45,7 +55,15 @@ struct MoeFastHost {
     long layers_by_nm[17] = {};
 };
 MoeFastHost alloc_moe_fast_host(const Spec& s);
-void free_moe_fast_host(MoeFastHost& h);
+void free_moe_fast_host(MoeFastHost& h);   // also stops the miss server
+
+// Switches h to doorbell mode: allocates the mailboxes and starts the miss server pinned to
+// `cpu` (the pool's caller CPU; the pool must not be used by another thread meanwhile).
+void start_doorbell(const Spec& s, MoeFastHost& h, int cpu);
+// Brackets one decode token in doorbell mode: begin before enqueuing the layers, end after the
+// stream has synchronised (throws if the miss server failed).
+void doorbell_begin_token(MoeFastHost& h);
+void doorbell_end_token(MoeFastHost& h);
 
 // One token: out [d_model] = routed experts (hits on the GPU, misses on the CPU) + gated shared
 // expert. Same math as moe_block.
