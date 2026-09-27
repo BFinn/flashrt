@@ -17,6 +17,7 @@
 #include "core/gguf.hpp"
 #include "quant/q2_0/q2_0.hpp"
 
+#include <cuda_profiler_api.h>
 #include <cuda_runtime.h>
 
 #include <algorithm>
@@ -120,6 +121,7 @@ int main(int argc, char** argv) {
     std::vector<int32_t> out;
     seq.push_back(argmax());
     out.push_back(seq.back());
+    cudaProfilerStart();   // nsys --capture-range=cudaProfilerApi profiles the decode loop only
     const auto td = Clock::now();
     for (int i = 0; i < gen; ++i) {
         fwd.forward(seq.data(), 1, 0, logits_dev);
@@ -127,6 +129,7 @@ int main(int argc, char** argv) {
         out.push_back(seq.back());
     }
     const double dec_s = std::chrono::duration<double>(Clock::now() - td).count();
+    cudaProfilerStop();
     std::printf("decode: %d tokens at depth %d in %.2f s: %.2f tok/s (%s)\n", gen, n_prompt, dec_s, gen / dec_s,
                 reference ? "reference path" : "fast path");
     if (!reference)
