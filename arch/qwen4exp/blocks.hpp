@@ -28,6 +28,12 @@ struct BlockScratch {
     size_t f32_elems = 0;
     void* q8 = nullptr;       // Q8_1 activations for gemv
     size_t q8_bytes = 0;
+    // QSA indexer: block scores [T][blocks] and selected cells [T][cells], grown on demand
+    float* idx_scores = nullptr;
+    size_t idx_scores_elems = 0;
+    int32_t* idx_cells = nullptr;
+    int32_t* idx_counts = nullptr;
+    size_t idx_cells_elems = 0;
 };
 BlockScratch alloc_block_scratch(const Spec& s, int max_tokens);
 void free_block_scratch(BlockScratch& b);
@@ -69,23 +75,30 @@ void gdn_mixer(const BlockCtx& c, int il, const float* x, int T, GdnState& st, f
 // KV cache of one QSA layer for one sequence: post-norm, post-rope K and V, [cell][kv_head][dim].
 // Cell index = position. Stored as F32 holding values rounded to F16, like the parity
 // reference's F16 KV cache (a packed F16 / Q8 layout comes with the fused kernels).
+// The indexer keeps one pooled key per complete block (mean of the block's raw keys, RMS-normed,
+// roped at the block's first position; as llama.cpp's pooled-key cache) and a ring of the last
+// `block` raw keys, from which the next block is pooled.
 struct QsaCache {
     float* K = nullptr;
     float* V = nullptr;
     int capacity = 0;
+    float* idx_pooled = nullptr;   // [capacity / block][idx_dim]
+    float* idx_ring = nullptr;     // [block][idx_dim], slot = position % block
 };
 QsaCache alloc_qsa_cache(const Spec& s, int capacity);
 void free_qsa_cache(QsaCache& kv);
 
 // QSA mixer for T consecutive tokens at positions pos0 .. pos0+T-1: projections, q/k RMS
-// norms, rope, KV append, attention and the sigmoid output gate, then the output projection.
-// The indexer's top-k is not implemented yet: while the context fits the selection width
-// (indexer.top_k + block - 1 cells) QSA selects every cell, i.e. it is dense causal attention,
-// and longer contexts throw.
+// norms, rope, KV append, the indexer, attention with the sigmoid output gate, and the output
+// projection. Token q attends to every cell while q + 1 <= width (indexer.top_k + block - 1);
+// beyond that, to the cells of the top ceil(width / block) blocks by indexer score, where the
+// incomplete tail block always counts as one (llama.cpp's whole-block selection). Each token
+// sees only the blocks complete at its own position.
 // gated_out, if given, gets the gated attention output before the output projection,
-// [T][heads * dim] (llama.cpp's "attn_gated").
+// [T][heads * dim] (llama.cpp's "attn_gated"). sel_out, if given, gets each token's selected
+// cells (empty when the token attends to every cell).
 void qsa_mixer(const BlockCtx& c, int il, const float* x, int T, int pos0, QsaCache& kv, float* out,
-               float* gated_out = nullptr);
+               float* gated_out = nullptr, std::vector<std::vector<int32_t>>* sel_out = nullptr);
 
 // The MoE block, correctness path: the GPU computes the router logits and the shared expert;
 // the host computes the routing (softmax over all experts, top-k, weights renormalised) and

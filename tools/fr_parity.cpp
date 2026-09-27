@@ -17,6 +17,7 @@
 #include "core/row_reader.hpp"
 
 #include <fstream>
+#include <iterator>
 #include <sstream>
 
 #include <cuda_runtime.h>
@@ -155,32 +156,59 @@ void test_gdn(const BlockCtx& c, const Frd& ref, const std::vector<int>& steps, 
     for (int il : s.gdn_layers) free_gdn_state(st[il]);
 }
 
-// QSA mixers: KV caches and positions carried across the steps in order.
+// QSA mixers: KV caches, indexer state and positions carried across the steps in order. Where
+// llama.cpp selected cells (indexer_top_k; long contexts), the selections are compared too.
 void test_qsa(const BlockCtx& c, const Frd& ref, const std::vector<int>& steps, Checker& ck) {
     const Spec& s = c.s;
     std::vector<QsaCache> kv(s.n_layer);
-    for (int il : s.qsa_layers) kv[il] = alloc_qsa_cache(s, 4096);
+    int total_tokens = 0;
+    for (int step : steps) total_tokens += int(ref.get("hc_mixed-" + std::to_string(s.qsa_layers[0]), step, 0).ne[1]);
+    for (int il : s.qsa_layers) kv[il] = alloc_qsa_cache(s, total_tokens + 16);
     int pos = 0;
+    long sel_steps = 0, sel_cells = 0, sel_same = 0;
+    double sel_worst = 1.0;
     for (int step : steps) {
-        const int T = int(ref.get("model.input_embed", step).ne[1]);
-        std::printf("qsa: step %d (%d tokens at %d)\n", step, T, pos);
+        const int T = int(ref.get("hc_mixed-" + std::to_string(s.qsa_layers[0]), step, 0).ne[1]);
+        const bool verbose = steps.size() < 100 || step % 256 == 0 || step >= int(steps.size()) - 4;
+        if (verbose) std::printf("qsa: step %d (%d tokens at %d)\n", step, T, pos);
         for (int il : s.qsa_layers) {
             const std::string L = "-" + std::to_string(il);
             Dev x(ref.floats(ref.get("hc_mixed" + L, step, 0)));
             Dev out(size_t(T) * s.d_model), gated(size_t(T) * s.n_head * s.head_dim_k);
-            qsa_mixer(c, il, x.p, T, pos, kv[il], out.p, gated.p);
+            std::vector<std::vector<int32_t>> sel;
+            qsa_mixer(c, il, x.p, T, pos, kv[il], out.p, gated.p, &sel);
             cudaStreamSynchronize(c.stream);
             if (const Frd::Rec* ag = ref.find("attn_gated" + L, step))
-                ck.check("qsa attn_gated" + L, gated.host(), ref.floats(*ag), true);
+                ck.check("qsa attn_gated" + L, gated.host(), ref.floats(*ag), verbose && il < 12);
             std::vector<float> want = ref.floats(ref.get("attn_output" + L, step));
             std::vector<float> got = out.host();
             if (want.size() != got.size()) {   // last layer of a prompt batch keeps the output row only
                 got.erase(got.begin(), got.end() - want.size());
             }
-            ck.check("qsa attn_output" + L, got, want, il < 12);
+            ck.check("qsa attn_output" + L + " step " + std::to_string(step), got, want, verbose && il < 8);
+            // selection: llama.cpp's unique selected cells up to the query position
+            const Frd::Rec* tk = ref.find("indexer_top_k" + L, step);
+            if (tk && T == 1 && !sel[0].empty()) {
+                std::vector<int32_t> theirs = ref.ints(*tk);
+                std::sort(theirs.begin(), theirs.end());
+                theirs.erase(std::unique(theirs.begin(), theirs.end()), theirs.end());
+                theirs.erase(std::remove_if(theirs.begin(), theirs.end(), [&](int32_t v) { return v > pos || v < 0; }), theirs.end());
+                std::vector<int32_t> ours = sel[0];
+                std::sort(ours.begin(), ours.end());
+                std::vector<int32_t> common;
+                std::set_intersection(ours.begin(), ours.end(), theirs.begin(), theirs.end(), std::back_inserter(common));
+                const double frac = theirs.empty() ? 1.0 : double(common.size()) / double(std::max(ours.size(), theirs.size()));
+                ++sel_steps;
+                sel_cells += long(std::max(ours.size(), theirs.size()));
+                sel_same += long(common.size());
+                sel_worst = std::min(sel_worst, frac);
+            }
         }
         pos += T;
     }
+    if (sel_steps)
+        std::printf("qsa: indexer selection over %ld (layer, step) pairs: %.4f%% of cells identical, worst pair %.4f%%\n", sel_steps,
+                    100.0 * sel_same / sel_cells, 100.0 * sel_worst);
     for (int il : s.qsa_layers) free_qsa_cache(kv[il]);
 }
 
@@ -442,10 +470,11 @@ int main(int argc, char** argv) {
     GpuWeights w;
     w.load(g, plan);
     const Frd ref(argv[2]);
+    const std::string probe = ref.find("model.input_embed", -1) ? "model.input_embed" : "hc_mixed-" + std::to_string(s.qsa_layers[0]);
     std::vector<int> steps{-1};
-    for (int st = 0; ref.find("model.input_embed", st); ++st) steps.push_back(st);
+    for (int st = 0; ref.find(probe, st); ++st) steps.push_back(st);
 
-    const int max_t = int(ref.get("model.input_embed", -1).ne[1]);
+    const int max_t = int(ref.get(probe, -1).ne[1]);
     BlockScratch scratch = alloc_block_scratch(s, max_t);
     cudaStream_t stream;
     cudaStreamCreate(&stream);
