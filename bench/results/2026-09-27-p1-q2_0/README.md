@@ -26,3 +26,22 @@ random codes. Each expert runs on one thread. Raw output: `bench_q2_0.txt`.
 Correctness (`test_q2_0.txt`): the scalar reference matches ggml's
 `ggml_vec_dot_q2_0_q8_0_generic` bit for bit. The AVX-512 kernel is within 1e-6 of output
 RMS for 1-4 tokens, and within 1e-7 relative L2 through a whole expert.
+
+## Expert arena load (`tools/fr_load`, 2026-09-27, 1 run each)
+
+All 24,576 experts, read from the GGUF with O_DIRECT by 12 threads and repacked into a
+31.69 GiB THP arena (4 KiB-strided blobs):
+
+| Variant | Map / pre-fault | Load | Total | Read rate |
+|---|---:|---:|---:|---:|
+| Arena pre-faulted by 12 threads (`fr_load_pretouch.txt`) | 13.1 s | 5.8 s | 18.9 s | 5.87 GB/s |
+| Loader first-touches the pages (`fr_load.txt`) | 0.0 s | 12.5 s | **12.5 s** | 2.73 GB/s |
+
+- The SSD delivers about 5.9 GB/s. Page faulting (zeroing 31.7 GiB) costs about as much as
+  the read.
+- About 40-44% of the arena lands on huge pages with THP, since no hugetlb pool is
+  configured.
+- **Verification:** for 64 random (layer, expert) pairs × 3 matrices, a random row was read
+  straight from the GGUF, dotted with ggml's semantics, and compared with the AVX-512 kernel
+  on the arena blob. 0 mismatches, worst relative error 2.4e-6. One real expert's full FFN
+  matches the reference to 1e-7 relative L2.

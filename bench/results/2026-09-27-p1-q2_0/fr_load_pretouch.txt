@@ -1,0 +1,5 @@
+arena: 48 x 512 blobs of 1382400 B (stride 1384448), 31.69 GiB, pages=thp huge_frac=0.40, allocated in 13.1 s
+loaded 24576 experts in 5.8 s: 33.98 GB read at 5.87 GB/s (12 threads, O_DIRECT)
+verify: 64 random experts x 3 matrices, 0 mismatches, worst rel err 2.41e-06
+expert (layer 24, 123) FFN: rms 0.06848, avx512 vs ref rel L2 9.95e-08, finite yes
+fr_load OK
