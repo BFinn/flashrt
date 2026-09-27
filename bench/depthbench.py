@@ -19,6 +19,8 @@ ap.add_argument("--gen", type=int, default=128)
 ap.add_argument("--port", type=int, default=8299)
 ap.add_argument("--out", default=os.path.expanduser("$BENCH"))
 ap.add_argument("--env", action="append", default=[])
+ap.add_argument("--ids", help='JSON [{"depth": D, "ids": [...]}] (strata_depthbench format): send these '
+                'token ids instead of the built-in filler text; --depths is then ignored')
 ap.add_argument("srv", nargs=argparse.REMAINDER)
 a = ap.parse_args()
 srv_args = [x for x in a.srv if x != "--"]
@@ -91,11 +93,15 @@ try:
     tail = "\n\nContinue the text above with a detailed, new paragraph about how these records are audited."
     rows = []
     peak = idle
-    for d in [int(x) for x in a.depths.split(",")]:
-        need = int(d / 1.24)
-        while len(words) < need:
-            words.extend(random.choice(seeds).split())
-        prompt = " ".join(words[:need]) + tail
+    items = json.load(open(a.ids)) if a.ids else [{"depth": int(x)} for x in a.depths.split(",")]
+    for item in items:
+        if a.ids:
+            prompt = item["ids"]                      # llama-server accepts a token array
+        else:
+            need = int(item["depth"] / 1.24)
+            while len(words) < need:
+                words.extend(random.choice(seeds).split())
+            prompt = " ".join(words[:need]) + tail
         t = time.time()
         r = post("/completion", {"prompt": prompt, "n_predict": a.gen, "temperature": 0,
                                  "ignore_eos": True, "cache_prompt": True})
