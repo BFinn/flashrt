@@ -61,6 +61,9 @@ public:
     // With a manager, every fast decode token also runs one adaptive-cache step.
     void set_cache_manager(CacheManager* m) { cache_mgr_ = m; }
     std::vector<uint32_t>& counts() { return counts_; }
+    // The reference path halves counts() every `tokens` tokens (0 = never), so a long prompt's
+    // counts favour its recent text, which predicts the decode better (default 4096).
+    void set_count_half_life(int tokens) { count_half_life_ = tokens; }
 
     // Greedy token from a logits row on the device (GPU argmax; 4 bytes come back).
     int32_t argmax(const float* logits_row_dev);
@@ -105,6 +108,8 @@ private:
     CacheManager* cache_mgr_ = nullptr;
     bool have_access_ = false;   // fast_host_->access holds a token's routing
     std::vector<uint32_t> counts_;
+    int count_half_life_ = 4096;
+    long count_tokens_ = 0;   // tokens counted since the last halving
     int32_t* argmax_dev_ = nullptr;
     // graph mode
     bool use_graphs_ = true;

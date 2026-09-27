@@ -4,7 +4,7 @@
 //   fr_bench MODEL.gguf --ids PROMPT.txt --n-prompt N --gen G [--slots S] [--reserve-mib R]
 //            [--reference] [--workers W] [--no-doorbell] [--spin-us U] [--windows N] [--trace FILE]
 //            [--static-cache] [--swap-budget B] [--pcie-frac F] [--save-state FILE | --load-state FILE] [--no-q3r]
-//            [--no-graphs] [--kv q8] [--kv-hot BLOCKS]
+//            [--no-graphs] [--kv q8] [--kv-hot BLOCKS] [--count-half-life N]
 //
 // Prefills N prompt tokens in 64-token batches (reference path; its routing counts pick the
 // cache contents), fills the VRAM expert cache with the most-routed experts (S slots, or all
@@ -56,7 +56,7 @@ int main(int argc, char** argv) {
     int swap_budget = 8;
     float pcie_frac = 0.0f;
     bool q3r = true, graphs = true, kv_q8 = false;
-    int kv_hot = 0;
+    int kv_hot = 0, half_life = 4096;
     int spin_us = 2000;
     for (int i = 2; i < argc; ++i) {
         const std::string a = argv[i];
@@ -80,6 +80,7 @@ int main(int argc, char** argv) {
         else if (a == "--no-graphs") graphs = false;
         else if (a == "--kv") kv_q8 = std::string(next()) == "q8";
         else if (a == "--kv-hot") kv_hot = std::atoi(next());
+        else if (a == "--count-half-life") half_life = std::atoi(next());
         else if (a == "--load-state") load_state = next();
         else { std::fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
     }
@@ -102,6 +103,7 @@ int main(int argc, char** argv) {
     const std::vector<int> cpus = physical_cpus();
     CpuPool pool(workers, cpus);   // pins this thread to cpus[0]
     ForwardRef fwd(g, s, w, arena, pool, n_prompt + windows * gen + 16, 64, kv_q8 || kv_hot > 0, kv_hot);
+    fwd.set_count_half_life(half_life);
     std::printf("KV cache: %s%s\n", kv_q8 || kv_hot > 0 ? "q8_0" : "fp16",
                 kv_hot > 0 ? (", host-resident, hot set of " + std::to_string(kv_hot) + " blocks per layer").c_str() : "");
 

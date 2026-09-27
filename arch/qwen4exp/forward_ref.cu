@@ -314,6 +314,10 @@ void ForwardRef::forward(const int32_t* seq, int T, int out_from, float* logits_
     if (db) doorbell_end_token(*fast_host_, s_);
     have_access_ = T == 1 && fast_cache_;
     if (have_access_) fast_host_->access_prev = fast_host_->access;
+    if (!(T == 1 && fast_cache_) && count_half_life_ > 0 && (count_tokens_ += T) >= count_half_life_) {
+        for (uint32_t& c : counts_) c >>= 1;
+        count_tokens_ -= count_half_life_;
+    }
     pos_ += T;
 }
 
