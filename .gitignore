@@ -4,3 +4,4 @@ __pycache__/
 *.npy
 *.log
 CLAUDE.local.md
+!bench/results/**/*.log

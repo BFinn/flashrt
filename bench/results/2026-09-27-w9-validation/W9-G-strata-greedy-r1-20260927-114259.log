@@ -1,0 +1,2 @@
+CMD $STRATA/engine/strata --serve --pack $STRATA/packs/q2_0 --native $MODELS/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf --ple-gguf $MODELS/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00002-of-00002.gguf --expert-profile $STRATA/data/expert-profile.bin --expert-cache auto --prefill 2048 --spec 4 --spec-min-p 0.5 --mtp $STRATA/mtp/rt --max-context 262144 --kv int8 --kv-resident 32768 --vram-reserve-mib 1024 --pcie-frac 0.35 --pool-workers 8
+strata generate: cudaMalloc(1970572800) for the weight arena failed
