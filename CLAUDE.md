@@ -1,7 +1,11 @@
 # flashrt: working notes for Claude
 
-Read `docs/design.md` (architecture, engine protocol, phase gates) and
-`docs/clean-room.md` (what may and may not be copied) before writing code.
+Read these before writing code:
+- `docs/background.md`: what was measured on the target box, where the time goes, which
+  ideas were rejected, and the first experiments.
+- `docs/design.md`: architecture, engine protocol, phase gates.
+- `docs/interfaces.md`: how generic flashrt is, and the C++ seams.
+- `docs/clean-room.md`: what may and may not be copied.
 Machine-specific details live in `CLAUDE.local.md`, which is not committed.
 
 ## Workflow: edit here, build and measure on the GPU box
