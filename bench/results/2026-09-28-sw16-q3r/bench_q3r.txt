@@ -1,0 +1,11 @@
+shape            MB q3k   ggml 1 tok    Q3R 1 tok   ggml 4 tok    Q3R 4 tok
+2560x6144          6.76     18.58 us     12.23 us     18.46 us     20.53 us
+                              364 GB/s    553 GB/s  (of the Q3_K bytes, 1 token)
+2560x10240        11.26     29.43 us     18.45 us     28.98 us     23.99 us
+                              383 GB/s    611 GB/s  (of the Q3_K bytes, 1 token)
+2560x12288        13.52     34.84 us     23.50 us     34.29 us     33.79 us
+                              388 GB/s    575 GB/s  (of the Q3_K bytes, 1 token)
+6144x2560          6.76     13.15 us     16.37 us     15.09 us     29.40 us
+                              514 GB/s    413 GB/s  (of the Q3_K bytes, 1 token)
+2560x640           0.70      4.32 us      8.14 us      4.16 us     14.36 us
+                              163 GB/s     86 GB/s  (of the Q3_K bytes, 1 token)
