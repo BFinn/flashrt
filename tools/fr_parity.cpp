@@ -2,11 +2,12 @@
 // fr_parity: run flashrt's GPU blocks on llama.cpp's recorded inputs (tools/ref_dump) and
 // compare the outputs, block by block.
 //
-//   fr_parity MODEL.gguf REF.frd [test ...]      tests: hc (default), gdn, qsa
+//   fr_parity MODEL.gguf REF.frd [test ...]      tests: hc (default), gdn, qsa, qsa_proj, moe
 //
 // Every step of the dump is used (-1 = the prompt batch, 0.. = decode steps). The metric is
 // relative L2, ||ours - ref|| / ||ref||, per layer; the tool fails if any exceeds the tolerance.
 #include "arch/qwen4exp/blocks.hpp"
+#include "arch/qwen4exp/experts.hpp"
 #include "arch/qwen4exp/gpu_weights.hpp"
 #include "arch/qwen4exp/spec.hpp"
 #include "core/gguf.hpp"
@@ -202,6 +203,46 @@ void test_qsa_proj(const BlockCtx& c, const Frd& ref, const std::vector<int>& st
     }
 }
 
+// MoE blocks: routing (exact top-k ids and probabilities) and outputs, with every routed
+// expert computed by the CPU miss path from the host arena (loaded here: 32 GB of RAM).
+void test_moe(const BlockCtx& c, const Gguf& g, const Frd& ref, const std::vector<int>& steps, Checker& ck) {
+    const Spec& s = c.s;
+    ExpertArena arena = arena_alloc(s.n_layer, s.n_expert, q2_0::expert_bytes({s.d_model, s.d_ff_expert}), PageMode::THP, 0);
+    if (!arena.buf.ptr) throw std::runtime_error("arena allocation failed");
+    const LoadStats ls = load_experts(g, s, arena, 12);
+    std::printf("moe: expert arena loaded in %.1f s\n", ls.seconds);
+    CpuPool pool(8, physical_cpus());
+    MoeHost h;
+    h.arena = &arena;
+    h.pool = &pool;
+    long id_total = 0, id_same = 0;
+    for (int step : steps) {
+        std::printf("moe: step %d\n", step);
+        for (int il = 0; il < s.n_layer; ++il) {
+            const std::string L = "-" + std::to_string(il);
+            const Frd::Rec& xr = ref.get("hc_mixed" + L, step, 1);
+            const int T = int(xr.ne[1]);
+            Dev x(ref.floats(xr)), out(size_t(T) * s.d_model);
+            MoeTrace tr;
+            moe_block(c, il, x.p, T, h, out.p, &tr);
+            const std::vector<int32_t> want_ids = ref.ints(ref.get("ffn_moe_topk" + L, step));
+            // compare the selected sets per token (order within the top-k may differ on near ties)
+            for (int t = 0; t < T; ++t) {
+                std::vector<int32_t> a(tr.topk.begin() + size_t(t) * s.top_k, tr.topk.begin() + size_t(t + 1) * s.top_k);
+                std::vector<int32_t> b(want_ids.begin() + size_t(t) * s.top_k, want_ids.begin() + size_t(t + 1) * s.top_k);
+                std::sort(a.begin(), a.end());
+                std::sort(b.begin(), b.end());
+                id_total += s.top_k;
+                for (int k = 0; k < s.top_k; ++k) id_same += std::binary_search(b.begin(), b.end(), a[k]);
+            }
+            ck.check("ffn_moe_weights (probs)" + L, tr.probs, ref.floats(ref.get("ffn_moe_weights" + L, step)), false);
+            ck.check("ffn_out (moe + shexp)" + L, out.host(), ref.floats(ref.get("ffn_out" + L, step)), il < 3);
+        }
+    }
+    std::printf("moe: %ld of %ld routed experts identical (%.4f%%)\n", id_same, id_total, 100.0 * id_same / std::max(id_total, 1L));
+    arena_free(arena);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -234,6 +275,7 @@ int main(int argc, char** argv) {
         else if (t == "gdn") test_gdn(c, ref, steps, ck);
         else if (t == "qsa") test_qsa(c, ref, steps, ck);
         else if (t == "qsa_proj") test_qsa_proj(c, ref, steps, ck);
+        else if (t == "moe") test_moe(c, g, ref, steps, ck);
         else { std::fprintf(stderr, "unknown test %s\n", t.c_str()); return 2; }
     }
     std::printf("fr_parity: %d checks, %d over tolerance %.0e; worst %.3e (%s)\n", ck.checks, ck.fails, ck.tol, ck.worst,

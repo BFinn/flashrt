@@ -9,10 +9,14 @@
 
 #include "arch/qwen4exp/gpu_weights.hpp"
 #include "arch/qwen4exp/spec.hpp"
+#include "core/cpu_pool.hpp"
+#include "core/expert_arena.hpp"
 
 #include <cuda_runtime.h>
 
 #include <cstddef>
+#include <cstdint>
+#include <vector>
 
 namespace flashrt::qwen4exp {
 
@@ -77,5 +81,22 @@ void free_qsa_cache(QsaCache& kv);
 // (indexer.top_k + block - 1 cells) QSA selects every cell, i.e. it is dense causal attention,
 // and longer contexts throw.
 void qsa_mixer(const BlockCtx& c, int il, const float* x, int T, int pos0, QsaCache& kv, float* out);
+
+// The MoE block, correctness path: the GPU computes the router logits and the shared expert;
+// the host computes the routing (softmax over all experts, top-k, weights renormalised) and
+// every routed expert with the CPU miss path (q2_0::moe_cpu over the host arena). The VRAM
+// expert cache (GPU hits) comes after parity.
+struct MoeHost {
+    const ExpertArena* arena = nullptr;
+    CpuPool* pool = nullptr;
+    std::vector<float> x, logits, out;         // host staging
+    std::vector<uint8_t> act_mem, scratch;     // Q8 activations, moe_cpu scratch
+};
+struct MoeTrace {                              // routing, for parity checks
+    std::vector<int32_t> topk;                 // [T][top_k]
+    std::vector<float> probs;                  // [T][top_k], before renormalisation
+};
+// out [T][d_model] = routed experts + gated shared expert, for the FFN-side mix x [T][d_model].
+void moe_block(const BlockCtx& c, int il, const float* x, int T, MoeHost& h, float* out, MoeTrace* trace = nullptr);
 
 }  // namespace flashrt::qwen4exp
