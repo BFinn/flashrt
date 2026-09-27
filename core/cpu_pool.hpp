@@ -29,7 +29,7 @@ public:
     int size() const { return n_; }
 
 private:
-    void worker(int id);
+    void worker(int id, uint64_t start_gen);
 
     int n_;
     int spin_us_;

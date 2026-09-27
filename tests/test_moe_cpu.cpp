@@ -5,6 +5,7 @@
 #include "core/fp16.hpp"
 #include "quant/q2_0/moe_cpu.hpp"
 
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <random>
@@ -83,6 +84,14 @@ int main() {
         fail += !ok;
         std::printf("moe_cpu %d workers vs expert_ffn loop: rel L2 %.2e %s\n", workers, rel, ok ? "ok" : "FAIL");
     }
+    // a run issued immediately after construction must reach every worker (startup race)
+    for (int k = 0; k < 200; ++k) {
+        CpuPool pool(6);
+        std::atomic<int> hits{0};
+        pool.run([](void* p, int, int) { static_cast<std::atomic<int>*>(p)->fetch_add(1); }, &hits);
+        if (hits.load() != 6) { std::printf("pool startup run reached %d of 6 workers FAIL\n", hits.load()); ++fail; break; }
+    }
+    std::printf("pool: 200 runs right after construction reached every worker\n");
     std::printf("%s\n", fail ? "FAILED" : "all passed");
     return fail ? 1 : 0;
 }

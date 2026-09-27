@@ -21,7 +21,10 @@ using Clock = std::chrono::steady_clock;
 CpuPool::CpuPool(int n_workers, std::vector<int> cpus, int spin_us)
     : n_(n_workers < 1 ? 1 : n_workers), spin_us_(spin_us), cpus_(std::move(cpus)) {
     if (!cpus_.empty()) pin_current_thread(cpus_[0]);
-    for (int i = 1; i < n_; ++i) threads_.emplace_back([this, i] { worker(i); });
+    // Workers start from the generation as of now: a thread that only gets scheduled after
+    // the first run() must still see that run as new.
+    const uint64_t start = gen_.load();
+    for (int i = 1; i < n_; ++i) threads_.emplace_back([this, i, start] { worker(i, start); });
 }
 
 CpuPool::~CpuPool() {
@@ -51,9 +54,9 @@ void CpuPool::barrier() {
     }
 }
 
-void CpuPool::worker(int id) {
+void CpuPool::worker(int id, uint64_t start_gen) {
     if (!cpus_.empty()) pin_current_thread(cpus_[id % cpus_.size()]);
-    uint64_t seen = gen_.load();
+    uint64_t seen = start_gen;
     for (;;) {
         // spin, then sleep on the futex until the generation changes
         const auto t0 = Clock::now();

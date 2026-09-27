@@ -34,6 +34,7 @@ static std::vector<int> ints(const char* s) {
 }
 
 int main(int argc, char** argv) {
+    std::setvbuf(stdout, nullptr, _IOLBF, 0);   // progress stays visible when redirected
     int n_exp = 2400, n_tok = 1;
     double seconds = 1.5;
     std::vector<int> workers{4, 6, 8, 11}, misses{1, 2, 4, 8};
