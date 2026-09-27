@@ -46,7 +46,7 @@ int main(int argc, char** argv) {
     }
     int ctx = 0, chunks = 0, batch = 64, reserve_mib = 1024;
     bool fast = false, adaptive = true;
-    float pcie_frac = 0.5f;
+    float pcie_frac = 0.0f;
     for (int i = 3; i < argc; ++i) {
         auto next = [&]() -> const char* { return i + 1 < argc ? argv[++i] : "0"; };
         if (!std::strcmp(argv[i], "--ctx")) ctx = std::atoi(next());
