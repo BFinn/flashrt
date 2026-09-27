@@ -347,6 +347,10 @@ void test_full(const BlockCtx& c, const Gguf& g, const std::string& frd_path, co
         Dev emb(size_t(T) * n), x(size_t(T) * hc * n), mixed(size_t(T) * n), inject(size_t(T) * hc), blk(size_t(T) * n),
             pemb(size_t(T) * n);
         embed(c, toks.data(), T, emb.p);
+        if (k < 2) {
+            cudaStreamSynchronize(c.stream);
+            std::printf("  step %d model.input_embed rel L2 %.3e\n", step, rel_l2(emb.host(), ref.floats(ref.get("model.input_embed", step))));
+        }
         for (int t = 0; t < T; ++t)
             for (int st = 0; st < hc; ++st)
                 cudaMemcpyAsync(x.p + (size_t(t) * hc + st) * n, emb.p + size_t(t) * n, size_t(n) * 4, cudaMemcpyDeviceToDevice, c.stream);
@@ -359,13 +363,22 @@ void test_full(const BlockCtx& c, const Gguf& g, const std::string& frd_path, co
             else gdn_mixer(c, il, mixed.p, T, gdn[il], blk.p);
             hc_combine(c, x.p, blk.p, inject.p, T);
             hc_mix(c, il, 1, x.p, T, mixed.p, inject.p);
-            moe_block(c, il, mixed.p, T, mh, blk.p);
+            MoeTrace tr;
+            moe_block(c, il, mixed.p, T, mh, blk.p, k < 2 ? &tr : nullptr);
             hc_combine(c, x.p, blk.p, inject.p, T);
             cudaStreamSynchronize(c.stream);
             if (T == 1 || il < s.n_layer - 1) {
                 const std::vector<float> want = ref.floats(ref.get("l_last-" + std::to_string(il), step));
                 const double e = rel_l2(x.host(), want);
                 worst_layer = std::max(worst_layer, e);
+                if (k < 2) {   // the first steps in detail: layer error and routing agreement
+                    const std::vector<int32_t> ids = ref.ints(ref.get("ffn_moe_topk-" + std::to_string(il), step));
+                    int same = 0;
+                    for (int q = 0; q < s.top_k; ++q)
+                        same += std::find(ids.end() - s.top_k, ids.end(), tr.topk[size_t(T - 1) * s.top_k + q]) != ids.end();
+                    std::printf("    layer %2d (%s): l_last rel L2 %.3e, routing %d/%d\n", il,
+                                s.mixer[il] == Mixer::QSA ? "QSA" : "GDN", e, same, s.top_k);
+                }
             }
         }
         // head on the last token
