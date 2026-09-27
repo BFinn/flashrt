@@ -1,0 +1,19 @@
+[package]
+name = "flashrt-server"
+version = "0.0.1"
+edition = "2021"
+license = "Apache-2.0"
+description = "OpenAI/Anthropic-compatible front end for flashrt-engine"
+
+[dependencies]
+anyhow = "1"
+axum = "0.8"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+[profile.release]
+lto = "thin"

@@ -1,0 +1,8 @@
+flashrt
+Copyright 2026 The flashrt authors
+
+This product includes software developed as part of the flashrt project,
+licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Third-party code, when vendored, keeps its own license and notice in the
+directory it lives in (see docs/clean-room.md for what may be vendored).
