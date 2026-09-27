@@ -490,14 +490,18 @@ namespace {
 // per (token, head): RMS norm over dim with weight w, then NEOX rope on the first n_rot dims
 // at position pos0 + token; src rows are `src_stride` floats apart per token and `head_stride`
 // per head, dst is [T][heads][dim]
-__device__ __forceinline__ float round_h(float v, bool r) { return r ? __half2float(__float2half(v)) : v; }
 
 // round_fp16: store values rounded to fp16 (the KV cache format of the parity reference)
-__global__ void k_norm_rope(const float* src, int src_stride, int head_stride, const float* w, float* dst, int heads,
-                            int dim, int n_rot, int pos0, float theta_scale, float eps, bool round_fp16) {
+__device__ __forceinline__ void store_out(float* p, float v) { *p = v; }
+__device__ __forceinline__ void store_out(__half* p, float v) { *p = __float2half(v); }
+
+// OutT float: plain (queries); OutT __half: the K cache (round to fp16, as llama.cpp's F16 cache)
+template <typename OutT>
+__global__ void k_norm_rope(const float* src, int src_stride, int head_stride, const float* w, OutT* dst, int heads,
+                            int dim, int n_rot, int pos0, float theta_scale, float eps) {
     const int t = blockIdx.x / heads, h = blockIdx.x % heads;
     const float* x = src + size_t(t) * src_stride + size_t(h) * head_stride;
-    float* y = dst + (size_t(t) * heads + h) * dim;
+    OutT* y = dst + (size_t(t) * heads + h) * dim;
     float ss = 0.0f;
     for (int i = threadIdx.x; i < dim; i += blockDim.x) ss += x[i] * x[i];
     ss = block_sum(ss);
@@ -510,17 +514,17 @@ __global__ void k_norm_rope(const float* src, int src_stride, int head_stride, c
             float sn, cs;
             sincosf(theta, &sn, &cs);
             const float x0 = x[i] * inv * w[i], x1 = x[i + half] * inv * w[i + half];
-            y[i] = round_h(x0 * cs - x1 * sn, round_fp16);
-            y[i + half] = round_h(x0 * sn + x1 * cs, round_fp16);
+            store_out(y + i, x0 * cs - x1 * sn);
+            store_out(y + i + half, x0 * sn + x1 * cs);
         } else if (i >= n_rot) {
-            y[i] = round_h(x[i] * inv * w[i], round_fp16);
+            store_out(y + i, x[i] * inv * w[i]);
         }
     }
 }
 
-__global__ void k_copy_round_h(const float* src, float* dst, int n) {
+__global__ void k_copy_h(const float* src, __half* dst, int n) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) dst[i] = __half2float(__float2half(src[i]));
+    if (i < n) dst[i] = __float2half(src[i]);
 }
 
 // ---- split-K flash-decode attention
@@ -531,7 +535,7 @@ constexpr int kAttnMaxGroup = 16;  // query heads per KV head
 // the group's G query heads over up to kAttnSplit cells. Cells come from the token's list, or
 // are 0..pos when counts[t] < 0. Writes, per (token, head, split): max, sum, acc[D].
 template <int G>
-__global__ void k_attn_part(const float* q, const float* K, const float* V, int heads, int kv_heads, int pos0, float scale,
+__global__ void k_attn_part(const float* q, const __half* K, const __half* V, int heads, int kv_heads, int pos0, float scale,
                             const int32_t* cells, const int32_t* counts, int ldc, int n_splits, float* part) {
     constexpr int D = 256;
     __shared__ __align__(16) float qs[G][D];
@@ -557,8 +561,11 @@ __global__ void k_attn_part(const float* q, const float* K, const float* V, int 
     // (coalesced K rows, conflict-free shared q)
     const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
     for (int j = warp; j < nj; j += blockDim.x >> 5) {
-        const float4* kr = reinterpret_cast<const float4*>(K + (size_t(cell_ids[j]) * kv_heads + hk) * D);
-        const float4 k0 = kr[lane], k1 = kr[32 + lane];
+        const uint2* kr = reinterpret_cast<const uint2*>(K + (size_t(cell_ids[j]) * kv_heads + hk) * D);   // 4 halves
+        const uint2 u0 = kr[lane], u1 = kr[32 + lane];
+        const float2 a0 = __half22float2(*reinterpret_cast<const __half2*>(&u0.x)), a1 = __half22float2(*reinterpret_cast<const __half2*>(&u0.y));
+        const float2 b0 = __half22float2(*reinterpret_cast<const __half2*>(&u1.x)), b1 = __half22float2(*reinterpret_cast<const __half2*>(&u1.y));
+        const float4 k0 = make_float4(a0.x, a0.y, a1.x, a1.y), k1 = make_float4(b0.x, b0.y, b1.x, b1.y);
         float d[G];
 #pragma unroll
         for (int h = 0; h < G; ++h) {
@@ -595,7 +602,7 @@ __global__ void k_attn_part(const float* q, const float* K, const float* V, int 
 #pragma unroll
     for (int h = 0; h < G; ++h) acc[h] = 0.0f;
     for (int j = 0; j < nj; ++j) {
-        const float v = V[(size_t(cell_ids[j]) * kv_heads + hk) * D + dd];
+        const float v = __half2float(V[(size_t(cell_ids[j]) * kv_heads + hk) * D + dd]);
 #pragma unroll
         for (int h = 0; h < G; ++h) acc[h] += sc[h][j] * v;
     }
@@ -795,8 +802,8 @@ QsaCache alloc_qsa_cache(const Spec& s, int capacity) {
     QsaCache kv;
     kv.capacity = capacity;
     const size_t n = size_t(capacity) * s.n_head_kv * s.head_dim_k;
-    ck(cudaMalloc(&kv.K, n * 4), "cudaMalloc K cache");
-    ck(cudaMalloc(&kv.V, n * 4), "cudaMalloc V cache");
+    ck(cudaMalloc(&kv.K, n * 2), "cudaMalloc K cache");
+    ck(cudaMalloc(&kv.V, n * 2), "cudaMalloc V cache");
     ck(cudaMalloc(&kv.idx_pooled, size_t(capacity / s.qsa_block + 1) * s.idx_dim * 4), "cudaMalloc pooled keys");
     ck(cudaMalloc(&kv.idx_ring, size_t(s.qsa_block) * s.idx_dim * 4), "cudaMalloc key ring");
     ck(cudaMemset(kv.idx_ring, 0, size_t(s.qsa_block) * s.idx_dim * 4), "memset key ring");
@@ -833,18 +840,20 @@ void qsa_mixer(const BlockCtx& c, int il, const float* x, int T, int pos0, QsaCa
     linear(c, c.w.layer(il, "attn_v.weight"), x, vraw, T);
     const float theta_scale = powf(float(s.rope_base), -2.0f / float(s.rope_dims));
     const float eps = float(s.rms_eps);
-    k_norm_rope<<<T * H, 128, 0, c.stream>>>(qfull, H * 2 * D, 2 * D, static_cast<const float*>(c.w.layer(il, "attn_q_norm.weight").dev),
-                                            q, H, D, s.rope_dims, pos0, theta_scale, eps, false);
+    k_norm_rope<float><<<T * H, 128, 0, c.stream>>>(qfull, H * 2 * D, 2 * D, static_cast<const float*>(c.w.layer(il, "attn_q_norm.weight").dev),
+                                                   q, H, D, s.rope_dims, pos0, theta_scale, eps);
     // K goes straight into the cache rows pos0.. (cell = position); V is copied as is
-    k_norm_rope<<<T * KH, 128, 0, c.stream>>>(kraw, KH * D, D, static_cast<const float*>(c.w.layer(il, "attn_k_norm.weight").dev),
-                                             kv.K + size_t(pos0) * KH * D, KH, D, s.rope_dims, pos0, theta_scale, eps, true);
-    k_copy_round_h<<<(T * KH * D + 255) / 256, 256, 0, c.stream>>>(vraw, kv.V + size_t(pos0) * KH * D, T * KH * D);
+    __half* Kc = reinterpret_cast<__half*>(kv.K);
+    __half* Vc = reinterpret_cast<__half*>(kv.V);
+    k_norm_rope<__half><<<T * KH, 128, 0, c.stream>>>(kraw, KH * D, D, static_cast<const float*>(c.w.layer(il, "attn_k_norm.weight").dev),
+                                                     Kc + size_t(pos0) * KH * D, KH, D, s.rope_dims, pos0, theta_scale, eps);
+    k_copy_h<<<(T * KH * D + 255) / 256, 256, 0, c.stream>>>(vraw, Vc + size_t(pos0) * KH * D, T * KH * D);
 
     // indexer: queries, raw keys, pooling of the blocks completed here, then per-token selection
     linear(c, c.w.layer(il, "indexer.q_proj.weight"), x, qi, T);
     linear(c, c.w.layer(il, "indexer.k_proj.weight"), x, ki, T);
-    k_norm_rope<<<T * IH, 128, 0, c.stream>>>(qi, IH * ID, ID, static_cast<const float*>(c.w.layer(il, "indexer.q_norm.weight").dev), qi,
-                                             IH, ID, s.rope_dims, pos0, theta_scale, eps, false);
+    k_norm_rope<float><<<T * IH, 128, 0, c.stream>>>(qi, IH * ID, ID, static_cast<const float*>(c.w.layer(il, "indexer.q_norm.weight").dev),
+                                                    qi, IH, ID, s.rope_dims, pos0, theta_scale, eps);
     k_idx_pool<<<T, 128, 0, c.stream>>>(ki, kv.idx_ring, static_cast<const float*>(c.w.layer(il, "indexer.k_norm.weight").dev),
                                        kv.idx_pooled, pos0, r, ID, s.rope_dims, theta_scale, eps);
     k_idx_ring<<<std::min(T, r), 128, 0, c.stream>>>(ki, kv.idx_ring, pos0, T, r, ID);
@@ -899,9 +908,9 @@ void qsa_mixer(const BlockCtx& c, int il, const float* x, int T, int pos0, QsaCa
     const dim3 grid(n_splits, KH, T);
     const float scale = 1.0f / sqrtf(float(D));
     switch (G) {
-        case 12: k_attn_part<12><<<grid, 256, 0, c.stream>>>(q, kv.K, kv.V, H, KH, pos0, scale, cells, counts, ldc, n_splits, c.scratch.attn_part); break;
-        case 8: k_attn_part<8><<<grid, 256, 0, c.stream>>>(q, kv.K, kv.V, H, KH, pos0, scale, cells, counts, ldc, n_splits, c.scratch.attn_part); break;
-        case 16: k_attn_part<16><<<grid, 256, 0, c.stream>>>(q, kv.K, kv.V, H, KH, pos0, scale, cells, counts, ldc, n_splits, c.scratch.attn_part); break;
+        case 12: k_attn_part<12><<<grid, 256, 0, c.stream>>>(q, Kc, Vc, H, KH, pos0, scale, cells, counts, ldc, n_splits, c.scratch.attn_part); break;
+        case 8: k_attn_part<8><<<grid, 256, 0, c.stream>>>(q, Kc, Vc, H, KH, pos0, scale, cells, counts, ldc, n_splits, c.scratch.attn_part); break;
+        case 16: k_attn_part<16><<<grid, 256, 0, c.stream>>>(q, Kc, Vc, H, KH, pos0, scale, cells, counts, ldc, n_splits, c.scratch.attn_part); break;
         default: throw std::runtime_error("qsa_mixer: unsupported GQA group size");
     }
     k_attn_combine<<<T * H, 256, 0, c.stream>>>(c.scratch.attn_part, n_splits, qfull, o, H, D, H * 2 * D, 2 * D, D);

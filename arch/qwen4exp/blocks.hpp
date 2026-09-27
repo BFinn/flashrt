@@ -82,8 +82,8 @@ void gdn_mixer(const BlockCtx& c, int il, const float* x, int T, GdnState& st, f
 // roped at the block's first position; as llama.cpp's pooled-key cache) and a ring of the last
 // `block` raw keys, from which the next block is pooled.
 struct QsaCache {
-    float* K = nullptr;
-    float* V = nullptr;
+    uint16_t* K = nullptr;   // [capacity][kv_heads][head_dim] fp16 bits (the values are fp16-rounded anyway)
+    uint16_t* V = nullptr;
     int capacity = 0;
     float* idx_pooled = nullptr;   // [capacity / block][idx_dim]
     float* idx_ring = nullptr;     // [block][idx_dim], slot = position % block
