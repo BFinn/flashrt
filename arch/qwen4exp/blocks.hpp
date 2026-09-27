@@ -34,6 +34,9 @@ struct BlockScratch {
     int32_t* idx_cells = nullptr;
     int32_t* idx_counts = nullptr;
     size_t idx_cells_elems = 0;
+    // attention partials (split-K flash decode), grown on demand
+    float* attn_part = nullptr;
+    size_t attn_part_elems = 0;
 };
 BlockScratch alloc_block_scratch(const Spec& s, int max_tokens);
 void free_block_scratch(BlockScratch& b);

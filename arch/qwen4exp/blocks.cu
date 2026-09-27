@@ -191,6 +191,7 @@ void free_block_scratch(BlockScratch& b) {
     if (b.idx_scores) cudaFree(b.idx_scores);
     if (b.idx_cells) cudaFree(b.idx_cells);
     if (b.idx_counts) cudaFree(b.idx_counts);
+    if (b.attn_part) cudaFree(b.attn_part);
     b = BlockScratch{};
 }
 
@@ -330,56 +331,113 @@ __global__ void k_copy_round_h(const float* src, float* dst, int n) {
     if (i < n) dst[i] = __half2float(__float2half(src[i]));
 }
 
-// dense causal attention, one block per (token, head), blockDim = dim threads:
-// scores over cells 0..pos (pos = pos0 + t), softmax, weighted V; output gated by sigmoid(gate)
-// cells/counts: per token a list of cells to attend to; counts[t] < 0 means every cell 0..pos
-__global__ void k_attn_dense(const float* q, const float* K, const float* V, const float* qfull, float* o, int heads,
-                             int kv_heads, int dim, int pos0, float scale, int gate_stride, int gate_head_stride,
-                             int gate_off, const int32_t* cells, const int32_t* counts, int ldc) {
-    extern __shared__ float sc[];   // scores [cells]
-    const int t = blockIdx.x / heads, h = blockIdx.x % heads, hk = h / (heads / kv_heads);
+// ---- split-K flash-decode attention
+constexpr int kAttnSplit = 64;     // cells per partial
+constexpr int kAttnMaxGroup = 16;  // query heads per KV head
+
+// One block per (split, kv head, token), 256 threads, head dim D == 256: the partial softmax of
+// the group's G query heads over up to kAttnSplit cells. Cells come from the token's list, or
+// are 0..pos when counts[t] < 0. Writes, per (token, head, split): max, sum, acc[D].
+template <int G>
+__global__ void k_attn_part(const float* q, const float* K, const float* V, int heads, int kv_heads, int pos0, float scale,
+                            const int32_t* cells, const int32_t* counts, int ldc, int n_splits, float* part) {
+    constexpr int D = 256;
+    __shared__ __align__(16) float qs[G][D];
+    __shared__ float sc[G][kAttnSplit];
+    __shared__ int cell_ids[kAttnSplit];
+    const int split = blockIdx.x, hk = blockIdx.y, t = blockIdx.z;
     const int cnt = counts ? counts[t] : -1;
-    const int32_t* list = cnt >= 0 ? cells + size_t(t) * ldc : nullptr;
     const int n = cnt >= 0 ? cnt : pos0 + t + 1;
-    const float* qh = q + (size_t(t) * heads + h) * dim;
-    // scores: each thread takes cells j = tid, tid + blockDim, ...
-    float mx = -INFINITY;
-    for (int j = threadIdx.x; j < n; j += blockDim.x) {
-        const int cj = list ? list[j] : j;
-        const float* kj = K + (size_t(cj) * kv_heads + hk) * dim;
-        float d = 0.0f;
-        for (int i = 0; i < dim; ++i) d += qh[i] * kj[i];
-        d *= scale;
-        sc[j] = d;
-        mx = fmaxf(mx, d);
+    const int j0 = split * kAttnSplit, nj = min(kAttnSplit, n - j0);
+    float* pt = part + ((size_t(t) * heads + hk * G) * n_splits + split) * (D + 2);
+    if (nj <= 0) {   // empty split: neutral partial
+        for (int h = 0; h < G; ++h)
+            if (threadIdx.x == 0) {
+                pt[size_t(h) * n_splits * (D + 2) + 0] = -INFINITY;
+                pt[size_t(h) * n_splits * (D + 2) + 1] = 0.0f;
+            }
+        return;
     }
-    // block max
-    __shared__ float red[32];
-    for (int of = 16; of > 0; of >>= 1) mx = fmaxf(mx, __shfl_xor_sync(0xffffffff, mx, of));
-    if ((threadIdx.x & 31) == 0) red[threadIdx.x >> 5] = mx;
+    for (int i = threadIdx.x; i < G * D; i += blockDim.x) qs[i / D][i % D] = q[(size_t(t) * heads + hk * G + i / D) * D + i % D];
+    for (int j = threadIdx.x; j < nj; j += blockDim.x) cell_ids[j] = cnt >= 0 ? cells[size_t(t) * ldc + j0 + j] : j0 + j;
     __syncthreads();
-    if (threadIdx.x < 32) {
-        float m = threadIdx.x < (blockDim.x + 31) / 32 ? red[threadIdx.x] : -INFINITY;
-        for (int of = 16; of > 0; of >>= 1) m = fmaxf(m, __shfl_xor_sync(0xffffffff, m, of));
-        if (threadIdx.x == 0) red[0] = m;
+    // scores: warp w takes cells w, w + 8, ...; lane covers dims [lane*4, +4) and [128 + lane*4, +4)
+    // (coalesced K rows, conflict-free shared q)
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+    for (int j = warp; j < nj; j += blockDim.x >> 5) {
+        const float4* kr = reinterpret_cast<const float4*>(K + (size_t(cell_ids[j]) * kv_heads + hk) * D);
+        const float4 k0 = kr[lane], k1 = kr[32 + lane];
+        float d[G];
+#pragma unroll
+        for (int h = 0; h < G; ++h) {
+            const float4 q0 = reinterpret_cast<const float4*>(qs[h])[lane], q1 = reinterpret_cast<const float4*>(qs[h])[32 + lane];
+            d[h] = q0.x * k0.x + q0.y * k0.y + q0.z * k0.z + q0.w * k0.w + q1.x * k1.x + q1.y * k1.y + q1.z * k1.z + q1.w * k1.w;
+        }
+#pragma unroll
+        for (int h = 0; h < G; ++h)
+            for (int o = 16; o > 0; o >>= 1) d[h] += __shfl_xor_sync(0xffffffff, d[h], o);
+        if (lane == 0)
+#pragma unroll
+            for (int h = 0; h < G; ++h) sc[h][j] = d[h] * scale;
     }
     __syncthreads();
-    mx = red[0];
-    __syncthreads();
-    float sum = 0.0f;
-    for (int j = threadIdx.x; j < n; j += blockDim.x) {
-        const float e = __expf(sc[j] - mx);
-        sc[j] = e;
-        sum += e;
+    // per head: max and exp over the split
+    __shared__ float mx[G], sm[G];
+    if (threadIdx.x < G) {
+        const int h = threadIdx.x;
+        float m = -INFINITY;
+        for (int j = 0; j < nj; ++j) m = fmaxf(m, sc[h][j]);
+        float s = 0.0f;
+        for (int j = 0; j < nj; ++j) {
+            const float e = expf(sc[h][j] - m);
+            sc[h][j] = e;
+            s += e;
+        }
+        mx[h] = m;
+        sm[h] = s;
     }
-    sum = block_sum(sum);
     __syncthreads();
-    // output dim i = threadIdx.x
+    // V: thread d accumulates dimension d for every head
+    const int dd = threadIdx.x;
+    float acc[G];
+#pragma unroll
+    for (int h = 0; h < G; ++h) acc[h] = 0.0f;
+    for (int j = 0; j < nj; ++j) {
+        const float v = V[(size_t(cell_ids[j]) * kv_heads + hk) * D + dd];
+#pragma unroll
+        for (int h = 0; h < G; ++h) acc[h] += sc[h][j] * v;
+    }
+#pragma unroll
+    for (int h = 0; h < G; ++h) {
+        float* ph = pt + size_t(h) * n_splits * (D + 2);
+        ph[2 + dd] = acc[h];
+        if (dd == 0) {
+            ph[0] = mx[h];
+            ph[1] = sm[h];
+        }
+    }
+}
+
+// One block per (token, head): combine the splits, then the sigmoid output gate.
+__global__ void k_attn_combine(const float* part, int n_splits, const float* qfull, float* o, int heads, int dim,
+                               int gate_stride, int gate_head_stride, int gate_off) {
+    const int t = blockIdx.x / heads, h = blockIdx.x % heads;
+    const float* ph = part + (size_t(t) * heads + h) * n_splits * (dim + 2);
+    float m = -INFINITY;
+    for (int s = 0; s < n_splits; ++s) m = fmaxf(m, ph[size_t(s) * (dim + 2)]);
+    float denom = 0.0f;
+    for (int s = 0; s < n_splits; ++s) {
+        const float ms = ph[size_t(s) * (dim + 2)];
+        if (ms > -INFINITY) denom += ph[size_t(s) * (dim + 2) + 1] * expf(ms - m);
+    }
     for (int i = threadIdx.x; i < dim; i += blockDim.x) {
         float acc = 0.0f;
-        for (int j = 0; j < n; ++j) acc += sc[j] * V[(size_t(list ? list[j] : j) * kv_heads + hk) * dim + i];
+        for (int s = 0; s < n_splits; ++s) {
+            const float ms = ph[size_t(s) * (dim + 2)];
+            if (ms > -INFINITY) acc += ph[size_t(s) * (dim + 2) + 2 + i] * expf(ms - m);
+        }
         const float g = qfull[size_t(t) * gate_stride + size_t(h) * gate_head_stride + gate_off + i];
-        o[(size_t(t) * heads + h) * dim + i] = acc / sum / (1.0f + __expf(-g));
+        o[(size_t(t) * heads + h) * dim + i] = acc / denom / (1.0f + expf(-g));
     }
 }
 
@@ -629,9 +687,28 @@ void qsa_mixer(const BlockCtx& c, int il, const float* x, int T, int pos0, QsaCa
     } else if (sel_out) {
         sel_out->assign(T, {});
     }
-    const size_t smem = size_t(std::max(width, ldc)) * 4;
-    k_attn_dense<<<T * H, D, smem, c.stream>>>(q, kv.K, kv.V, qfull, o, H, KH, D, pos0, 1.0f / sqrtf(float(D)), H * 2 * D, 2 * D, D,
-                                               cells, counts, ldc);
+    // split-K flash decode: partials per (token, head, 64-cell split), then a combine
+    const int G = H / KH;
+    if (D != 256 || G > kAttnMaxGroup || H % KH) throw std::runtime_error("qsa_mixer: attention needs head_dim 256 and a group <= 16");
+    const int n_splits = (std::max(width, ldc) + kAttnSplit - 1) / kAttnSplit;
+    {
+        BlockScratch& bs = c.scratch;
+        const size_t need = size_t(T) * H * n_splits * (D + 2);
+        if (bs.attn_part_elems < need) {
+            if (bs.attn_part) cudaFree(bs.attn_part);
+            bs.attn_part_elems = need;
+            ck(cudaMalloc(&bs.attn_part, need * 4), "cudaMalloc attention partials");
+        }
+    }
+    const dim3 grid(n_splits, KH, T);
+    const float scale = 1.0f / sqrtf(float(D));
+    switch (G) {
+        case 12: k_attn_part<12><<<grid, 256, 0, c.stream>>>(q, kv.K, kv.V, H, KH, pos0, scale, cells, counts, ldc, n_splits, c.scratch.attn_part); break;
+        case 8: k_attn_part<8><<<grid, 256, 0, c.stream>>>(q, kv.K, kv.V, H, KH, pos0, scale, cells, counts, ldc, n_splits, c.scratch.attn_part); break;
+        case 16: k_attn_part<16><<<grid, 256, 0, c.stream>>>(q, kv.K, kv.V, H, KH, pos0, scale, cells, counts, ldc, n_splits, c.scratch.attn_part); break;
+        default: throw std::runtime_error("qsa_mixer: unsupported GQA group size");
+    }
+    k_attn_combine<<<T * H, 256, 0, c.stream>>>(c.scratch.attn_part, n_splits, qfull, o, H, D, H * 2 * D, 2 * D, D);
     if (gated_out) ck(cudaMemcpyAsync(gated_out, o, size_t(T) * H * D * 4, cudaMemcpyDeviceToDevice, c.stream), "copy gated");
     linear(c, c.w.layer(il, "attn_output.weight"), o, out, T);
     ck(cudaGetLastError(), "qsa_mixer");
