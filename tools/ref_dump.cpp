@@ -4,6 +4,7 @@
 //
 //   ref_dump --model M.gguf --ids prompt.txt [--n-prompt N] [--gen G] [--out FILE.frd]
 //            [--capture prefix,prefix,...] [--ctx C] [--all-logits 1]
+//            [--token-by-token 1] [--layers 3,7,...] [--from-step N]
 //
 // Runs the prompt as one batch, then G greedy decode steps, with experts on the CPU as in the
 // deployed layout, and saves every graph tensor whose name (before "-<layer>") is in the
@@ -34,12 +35,18 @@ struct Dumper {
     long records = 0;
     std::vector<char> span, dense;
 
+    std::set<int> layers;      // empty = every layer
+    int from_step = -1;        // record steps >= this only
+
     bool wanted(const char* name) const {
+        if (step < from_step) return false;
         std::string n(name);
         const size_t dash = n.rfind('-');
         if (dash != std::string::npos && dash + 1 < n.size() &&
-            std::all_of(n.begin() + dash + 1, n.end(), [](char c) { return c >= '0' && c <= '9'; }))
+            std::all_of(n.begin() + dash + 1, n.end(), [](char c) { return c >= '0' && c <= '9'; })) {
+            if (!layers.empty() && !layers.count(std::atoi(n.c_str() + dash + 1))) return false;
             n.resize(dash);
+        }
         return want.count(n) > 0;
     }
 
@@ -89,7 +96,9 @@ int main(int argc, char** argv) {
         "model.input_embed,ple_embd,hc_norm,hc_gate,hc_mixed,hc_inject,hc_combine,attn_output,linear_attn_out,"
         "ffn_moe_topk,ffn_moe_weights,ffn_moe_out,ffn_shexp_gated,ffn_out,l_last,result_norm,result_output";
     int n_prompt = 64, gen = 4, ctx = 0;
-    bool all_logits = false;
+    bool all_logits = false, token_by_token = false;
+    std::string layers_arg;
+    int from_step = -1;
     for (int i = 1; i + 1 < argc; i += 2) {
         const std::string a = argv[i];
         if (a == "--model") model_path = argv[i + 1];
@@ -100,6 +109,9 @@ int main(int argc, char** argv) {
         else if (a == "--capture") capture = argv[i + 1];
         else if (a == "--ctx") ctx = std::atoi(argv[i + 1]);
         else if (a == "--all-logits") { all_logits = std::atoi(argv[i + 1]) != 0; }
+        else if (a == "--token-by-token") token_by_token = std::atoi(argv[i + 1]) != 0;
+        else if (a == "--layers") layers_arg = argv[i + 1];
+        else if (a == "--from-step") from_step = std::atoi(argv[i + 1]);
         else { std::fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
     }
     if (model_path.empty() || ids_path.empty()) {
@@ -118,6 +130,11 @@ int main(int argc, char** argv) {
     Dumper d;
     std::stringstream ss(capture);
     for (std::string x; std::getline(ss, x, ',');) d.want.insert(x);
+    {
+        std::stringstream ls(layers_arg);
+        for (std::string x; std::getline(ls, x, ',');) d.layers.insert(std::atoi(x.c_str()));
+    }
+    d.from_step = from_step;
     d.f = std::fopen(out.c_str(), "wb");
     if (!d.f) { std::perror(out.c_str()); return 1; }
 
@@ -146,7 +163,19 @@ int main(int argc, char** argv) {
     const int n_vocab = llama_vocab_n_tokens(vocab);
 
     d.step = -1;
-    {
+    if (token_by_token) {
+        // the prompt one token per decode call (decode kernels throughout): prompt token i is
+        // step i - 1, so step -1 is the first token, as in a 1-token prompt followed by decoding
+        for (size_t i = 0; i < prompt.size(); ++i) {
+            d.step = int(i) - 1;
+            if (llama_decode(lctx, llama_batch_get_one(&prompt[i], 1)) != 0) {
+                std::fprintf(stderr, "token-by-token decode failed at %zu\n", i);
+                return 1;
+            }
+            if (i % 256 == 0) std::fprintf(stderr, "\rtoken %zu/%zu", i, prompt.size());
+        }
+        std::fprintf(stderr, "\n");
+    } else {
         // the prompt as one batch; with --all-logits 1 every position produces logits (and the
         // last layer keeps every row), otherwise only the last one
         llama_batch b = llama_batch_init(int(prompt.size()), 0, 1);
@@ -165,12 +194,13 @@ int main(int argc, char** argv) {
             return 1;
         }
     }
+    const int step0 = token_by_token ? int(prompt.size()) - 1 : 0;   // numbering of the decode steps
     std::vector<llama_token> out_ids;
     for (int g = 0; g < gen; ++g) {
         const float* lg = llama_get_logits_ith(lctx, -1);
         llama_token tok = int32_t(std::max_element(lg, lg + n_vocab) - lg);
         out_ids.push_back(tok);
-        d.step = g;
+        d.step = step0 + g;
         if (llama_decode(lctx, llama_batch_get_one(&tok, 1)) != 0) {
             std::fprintf(stderr, "decode failed at step %d\n", g);
             return 1;
@@ -179,7 +209,7 @@ int main(int argc, char** argv) {
     std::fclose(d.f);
     {
         std::ofstream m(out + ".meta");
-        m << "prompt";
+        m << (token_by_token ? "prompt_tbt" : "prompt");
         for (auto t : prompt) m << ' ' << t;
         m << "\ngenerated";
         for (auto t : out_ids) m << ' ' << t;

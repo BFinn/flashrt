@@ -263,8 +263,8 @@ std::vector<int32_t> dump_tokens(const std::string& frd_path, std::vector<int>* 
         long v;
         int n = 0;
         while (in >> v) { seq.push_back(int32_t(v)); ++n; }
-        if (tag == "prompt") step_len->push_back(n);
-        else for (int i = 0; i < n; ++i) step_len->push_back(1);
+        if (tag == "prompt") step_len->push_back(n);          // the prompt was one batch (step -1)
+        else for (int i = 0; i < n; ++i) step_len->push_back(1);   // prompt_tbt / generated: one token per step
     }
     return seq;
 }
