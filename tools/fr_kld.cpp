@@ -38,6 +38,7 @@ using namespace flashrt;
 using namespace flashrt::qwen4exp;
 
 int main(int argc, char** argv) {
+    std::setvbuf(stdout, nullptr, _IOLBF, 0);   // keep the log if the process dies
     if (argc < 3) {
         std::fprintf(stderr, "usage: fr_kld MODEL.gguf BASE.bin --ctx N [--chunks K] [--batch B]\n");
         return 2;

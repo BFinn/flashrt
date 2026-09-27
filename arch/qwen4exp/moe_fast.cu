@@ -29,6 +29,7 @@ constexpr int kRouteInts = kRouteSel + kMaxK;
 // mailbox layout (one per layer, doorbell mode)
 constexpr size_t kMbRouted = 0;     // uint32, GPU -> host: routing and x are in place for token seq
 constexpr size_t kMbDone = 64;      // uint32, host -> GPU: out is in place for token seq
+constexpr size_t kMbErr = 96;       // uint32, GPU -> host: the combine gave up waiting for token seq
 constexpr size_t kMbRoute = 128;    // int32 [2 + 2K], as route_dev
 constexpr size_t kMbX = 512;        // float [d_model]
 size_t mb_out_off(int n) { return (kMbX + size_t(n) * 4 + 63) & ~size_t(63); }   // float [d_model]
@@ -226,15 +227,20 @@ __global__ void k_moe_combine(float* out, const float* yh, const float* hit_w, i
 }
 
 // Doorbell mode: as k_moe_combine, with the CPU part read from the mailbox once the host has
-// raised its done flag to seq (traps after 10 s, so a dead miss server fails loudly).
-__global__ void k_moe_combine_db(float* out, const float* yh, const float* hit_w, int K, const uint8_t* mb, size_t out_off,
+// raised its done flag to seq. After 10 s (and at least 10M polls, so a timer glitch cannot
+// fire it) it gives up, records seq in the mailbox's error word, and carries on with whatever
+// is there; the host reports the error after the token.
+__global__ void k_moe_combine_db(float* out, const float* yh, const float* hit_w, int K, uint8_t* mb, size_t out_off,
                                  uint32_t seq, const float* shexp, const float* gate, int n) {
     if (threadIdx.x == 0) {
         const volatile uint32_t* done = reinterpret_cast<const volatile uint32_t*>(mb + kMbDone);
-        const uint64_t t0 = global_ns();
-        while (*done != seq) {
+        const int64_t t0 = int64_t(global_ns());
+        for (uint32_t polls = 0; *done != seq; ++polls) {
             __nanosleep(128);
-            if (global_ns() - t0 > 10000000000ull) __trap();
+            if (polls > 10000000u && int64_t(global_ns()) - t0 > 10000000000ll) {
+                *reinterpret_cast<volatile uint32_t*>(mb + kMbErr) = seq;
+                break;
+            }
         }
         __threadfence_system();
     }
@@ -496,6 +502,8 @@ struct MissServer {
     std::thread th;
     alignas(64) std::atomic<uint32_t> post{0};   // latest token to serve
     alignas(64) std::atomic<uint32_t> served{0}; // latest token fully served
+    std::atomic<int> cur_layer{-1};              // diagnostics: the layer being waited for or served
+    std::atomic<int> cur_phase{0};               // 0 idle, 1 waiting for routing, 2 running misses
     std::atomic<bool> quit{false};
     std::atomic<bool> failed{false};
     std::string error;
@@ -521,6 +529,8 @@ struct MissServer {
             seen = seq;
             for (int il = 0; il < sp.n_layer; ++il) {
                 uint8_t* mb = h->mbox + size_t(il) * h->mbox_stride;
+                cur_layer.store(il, std::memory_order_relaxed);
+                cur_phase.store(1, std::memory_order_relaxed);
                 const auto t0 = std::chrono::steady_clock::now();
                 int k = 0;
                 while (__atomic_load_n(reinterpret_cast<uint32_t*>(mb + kMbRouted), __ATOMIC_ACQUIRE) != seq) {
@@ -538,6 +548,7 @@ struct MissServer {
                     }
                 }
                 const auto t1 = std::chrono::steady_clock::now();
+                cur_phase.store(2, std::memory_order_relaxed);
                 const int32_t* route = reinterpret_cast<const int32_t*>(mb + kMbRoute);
                 const int nh = route[0], nm = route[1];
                 for (int k = 0; k < K; ++k) h->access[size_t(il) * K + k] = route[kRouteSel + k];
@@ -560,6 +571,7 @@ struct MissServer {
                 ++h->layers_by_nm[std::min(nm, 16)];
                 __atomic_store_n(reinterpret_cast<uint32_t*>(mb + kMbDone), seq, __ATOMIC_RELEASE);
             }
+            cur_phase.store(0, std::memory_order_relaxed);
             served.store(seq, std::memory_order_release);   // h->access and the statistics are complete
         }
     }
@@ -587,7 +599,16 @@ void doorbell_begin_token(MoeFastHost& h) {
     h.server->post.notify_one();
 }
 
-void doorbell_end_token(MoeFastHost& h) {
+void doorbell_end_token(MoeFastHost& h, const Spec& s) {
+    for (int il = 0; il < s.n_layer; ++il) {
+        const uint32_t err = __atomic_load_n(reinterpret_cast<uint32_t*>(h.mbox + size_t(il) * h.mbox_stride + kMbErr), __ATOMIC_ACQUIRE);
+        if (err)
+            throw std::runtime_error("doorbell: the GPU gave up waiting for layer " + std::to_string(il) + " of token " +
+                                     std::to_string(err) + "; miss server at layer " + std::to_string(h.server->cur_layer.load()) +
+                                     ", phase " + std::to_string(h.server->cur_phase.load()) + ", served " +
+                                     std::to_string(h.server->served.load()) + ", posted " + std::to_string(h.server->post.load()) +
+                                     (h.server->failed.load() ? ", server failed: " + h.server->error : std::string()));
+    }
     // the GPU has consumed every done flag; the server's bookkeeping after the last one is brief
     while (h.server->served.load(std::memory_order_acquire) != h.seq)
         if (h.server->failed.load()) throw std::runtime_error(h.server->error);

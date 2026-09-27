@@ -68,7 +68,7 @@ void start_doorbell(const Spec& s, MoeFastHost& h, int cpu);
 // Brackets one decode token in doorbell mode: begin before enqueuing the layers, end after the
 // stream has synchronised (throws if the miss server failed).
 void doorbell_begin_token(MoeFastHost& h);
-void doorbell_end_token(MoeFastHost& h);
+void doorbell_end_token(MoeFastHost& h, const Spec& s);
 
 // Adaptive expert cache: decayed LFU with hysteresis and a per-token swap budget. Every
 // access adds 1 to the (layer, expert) count; every decay_every tokens all counts are

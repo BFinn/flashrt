@@ -125,7 +125,7 @@ void ForwardRef::forward(const int32_t* seq, int T, int out_from, float* logits_
     // the adaptive cache learns from the previous token while this one runs on the GPU
     if (T == 1 && fast_cache_ && cache_mgr_ && have_access_) cache_manager_step(cache_mgr_, *fast_host_, stream_);
     ck(cudaStreamSynchronize(stream_), "forward");
-    if (db) doorbell_end_token(*fast_host_);
+    if (db) doorbell_end_token(*fast_host_, s_);
     have_access_ = T == 1 && fast_cache_;
     if (have_access_) fast_host_->access_prev = fast_host_->access;
     pos_ += T;

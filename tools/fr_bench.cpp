@@ -41,6 +41,7 @@ using namespace flashrt::qwen4exp;
 using Clock = std::chrono::steady_clock;
 
 int main(int argc, char** argv) {
+    std::setvbuf(stdout, nullptr, _IOLBF, 0);   // keep the log if the process dies
     if (argc < 2) {
         std::fprintf(stderr, "usage: fr_bench MODEL.gguf --ids PROMPT.txt --n-prompt N --gen G [--slots S] [--reserve-mib R] [--reference]\n");
         return 2;
