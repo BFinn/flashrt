@@ -1,0 +1,7 @@
+bench_q2_0 avx512 threads=1 tokens=1 arena=3.3GB pages=thp: 9994 experts/s, 13.82 GB/s of weights, 100.1 us per expert per thread
+bench_q2_0 avx512 threads=1 tokens=3 arena=3.3GB pages=thp: 5164 experts/s, 7.14 GB/s of weights, 193.6 us per expert per thread
+bench_q2_0 avx512 threads=6 tokens=1 arena=3.3GB pages=thp: 35233 experts/s, 48.71 GB/s of weights, 170.3 us per expert per thread
+bench_q2_0 avx512 threads=8 tokens=1 arena=3.3GB pages=thp: 34999 experts/s, 48.38 GB/s of weights, 228.6 us per expert per thread
+bench_q2_0 avx512 threads=12 tokens=1 arena=3.3GB pages=thp: 34351 experts/s, 47.49 GB/s of weights, 349.3 us per expert per thread
+bench_q2_0 avx512 threads=8 tokens=3 arena=3.3GB pages=thp: 31906 experts/s, 44.11 GB/s of weights, 250.7 us per expert per thread
+bench_q2_0 avx512 threads=12 tokens=3 arena=3.3GB pages=thp: 33742 experts/s, 46.64 GB/s of weights, 355.6 us per expert per thread
