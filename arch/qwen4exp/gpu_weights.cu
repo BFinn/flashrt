@@ -32,6 +32,10 @@ bool q3r_eligible(const GgufTensor& t) {
     return t.type == 11 /* GGML_TYPE_Q3_K */ && t.name != "token_embd.weight" && t.dims.size() == 2 && t.dims[0] % 256 == 0 &&
            t.dims[0] <= 4096 && t.dims[1] >= 4096;
 }
+// The token embedding is read one row per token, so it lives in pinned mapped host memory (the
+// GPU reads its rows over PCIe) and its 260 MB of VRAM go to the expert cache.
+bool host_resident(const GgufTensor& t) { return t.name == "token_embd.weight"; }
+
 size_t tensor_slot(const GgufTensor& t, bool q3r_on) {
     size_t b = t.bytes;
     if (q3r_on && q3r_eligible(t)) b = std::max(b, q3r::bytes(t.dims[1], t.dims[0]));
@@ -42,13 +46,14 @@ size_t tensor_slot(const GgufTensor& t, bool q3r_on) {
 
 GpuWeights::~GpuWeights() {
     if (base_) cudaFree(base_);
+    for (void* h : host_bufs_) cudaFreeHost(h);
 }
 
 void GpuWeights::load(const Gguf& g, const WeightPlan& plan, bool q3r_on) {
     const auto t0 = std::chrono::steady_clock::now();
     total_ = 0;
     for (const Placement& p : plan.tensors)
-        if (p.tier == Tier::VramDense) total_ += tensor_slot(*p.tensor, q3r_on);
+        if (p.tier == Tier::VramDense && !host_resident(*p.tensor)) total_ += tensor_slot(*p.tensor, q3r_on);
     ck(cudaMalloc(&base_, total_), "cudaMalloc dense weights");
     ck(cudaMemset(base_, 0, total_), "cudaMemset dense weights");
 
@@ -76,6 +81,22 @@ void GpuWeights::load(const Gguf& g, const WeightPlan& plan, bool q3r_on) {
         if (p.tier != Tier::VramDense) continue;
         const GgufTensor& t = *p.tensor;
         GpuTensor gt;
+        if (host_resident(t)) {
+            void* h = nullptr;
+            ck(cudaHostAlloc(&h, t.bytes, cudaHostAllocMapped), "cudaHostAlloc host-resident tensor");
+            for (size_t r = 0; r < t.bytes;) {
+                const ssize_t got = pread(fds[t.shard], static_cast<char*>(h) + r, t.bytes - r, off_t(t.file_offset + r));
+                if (got <= 0) throw std::runtime_error("short read of " + t.name);
+                r += size_t(got);
+            }
+            ck(cudaHostGetDevicePointer(&gt.dev, h, 0), "host-resident tensor device pointer");
+            gt.type = t.type;
+            gt.dims = t.dims;
+            gt.bytes = t.bytes;
+            host_bufs_.push_back(h);
+            tensors_.emplace(t.name, std::move(gt));
+            continue;
+        }
         gt.dev = static_cast<char*>(base_) + off;
         gt.type = t.type;
         gt.dims = t.dims;

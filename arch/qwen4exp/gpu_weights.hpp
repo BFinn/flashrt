@@ -56,6 +56,7 @@ public:
 
 private:
     void* base_ = nullptr;
+    std::vector<void*> host_bufs_;   // pinned mapped host memory of host-resident tensors
     size_t total_ = 0;
     double seconds_ = 0;
     std::map<std::string, GpuTensor> tensors_;
