@@ -3,7 +3,10 @@
 Read these before writing code:
 - `docs/background.md`: what was measured on the target box, where the time goes, which
   ideas were rejected, and the first experiments.
-- `docs/design.md`: architecture, engine protocol, phase gates.
+- `docs/design.md`: architecture, engine protocol, phase gates, and gate status.
+- `docs/engine.md`: the engine as built. It covers the per-token decode flow, why each piece is
+  shaped as it is (with links to the evidence), what was rejected, current numbers, the benchmark
+  runbook, known issues and next steps. **Start here when resuming work.**
 - `docs/interfaces.md`: how generic flashrt is, and the C++ seams.
 - `docs/clean-room.md`: what may and may not be copied.
 Machine-specific details live in `CLAUDE.local.md`, which is not committed.
