@@ -6,6 +6,8 @@
 
 #include "core/platform.hpp"
 
+#include <cuda_fp16.h>
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
