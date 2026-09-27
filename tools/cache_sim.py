@@ -14,6 +14,10 @@ Policies:
   dlfu    decayed LFU with hysteresis: every access adds 1; every `--decay-every` tokens all
           counts are multiplied by `--decay`; a missing pair is admitted only if its count
           >= `--admit` and it beats the weakest resident by `--margin`
+  win     LRU with windowed admission: a missing pair is admitted only after `--win-admit`
+          sightings within the last `--win` tokens (the llama.cpp expert-cache policy)
+  static  the `slots` most-used pairs of the whole trace, never changed (an oracle profile:
+          the best any fixed pre-fill can do)
   belady  evict the resident pair used furthest in the future (the optimum; needs the trace)
 
 Hits are counted per access. The hit rate is what one gets from the cache; misses are what
@@ -75,6 +79,35 @@ def sim_dlfu(keys, cap, decay=0.7, decay_every=4, admit=2.0, margin=1.5):
     return hits / total
 
 
+def sim_win(keys, cap, window=32, need=3):
+    from collections import deque
+    cache, hits, total = OrderedDict(), 0, 0
+    seen, recent = {}, deque()                 # key -> sightings in the window; per-token key lists
+    for row in keys:
+        row = row.tolist()
+        recent.append(row)
+        for key in row:
+            seen[key] = seen.get(key, 0) + 1
+        if len(recent) > window:
+            for key in recent.popleft():
+                seen[key] -= 1
+        for key in row:
+            total += 1
+            if key in cache:
+                hits += 1
+                cache.move_to_end(key)
+            elif len(cache) < cap or seen[key] >= need:
+                cache[key] = None
+                if len(cache) > cap:
+                    cache.popitem(last=False)
+    return hits / total
+
+
+def sim_static(keys, cap):
+    uniq, counts = np.unique(keys, return_counts=True)
+    return np.sort(counts)[::-1][:cap].sum() / keys.size
+
+
 def sim_belady(keys, cap):
     flat = keys.reshape(-1).tolist()
     n = len(flat)
@@ -128,11 +161,13 @@ def main():
     ap.add_argument("--synthetic", action="store_true")
     ap.add_argument("--tokens", type=int, default=1000)
     ap.add_argument("--slots", default="2304,4000,5000,6000,8000")
-    ap.add_argument("--policies", default="lru,dlfu,belady")
+    ap.add_argument("--policies", default="lru,win,dlfu,static,belady")
     ap.add_argument("--decay", type=float, default=0.7)
     ap.add_argument("--decay-every", type=int, default=4)
     ap.add_argument("--admit", type=float, default=2.0)
     ap.add_argument("--margin", type=float, default=1.5)
+    ap.add_argument("--win", type=int, default=32)
+    ap.add_argument("--win-admit", type=int, default=3)
     a = ap.parse_args()
 
     if a.trace:
@@ -155,6 +190,10 @@ def main():
                 res.append(sim_lru(keys, cap))
             elif p == "dlfu":
                 res.append(sim_dlfu(keys, cap, a.decay, a.decay_every, a.admit, a.margin))
+            elif p == "win":
+                res.append(sim_win(keys, cap, a.win, a.win_admit))
+            elif p == "static":
+                res.append(sim_static(keys, cap))
             elif p == "belady":
                 res.append(sim_belady(keys, cap))
             else:
