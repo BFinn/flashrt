@@ -2,10 +2,10 @@
 // fr_kld: KL divergence of flashrt's logits against a llama-perplexity --kl-divergence-base
 // file (the P1 correctness gate), on the same tokens and chunks.
 //
-//   fr_kld MODEL.gguf BASE.bin --ctx N [--chunks K] [--batch B]
+//   fr_kld MODEL.gguf BASE.bin [--ctx N] [--chunks K] [--batch B]
 //
-// The base file holds: int32 n_vocab, int32 n_chunk, the tokens of all chunks (n_chunk * ctx
-// int32), then for every chunk the scored positions ctx/2 .. ctx-2, each as a float scale and a
+// The base file holds: the magic "_logits_", int32 ctx, int32 n_vocab, int32 n_chunk, the
+// tokens of all chunks (n_chunk * ctx int32), then for every chunk the scored positions ctx/2 .. ctx-2, each as a float scale and a
 // float minimum log-prob (4 uint16) and n_vocab uint16 log-probs (padded to even). Each chunk
 // is run from a fresh state; KLD, same-top-1 and PPL follow llama-perplexity's formulas
 // (reference probabilities below e^-16 are ignored).
@@ -42,12 +42,18 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--batch")) batch = std::atoi(argv[i + 1]);
         else { std::fprintf(stderr, "unknown argument %s\n", argv[i]); return 2; }
     }
-    if (ctx <= 0) { std::fprintf(stderr, "--ctx is required (the base file does not record it)\n"); return 2; }
 
     FILE* bf = std::fopen(argv[2], "rb");
     if (!bf) { std::perror(argv[2]); return 1; }
-    int32_t n_vocab = 0, n_chunk = 0;
-    if (std::fread(&n_vocab, 4, 1, bf) != 1 || std::fread(&n_chunk, 4, 1, bf) != 1) { std::fprintf(stderr, "bad base file\n"); return 1; }
+    char magic[8];
+    int32_t file_ctx = 0, n_vocab = 0, n_chunk = 0;
+    if (std::fread(magic, 1, 8, bf) != 8 || std::memcmp(magic, "_logits_", 8) != 0 || std::fread(&file_ctx, 4, 1, bf) != 1 ||
+        std::fread(&n_vocab, 4, 1, bf) != 1 || std::fread(&n_chunk, 4, 1, bf) != 1) {
+        std::fprintf(stderr, "not a llama-perplexity KL base file\n");
+        return 1;
+    }
+    if (ctx == 0) ctx = file_ctx;
+    if (ctx != file_ctx) { std::fprintf(stderr, "--ctx %d does not match the base file's %d\n", ctx, file_ctx); return 1; }
     std::vector<int32_t> tokens(size_t(n_chunk) * ctx);
     if (std::fread(tokens.data(), 4, tokens.size(), bf) != tokens.size()) { std::fprintf(stderr, "base file too short\n"); return 1; }
     if (chunks <= 0 || chunks > n_chunk) chunks = n_chunk;
