@@ -8,6 +8,7 @@
 // relative L2, ||ours - ref|| / ||ref||, per layer; the tool fails if any exceeds the tolerance.
 #include "arch/qwen4exp/blocks.hpp"
 #include "arch/qwen4exp/experts.hpp"
+#include "quant/q2_0/q2_0.hpp"
 #include "arch/qwen4exp/gpu_weights.hpp"
 #include "arch/qwen4exp/spec.hpp"
 #include "core/gguf.hpp"
