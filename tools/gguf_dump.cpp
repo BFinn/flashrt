@@ -18,7 +18,11 @@ using namespace flashrt;
 namespace {
 
 std::string show(const GgufValue& v, bool full_arrays) {
-    if (auto s = v.as_string()) return s->size() > 120 ? "\"" + s->substr(0, 117) + "...\"" : "\"" + *s + "\"";
+    if (auto s = v.as_string()) {
+        std::string e;
+        for (char c : s->substr(0, 120)) e += c == '\n' ? "\\n" : std::string(1, c);
+        return "\"" + e + (s->size() > 120 ? "...\"" : "\"");
+    }
     if (auto a = v.as_array()) {
         std::string out = "[" + std::to_string(a->size()) + "]";
         const size_t n = full_arrays ? a->size() : std::min<size_t>(a->size(), 8);

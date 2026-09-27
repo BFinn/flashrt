@@ -2,7 +2,7 @@
 // route_trace: dump MoE routing decisions from a llama.cpp run, for tools/cache_sim.py and
 // the routing studies (cache-conditional routing, draft-window expert unions).
 //
-//   route_trace --model M.gguf --ids prompt.txt [--n-prompt N] [--gen G] [--out PREFIX]
+//   route_trace --model M.gguf (--ids prompt.txt | --text FILE) [--n-prompt N] [--gen G] [--out PREFIX]
 //               [--temp T --top-k K --top-p P --seed S] [--probs] [--prefill-trace] [--qsa]
 //               [--ctx C] [--threads T] [--ubatch U]
 //
@@ -21,6 +21,9 @@
 //                            token (--qsa); layer ids are in meta.json, padding is -1
 //   PREFIX.tokens.txt        the generated token ids
 //   PREFIX.meta.json         run settings and timings
+//
+// --tokenize-only loads the vocabulary alone, tokenizes --text (with BOS) and writes
+// PREFIX.prompt_ids.txt, then exits.
 //
 // The prompt file holds token ids separated by whitespace or commas. Decoding samples with
 // end-of-generation tokens masked, so every run produces exactly G tokens.
@@ -175,7 +178,8 @@ llama_token sample(const float* logits, int n_vocab, const llama_vocab* vocab, f
 }  // namespace
 
 int main(int argc, char** argv) {
-    std::string model_path, ids_path, out = "trace";
+    std::string model_path, ids_path, text_path, out = "trace";
+    bool tokenize_only = false;
     int n_prompt = 0, gen = 1024, ctx = 0, threads = 12, ubatch = 2048, top_k = 20;
     float temp = 1.0f, top_p = 0.95f;
     uint64_t seed = 42;
@@ -188,6 +192,8 @@ int main(int argc, char** argv) {
         };
         if (a == "--model") model_path = next();
         else if (a == "--ids") ids_path = next();
+        else if (a == "--text") text_path = next();
+        else if (a == "--tokenize-only") tokenize_only = true;
         else if (a == "--n-prompt") n_prompt = std::atoi(next());
         else if (a == "--gen") gen = std::atoi(next());
         else if (a == "--out") out = next();
@@ -203,18 +209,42 @@ int main(int argc, char** argv) {
         else if (a == "--qsa") want_qsa = true;
         else { std::fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
     }
-    if (model_path.empty() || ids_path.empty()) {
-        std::fprintf(stderr, "usage: route_trace --model M.gguf --ids prompt.txt [--n-prompt N] [--gen G] [--out PREFIX]\n");
+    if (model_path.empty() || ids_path.empty() == text_path.empty()) {
+        std::fprintf(stderr, "usage: route_trace --model M.gguf (--ids prompt.txt | --text FILE) [--n-prompt N] [--gen G] [--out PREFIX]\n");
         return 2;
     }
 
-    std::vector<llama_token> prompt = read_ids(ids_path);
+    ggml_backend_load_all();
+    llama_backend_init();
+
+    std::vector<llama_token> prompt;
+    if (!text_path.empty()) {
+        std::ifstream f(text_path);
+        if (!f) { std::perror(text_path.c_str()); return 1; }
+        std::stringstream ss;
+        ss << f.rdbuf();
+        const std::string text = ss.str();
+        llama_model_params vp = llama_model_default_params();
+        vp.vocab_only = true;
+        llama_model* vm = llama_model_load_from_file(model_path.c_str(), vp);
+        if (!vm) { std::fprintf(stderr, "vocab load failed\n"); return 1; }
+        const llama_vocab* v = llama_model_get_vocab(vm);
+        prompt.resize(text.size() + 16);
+        int n = llama_tokenize(v, text.data(), int32_t(text.size()), prompt.data(), int32_t(prompt.size()), true, false);
+        if (n < 0) { std::fprintf(stderr, "tokenize failed (%d)\n", n); return 1; }
+        prompt.resize(n);
+        llama_model_free(vm);
+        std::fprintf(stderr, "tokenized %s: %zu bytes -> %d tokens\n", text_path.c_str(), text.size(), n);
+        if (n_prompt > 0 && size_t(n_prompt) < prompt.size()) prompt.resize(n_prompt);
+        std::ofstream o(out + ".prompt_ids.txt");
+        for (size_t i = 0; i < prompt.size(); ++i) o << prompt[i] << (i + 1 < prompt.size() ? ' ' : '\n');
+        if (tokenize_only) return 0;
+    } else {
+        prompt = read_ids(ids_path);
+    }
     if (n_prompt > 0 && size_t(n_prompt) < prompt.size()) prompt.resize(n_prompt);
     if (prompt.empty()) { std::fprintf(stderr, "empty prompt\n"); return 1; }
     if (ctx <= 0) ctx = int(prompt.size()) + gen + 256;
-
-    ggml_backend_load_all();
-    llama_backend_init();
 
     // experts on the CPU, everything else on the GPU: the deployed layout
     llama_model_tensor_buft_override ov[2] = {{"ffn_.*_exps", ggml_backend_cpu_buffer_type()}, {nullptr, nullptr}};

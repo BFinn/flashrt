@@ -113,6 +113,7 @@ int main(int argc, char** argv) {
 
     // optional concurrent DRAM readers, pinned to the physical cores
     std::atomic<bool> stop{false};
+    std::atomic<uint64_t> reader_bytes{0};
     std::vector<std::thread> readers;
     HostBuffer rbuf;
     if (cpu_threads > 0) {
@@ -120,23 +121,36 @@ int main(int argc, char** argv) {
         const auto cpus = physical_cpus();
         const size_t slice = (rbuf.bytes / cpu_threads) & ~size_t(63);
         for (int t = 0; t < cpu_threads; ++t) {
-            readers.emplace_back([&, t] {
+            readers.emplace_back([&stop, &rbuf, &reader_bytes, cpus, slice, t] {   // by value: cpus and slice die with this block
                 if (!cpus.empty()) pin_current_thread(cpus[t % cpus.size()]);
                 const volatile uint64_t* p = reinterpret_cast<const uint64_t*>(static_cast<char*>(rbuf.ptr) + t * slice);
                 uint64_t s = 0;
-                while (!stop.load(std::memory_order_relaxed))
+                while (!stop.load(std::memory_order_relaxed)) {
                     for (size_t i = 0; i < slice / 8; i += 8) s ^= p[i];   // one load per cache line
+                    reader_bytes.fetch_add(slice, std::memory_order_relaxed);
+                }
                 if (s == 42) std::printf(" ");
             });
         }
     }
 
+    // one output row: link rate, plus what the concurrent CPU readers got meanwhile
+    auto row = [&](const char* what, size_t chunk, auto&& measure) {
+        const uint64_t b0 = reader_bytes.load();
+        const auto t0 = Clock::now();
+        const double gbs = measure();
+        const double dt = std::chrono::duration<double>(Clock::now() - t0).count();
+        std::printf("h2dbw %-12s chunk=%8.2fMB  %6.2f GB/s", what, chunk / 1e6, gbs);
+        if (cpu_threads > 0) std::printf("  cpu %6.2f GB/s  sum %6.2f", double(reader_bytes.load() - b0) / dt / 1e9,
+                                         gbs + double(reader_bytes.load() - b0) / dt / 1e9);
+        std::printf("\n");
+    };
+
     // 1. cudaHostAlloc
     char* pinned = nullptr;
     CK(cudaHostAlloc(reinterpret_cast<void**>(&pinned), bytes, cudaHostAllocDefault));
     std::memset(pinned, 1, bytes);
-    for (size_t c : chunks)
-        std::printf("h2dbw copy-alloc   chunk=%8.2fMB  %6.2f GB/s\n", c / 1e6, copy_rate(pinned, bytes, dev, c, seconds, st));
+    for (size_t c : chunks) row("copy-alloc", c, [&] { return copy_rate(pinned, bytes, dev, c, seconds, st); });
     CK(cudaFreeHost(pinned));
 
     // 2./3. mmap (+ optional huge pages) registered and mapped
@@ -147,11 +161,8 @@ int main(int argc, char** argv) {
     CK(cudaHostGetDevicePointer(reinterpret_cast<void**>(&mapped), hb.ptr, 0));
     std::printf("h2dbw registered buffer: pages=%s huge_frac=%.2f\n", page_mode_name(mode), huge_page_fraction(hb));
     for (size_t c : chunks)
-        std::printf("h2dbw copy-reg     chunk=%8.2fMB  %6.2f GB/s\n", c / 1e6,
-                    copy_rate(static_cast<const char*>(hb.ptr), hb.bytes, dev, c, seconds, st));
-    for (size_t c : chunks)
-        std::printf("h2dbw zero-copy    chunk=%8.2fMB  %6.2f GB/s\n", c / 1e6,
-                    zero_copy_rate(mapped, hb.bytes, c, seconds, st, d_out));
+        row("copy-reg", c, [&] { return copy_rate(static_cast<const char*>(hb.ptr), hb.bytes, dev, c, seconds, st); });
+    for (size_t c : chunks) row("zero-copy", c, [&] { return zero_copy_rate(mapped, hb.bytes, c, seconds, st, d_out); });
     CK(cudaHostUnregister(hb.ptr));
     host_free(hb);
 

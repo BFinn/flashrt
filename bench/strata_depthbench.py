@@ -69,6 +69,10 @@ def run(a):
     if a.vram_reserve_mib:
         setarg("--vram-reserve-mib", str(a.vram_reserve_mib))
     for kv in a.set:
+        if "=" not in kv:              # a bare switch such as --stats
+            if kv not in args:
+                args.append(kv)
+            continue
         k, v = kv.split("=", 1)
         setarg(k, v)
     env = dict(os.environ)
@@ -148,7 +152,7 @@ r = sub.add_parser("run"); r.add_argument("--cfg", required=True); r.add_argumen
 r.add_argument("--label", required=True); r.add_argument("--no-mtp", action="store_true"); r.add_argument("--gen", type=int, default=384)
 r.add_argument("--out-dir", default=os.path.expanduser("$BENCH"))
 r.add_argument("--vram-reserve-mib", type=int, default=0)
-r.add_argument("--set", action="append", default=[], help="--flag=value to set or override")
+r.add_argument("--set", action="append", default=[], help="--flag=value to set or override, or a bare --switch to add")
 r.add_argument("--n-depths", type=int, default=0, help="only the first N depths")
 r.add_argument("--sampling", default="", help='e.g. "temperature=1.0 top_p=0.95 top_k=20"')
 a = ap.parse_args()
