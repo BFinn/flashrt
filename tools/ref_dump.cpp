@@ -3,7 +3,7 @@
 // flashrt's forward pass.
 //
 //   ref_dump --model M.gguf --ids prompt.txt [--n-prompt N] [--gen G] [--out FILE.frd]
-//            [--capture prefix,prefix,...] [--ctx C]
+//            [--capture prefix,prefix,...] [--ctx C] [--all-logits 1]
 //
 // Runs the prompt as one batch, then G greedy decode steps, with experts on the CPU as in the
 // deployed layout, and saves every graph tensor whose name (before "-<layer>") is in the
@@ -89,6 +89,7 @@ int main(int argc, char** argv) {
         "model.input_embed,ple_embd,hc_norm,hc_gate,hc_mixed,hc_inject,hc_combine,attn_output,linear_attn_out,"
         "ffn_moe_topk,ffn_moe_weights,ffn_moe_out,ffn_shexp_gated,ffn_out,l_last,result_norm,result_output";
     int n_prompt = 64, gen = 4, ctx = 0;
+    bool all_logits = false;
     for (int i = 1; i + 1 < argc; i += 2) {
         const std::string a = argv[i];
         if (a == "--model") model_path = argv[i + 1];
@@ -98,6 +99,7 @@ int main(int argc, char** argv) {
         else if (a == "--out") out = argv[i + 1];
         else if (a == "--capture") capture = argv[i + 1];
         else if (a == "--ctx") ctx = std::atoi(argv[i + 1]);
+        else if (a == "--all-logits") { all_logits = std::atoi(argv[i + 1]) != 0; }
         else { std::fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
     }
     if (model_path.empty() || ids_path.empty()) {
@@ -144,9 +146,24 @@ int main(int argc, char** argv) {
     const int n_vocab = llama_vocab_n_tokens(vocab);
 
     d.step = -1;
-    if (llama_decode(lctx, llama_batch_get_one(prompt.data(), int(prompt.size()))) != 0) {
-        std::fprintf(stderr, "prompt decode failed\n");
-        return 1;
+    {
+        // the prompt as one batch; with --all-logits 1 every position produces logits (and the
+        // last layer keeps every row), otherwise only the last one
+        llama_batch b = llama_batch_init(int(prompt.size()), 0, 1);
+        for (size_t i = 0; i < prompt.size(); ++i) {
+            b.token[i] = prompt[i];
+            b.pos[i] = llama_pos(i);
+            b.n_seq_id[i] = 1;
+            b.seq_id[i][0] = 0;
+            b.logits[i] = all_logits || i + 1 == prompt.size();
+        }
+        b.n_tokens = int(prompt.size());
+        const int rc = llama_decode(lctx, b);
+        llama_batch_free(b);
+        if (rc != 0) {
+            std::fprintf(stderr, "prompt decode failed\n");
+            return 1;
+        }
     }
     std::vector<llama_token> out_ids;
     for (int g = 0; g < gen; ++g) {
