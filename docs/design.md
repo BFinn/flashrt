@@ -87,7 +87,17 @@ depth, unless noted.
 | Phase | Scope | Gate |
 |---|---|---|
 | P0 | Measure: DRAM and PCIe bandwidth probes, routing-trace simulator, KL harness | Measured bandwidths, a hit-rate vs slots curve, and Strata's time breakdown on this box |
-| P1 | Dense path in one graph per window, doorbell CPU miss engine, AVX-512 Q2_0 kernel, decayed-LFU byte-sized cache; greedy, no MTP | ≥57 / ≥47; KLD vs llama.cpp ≤0.03 |
+| P1 | Dense path in one graph per window, doorbell CPU miss engine, AVX-512 Q2_0 kernel, decayed-LFU byte-sized cache; greedy, no MTP | ≥57 / ≥47; KLD vs llama.cpp ≤0.03 (measured as below) |
 | P2 | Trimmed-vocab MTP drafter, multi-token CPU kernel, exact speculative sampling | ≥80 / ≥72 at temperature 1.0, top_p 0.95, top_k 20, plus a distribution test |
 | P3 | Prefill with 8K chunks on borrowed slots, grouped int8 Q2_0 GEMM, tensor-core indexer, prefix cache | Prefill ≥2,000 at 32K and ≥1,700 at 250K |
 | P4 | Q4 KV with Hadamard rotation, dynamic CPU/PCIe split, huge pages; then KLD-gated cache-conditional routing and expert deferral | ≥95 / ≥85 exact; ≥110 with quality options at KLD ≤0.02 |
+
+**How the KLD gate is measured** (set 2026-09-27, `bench/results/2026-09-27-p1-kld`):
+- **Protocol:** llama-perplexity's KL-divergence protocol on wikitext-2 test, 8,192-token chunks,
+  2 chunks, scoring the second half of each chunk.
+- **Reference:** an FP16-KV llama.cpp reference (dev tree, `-ub 16`), compared with `tools/fr_kld`.
+- **Noise floor:** llama.cpp against itself on the same protocol, 0.0086 (`-ub 512`) and
+  0.0078 (Q8_0 KV). A flashrt result near those is at the noise floor.
+- **Short-context tests don't gate:** on 65 tokens llama.cpp against itself gives 0.11.
+
+The correctness-first reference forward measured 0.0089 (pass).
