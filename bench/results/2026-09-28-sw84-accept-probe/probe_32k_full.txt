@@ -1,0 +1,32 @@
+expert arena registered in 1.5 s
+KV cache: q8_0, host-resident, hot set of 4096 blocks per layer
+MTP draft head: layer 48, 774 MiB of weights in VRAM, 1 drafts per verify round
+VRAM before prefill: 11003 MiB free
+state: MTP head state loaded
+state: loaded $BENCH/state-32k-q8-mtp.bin (32767 positions) in 0.2 s
+expert cache: 8149 slots (33.2% of experts), filled in 0.3 s from 11000 MiB free
+adaptive cache: decayed LFU, swap budget 8 (set up in 0.0 s)
+decode: 129 tokens at depth 32768 in 1.46 s: 88.64 tok/s (speculative, MTP drafts), window 1, hit rate 93.33%, swaps 184
+decode: 128 tokens at depth 32897 in 1.30 s: 98.49 tok/s (speculative, MTP drafts), window 2, hit rate 92.95%, swaps 451
+expert cache hit rate 93.15% (152911 hits, 11249 misses: 11249 on the CPU, 0 read over PCIe)
+host per token: 5.49 ms waiting for routing, 1.76 ms running misses
+misses per layer: count (share of layers) and mean host miss time
+   0 :  42.9%     1.0 us
+   1 :  26.9%    54.2 us
+   2 :  13.7%    96.4 us
+   3 :   7.7%   118.5 us
+   4 :   3.7%   153.6 us
+   5 :   1.9%   183.8 us
+   6 :   1.3%   214.8 us
+   7 :   0.7%   245.9 us
+   8 :   0.5%   279.4 us
+   9 :   0.3%   315.4 us
+  10 :   0.2%   355.7 us
+  11 :   0.2%   375.9 us
+  12 :   0.0%   440.1 us
+  13 :   0.0%   456.4 us
+CUDA graphs: on (1 capture(s))
+accept probe (171 rounds, first draft): argmax draft p(argmax q) 0.5192; speculative sampling sum min(p, q): head softmax 0.6567, head through the sampler chain 0.6914; target's top token p 0.6166
+speculative: 171 rounds, 1.503 tokens per round, 1.00 drafts verified per round; accepted drafts: 0:49.7% 1:50.3%
+  per round: draft 1.07 ms, verify 14.82 ms, commit 0.22 ms
+tokens: 5820 310 4255 2785 279 44798 321 8308 660 279 1727 1834 641 561 6331 314 279 1809 5924 26508 430 1141 35454 321
