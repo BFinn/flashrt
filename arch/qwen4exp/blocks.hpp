@@ -110,6 +110,10 @@ void linear_shared(const BlockCtx& c, const GpuTensor* const* Ws, float* const* 
 // no inject). Writes mixed [T][d_model], inject [T][hc] (for which < 2), and optionally xn
 // [T][hc*d_model] (the grouped-norm output).
 void hc_mix(const BlockCtx& c, int il, int which, const float* x, int T, float* mixed, float* inject, float* xn_out = nullptr);
+// Test hook (tests/test_hc_decode): the decode hc mix on raw pointers, hc == 4, T <= 4; down as
+// Q8P ([rank][4 n] int8, then fp16 scales per 32), inject and up BF16. part: [T][4][rank + 4].
+void hc_decode_raw(int T, const float* x, const float* w_norm, const void* down_q8p, const void* inject_bf16, const void* up_bf16, float* xn,
+                   float* part, float* mixed, float* inject, int n, int rank, float eps, cudaStream_t st);
 // hc_combine(c, x, out, comb_inject, T) then hc_mix(c, il, which, x, ...), the combine fused into
 // the mix's RMS norm in prefill (comb_inject may be inject: it is read first).
 void hc_combine_mix(const BlockCtx& c, int il, int which, float* x, const float* out, const float* comb_inject, int T, float* mixed,

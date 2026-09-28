@@ -1287,6 +1287,21 @@ void hc_mix_impl(const BlockCtx& c, int il, int which, float* x, const float* co
                  float* inject, float* xn_out);
 }  // namespace
 
+void hc_decode_raw(int T, const float* x, const float* w_norm, const void* down_q8p, const void* inject_bf16, const void* up_bf16, float* xn,
+                   float* part, float* mixed, float* inject, int n, int rank, float eps, cudaStream_t st) {
+    const int8_t* q = static_cast<const int8_t*>(down_q8p);
+    const WQ8P wd{q, reinterpret_cast<const __half*>(q + size_t(rank) * 4 * n)};
+    const WBf16 wu{static_cast<const uint16_t*>(up_bf16)};
+    const uint16_t* wi = static_cast<const uint16_t*>(inject_bf16);
+    switch (T) {
+        case 1: hc_fused_launch<1>(x, w_norm, wd, wi, wu, xn, part, mixed, inject, n, 4, rank, 4, eps, st); break;
+        case 2: hc_fused_launch<2>(x, w_norm, wd, wi, wu, xn, part, mixed, inject, n, 4, rank, 4, eps, st); break;
+        case 3: hc_fused_launch<3>(x, w_norm, wd, wi, wu, xn, part, mixed, inject, n, 4, rank, 4, eps, st); break;
+        default: hc_fused_launch<4>(x, w_norm, wd, wi, wu, xn, part, mixed, inject, n, 4, rank, 4, eps, st); break;
+    }
+    ck(cudaGetLastError(), "hc_decode_raw");
+}
+
 void hc_mix(const BlockCtx& c, int il, int which, const float* x, int T, float* mixed, float* inject, float* xn_out) {
     hc_mix_impl(c, il, which, const_cast<float*>(x), nullptr, nullptr, T, mixed, inject, xn_out);
 }
