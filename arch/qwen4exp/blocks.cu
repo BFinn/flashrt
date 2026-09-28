@@ -718,21 +718,21 @@ __device__ __forceinline__ int afrag(int row, int col, int kd) {
 }
 
 // Per (chunk, head), 8 warps. Shared memory (48 KiB, two blocks per SM): K and Q as fp16
-// [C][DK]; A fp32 [C][C]. The Q region then holds T (fp32 [C][C]) and then V (fp16 [C][DK]); the
-// A region then holds T diag(beta) and T diag(beta gamma) (fp16 [C][C] each).
+// [C][DK]; A^T fp32 [C][C]. The Q region then holds V (fp16 [C][DK]); the A region then holds
+// T diag(beta) and T diag(beta gamma) (fp16 [C][C] each). All global loads are issued early:
+// the block is latency-bound otherwise (sw71).
 template <int DK>
 __global__ void __launch_bounds__(256, 2) k_gdn_chunk_prep(const float* conv, const float* g, const float* beta, int T, int t_base,
                                                           int k_heads, int v_heads, int channels, __half* Qh, __half* Wf, __half* Kt,
                                                           __half* Pf, float* Ut, float* gcb) {
     static_assert(DK == 128, "state 128");
-    constexpr int C = kGdnChunk;
+    constexpr int C = kGdnChunk, QK_IT = (C / 2) * (DK / 2) / 256, V_IT = C * (DK / 2) / 256;
     extern __shared__ __align__(16) unsigned char gsm_raw[];
     __half* Ks = reinterpret_cast<__half*>(gsm_raw);
     __half* Qs = Ks + C * DK;
-    float* Ts = reinterpret_cast<float*>(Qs);
     __half* Vs = Qs;
-    float* As = reinterpret_cast<float*>(Qs + C * DK);
-    __half* T1 = reinterpret_cast<__half*>(As);
+    float* At = reinterpret_cast<float*>(Qs + C * DK);   // At[s][t] = A[t][s]
+    __half* T1 = reinterpret_cast<__half*>(At);
     __half* T2 = T1 + C * C;
     __shared__ float Gs[C], Bs[C];
     const int ci = blockIdx.x, h = blockIdx.y, hk = h % k_heads, tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
@@ -741,57 +741,80 @@ __global__ void __launch_bounds__(256, 2) k_gdn_chunk_prep(const float* conv, co
     const size_t item = size_t(ci) * v_heads + h;
     const size_t q_off = size_t(hk) * DK, k_off = size_t(k_heads) * DK + size_t(hk) * DK, v_off = size_t(2 * k_heads) * DK + size_t(h) * DK;
     const float scale = rsqrtf(float(DK));
-    // 1. the cumulative log decay; padding tokens decay by 1 and have beta 0
+    // 1. loads: the decays and betas (warp 0), q and k in 2 x 2 pieces (tokens t, t + 1; dims d, d + 1)
+    float ga = 0.0f, gb = 0.0f, ba = 0.0f, bb = 0.0f;
     if (warp == 0) {
-        float a = lane < n ? g[size_t(t0 + lane) * v_heads + h] : 0.0f, b = lane + 32 < n ? g[size_t(t0 + lane + 32) * v_heads + h] : 0.0f;
+        if (lane < n) {
+            ga = g[size_t(t0 + lane) * v_heads + h];
+            ba = beta[size_t(t0 + lane) * v_heads + h];
+        }
+        if (lane + 32 < n) {
+            gb = g[size_t(t0 + lane + 32) * v_heads + h];
+            bb = beta[size_t(t0 + lane + 32) * v_heads + h];
+        }
+    }
+    float2 qv[QK_IT][2], kv[QK_IT][2];
 #pragma unroll
-        for (int off = 1; off < 32; off <<= 1) {
-            const float ua = __shfl_up_sync(~0u, a, off), ub = __shfl_up_sync(~0u, b, off);
-            if (lane >= off) {
-                a += ua;
-                b += ub;
+    for (int it = 0; it < QK_IT; ++it) {
+        const int e = tid + it * 256, t = (e / (DK / 2)) * 2, d = (e % (DK / 2)) * 2;
+#pragma unroll
+        for (int u = 0; u < 2; ++u) {
+            qv[it][u] = kv[it][u] = make_float2(0.0f, 0.0f);
+            if (t + u < n) {
+                const float* row = conv + size_t(t0 + t + u) * channels;
+                qv[it][u] = *reinterpret_cast<const float2*>(row + q_off + d);
+                kv[it][u] = *reinterpret_cast<const float2*>(row + k_off + d);
             }
         }
-        b += __shfl_sync(~0u, a, 31);
-        Gs[lane] = a;
-        Gs[lane + 32] = b;
-        Bs[lane] = lane < n ? beta[size_t(t0 + lane) * v_heads + h] : 0.0f;
-        Bs[lane + 32] = lane + 32 < n ? beta[size_t(t0 + lane + 32) * v_heads + h] : 0.0f;
+    }
+    // the cumulative log decay; padding tokens decay by 1 and have beta 0
+    if (warp == 0) {
+#pragma unroll
+        for (int off = 1; off < 32; off <<= 1) {
+            const float ua = __shfl_up_sync(~0u, ga, off), ub = __shfl_up_sync(~0u, gb, off);
+            if (lane >= off) {
+                ga += ua;
+                gb += ub;
+            }
+        }
+        gb += __shfl_sync(~0u, ga, 31);
+        Gs[lane] = ga;
+        Gs[lane + 32] = gb;
+        Bs[lane] = ba;
+        Bs[lane + 32] = bb;
     }
     __syncthreads();
     const float GC = Gs[C - 1];
-    // 2. q and k in 2 x 2 pieces: fp16 copies here; Q^ = scale gamma Q (rows t) and
-    //    K^ = exp(G_C - G) K transposed (rows d) as A fragments for the state kernel
+    // 2. fp16 q and k here; Q^ = scale gamma Q (rows t) and K^ = exp(G_C - G) K transposed (rows d)
+    //    as A fragments for the state kernel
     {
         __half* qh = Qh + item * C * DK;
         __half* kt = Kt + item * C * DK;
-        for (int e = tid; e < (C / 2) * (DK / 2); e += blockDim.x) {
-            const int t = (e / (DK / 2)) * 2, d = (e % (DK / 2)) * 2;
-            float2 q0 = {0.0f, 0.0f}, q1 = q0, k0 = q0, k1 = q0;
-            if (t < n) {
-                const float* row = conv + size_t(t0 + t) * channels;
-                q0 = *reinterpret_cast<const float2*>(row + q_off + d);
-                k0 = *reinterpret_cast<const float2*>(row + k_off + d);
-            }
-            if (t + 1 < n) {
-                const float* row = conv + size_t(t0 + t + 1) * channels;
-                q1 = *reinterpret_cast<const float2*>(row + q_off + d);
-                k1 = *reinterpret_cast<const float2*>(row + k_off + d);
-            }
+#pragma unroll
+        for (int it = 0; it < QK_IT; ++it) {
+            const int e = tid + it * 256, t = (e / (DK / 2)) * 2, d = (e % (DK / 2)) * 2;
+            const float2 q0 = qv[it][0], q1 = qv[it][1], k0 = kv[it][0], k1 = kv[it][1];
             *reinterpret_cast<uint32_t*>(&Qs[gsw(t, d, DK)]) = pack_h2(q0.x, q0.y);
             *reinterpret_cast<uint32_t*>(&Qs[gsw(t + 1, d, DK)]) = pack_h2(q1.x, q1.y);
             *reinterpret_cast<uint32_t*>(&Ks[gsw(t, d, DK)]) = pack_h2(k0.x, k0.y);
             *reinterpret_cast<uint32_t*>(&Ks[gsw(t + 1, d, DK)]) = pack_h2(k1.x, k1.y);
-            const float ga = scale * __expf(Gs[t]), gb = scale * __expf(Gs[t + 1]);
-            *reinterpret_cast<uint32_t*>(&qh[afrag(t, d, DK)]) = pack_h2(ga * q0.x, ga * q0.y);
-            *reinterpret_cast<uint32_t*>(&qh[afrag(t + 1, d, DK)]) = pack_h2(gb * q1.x, gb * q1.y);
+            const float sa = scale * __expf(Gs[t]), sb = scale * __expf(Gs[t + 1]);
+            *reinterpret_cast<uint32_t*>(&qh[afrag(t, d, DK)]) = pack_h2(sa * q0.x, sa * q0.y);
+            *reinterpret_cast<uint32_t*>(&qh[afrag(t + 1, d, DK)]) = pack_h2(sb * q1.x, sb * q1.y);
             const float ka = __expf(GC - Gs[t]), kb = __expf(GC - Gs[t + 1]);
             *reinterpret_cast<uint32_t*>(&kt[afrag(d, t, C)]) = pack_h2(ka * k0.x, kb * k1.x);
             *reinterpret_cast<uint32_t*>(&kt[afrag(d + 1, t, C)]) = pack_h2(ka * k0.y, kb * k1.y);
         }
     }
+    // v, used in step 5: loaded now, stored over Q once Q is done
+    float2 vv[V_IT];
+#pragma unroll
+    for (int it = 0; it < V_IT; ++it) {
+        const int e = tid + it * 256, t = e / (DK / 2), d = (e % (DK / 2)) * 2;
+        vv[it] = t < n ? *reinterpret_cast<const float2*>(conv + size_t(t0 + t) * channels + v_off + d) : make_float2(0.0f, 0.0f);
+    }
     __syncthreads();
-    // 3. K K^T -> A (fp32, shared) and Q K^T -> P (scaled, A fragments, global): the lower
+    // 3. K K^T -> A^T (fp32, shared) and Q K^T -> P (scaled, A fragments, global): the lower
     //    triangle, warp = (product, row tile)
     {
         const int prod = warp >> 2, mt = warp & 3;
@@ -817,64 +840,56 @@ __global__ void __launch_bounds__(256, 2) k_gdn_chunk_prep(const float* conv, co
             for (int hh = 0; hh < 2; ++hh) {
                 const int t = mt * 16 + g8 + hh * 8, s = j * 8 + tq * 2;
                 const float e0 = s <= t ? __expf(Gs[t] - Gs[s]) : 0.0f, e1 = s + 1 <= t ? __expf(Gs[t] - Gs[s + 1]) : 0.0f;
-                if (prod == 0)
-                    *reinterpret_cast<float2*>(&As[t * C + s]) =
-                        make_float2(s < t ? Bs[t] * e0 * acc[j][2 * hh] : 0.0f, s + 1 < t ? Bs[t] * e1 * acc[j][2 * hh + 1] : 0.0f);
-                else if (j < 2 * mt + 2)
+                if (prod == 0) {
+                    At[s * C + t] = s < t ? Bs[t] * e0 * acc[j][2 * hh] : 0.0f;
+                    At[(s + 1) * C + t] = s + 1 < t ? Bs[t] * e1 * acc[j][2 * hh + 1] : 0.0f;
+                } else if (j < 2 * mt + 2)
                     *reinterpret_cast<uint32_t*>(&pf[afrag(t, s, C)]) = pack_h2(scale * e0 * acc[j][2 * hh], scale * e1 * acc[j][2 * hh + 1]);
             }
     }
     __syncthreads();
-    // 4. T = (I + A)^-1 in fp32 by 16 x 16 blocks: the diagonal blocks by substitution, then
-    //    T_ij = -T_ii sum_{k=j}^{i-1} A_ik T_kj row block by row block. The sums M_ij go to the
-    //    unused upper block (j, i).
-    if (tid < 64) {
-        const int o = (tid >> 4) * 16, c = tid & 15;
-        float x[16];
 #pragma unroll
-        for (int r = 0; r < 16; ++r) {
-            float v = r == c ? 1.0f : 0.0f;
+    for (int it = 0; it < V_IT; ++it) {
+        const int e = tid + it * 256, t = e / (DK / 2), d = (e % (DK / 2)) * 2;
+        *reinterpret_cast<uint32_t*>(&Vs[gsw(t, d, DK)]) = pack_h2(vv[it].x, vv[it].y);
+    }
+    // 4. T = (I + A)^-1 in fp32 by column substitution in registers: warp w owns columns
+    //    8w .. 8w + 7, lane rows lane and lane + 32; step s subtracts A[r][s] x[s] from the rows
+    //    below s (x[s] final by then: A is strictly lower)
+    float x0[8], x1[8];
 #pragma unroll
-            for (int s = 0; s < r; ++s) v -= As[(o + r) * C + o + s] * x[s];
-            x[r] = v;
-            Ts[(o + r) * C + o + c] = v;
+    for (int j = 0; j < 8; ++j) {
+        x0[j] = lane == warp * 8 + j ? 1.0f : 0.0f;
+        x1[j] = lane + 32 == warp * 8 + j ? 1.0f : 0.0f;
+    }
+#pragma unroll 8
+    for (int s = 0; s < 32; ++s) {
+        const float a0 = At[s * C + lane], a1 = At[s * C + lane + 32];
+#pragma unroll
+        for (int j = 0; j < 8; ++j) {
+            const float xs = __shfl_sync(~0u, x0[j], s);
+            x0[j] -= a0 * xs;
+            x1[j] -= a1 * xs;
         }
     }
-    __syncthreads();
-    for (int i = 1; i < 4; ++i) {
-        for (int e = tid; e < i * 256; e += blockDim.x) {
-            const int j = e >> 8, r = (e >> 4) & 15, c = e & 15;
-            float m = 0.0f;
-            for (int k = j * 16; k < i * 16; ++k) m += As[(i * 16 + r) * C + k] * Ts[k * C + j * 16 + c];
-            Ts[(j * 16 + r) * C + i * 16 + c] = m;
-        }
-        __syncthreads();
-        for (int e = tid; e < i * 256; e += blockDim.x) {
-            const int j = e >> 8, r = (e >> 4) & 15, c = e & 15;
-            float v = 0.0f;
-            for (int s = 0; s <= r; ++s) v -= Ts[(i * 16 + r) * C + i * 16 + s] * Ts[(j * 16 + s) * C + i * 16 + c];
-            Ts[(i * 16 + r) * C + j * 16 + c] = v;
-        }
-        __syncthreads();
+#pragma unroll 8
+    for (int s = 32; s < C; ++s) {
+        const float a1 = At[s * C + lane + 32];
+#pragma unroll
+        for (int j = 0; j < 8; ++j) x1[j] -= a1 * __shfl_sync(~0u, x1[j], s - 32);
     }
-    // 5. T diag(beta) and T diag(beta gamma) as fp16 (lower blocks only) over A
-    for (int e = tid; e < C * C / 2; e += blockDim.x) {
-        const int t = e / (C / 2), s = (e % (C / 2)) * 2;
-        if ((s >> 4) > (t >> 4)) continue;
-        const float x0 = Ts[t * C + s] * Bs[s], x1 = Ts[t * C + s + 1] * Bs[s + 1];
-        *reinterpret_cast<uint32_t*>(&T1[gsw(t, s, C)]) = pack_h2(x0, x1);
-        *reinterpret_cast<uint32_t*>(&T2[gsw(t, s, C)]) = pack_h2(x0 * __expf(Gs[s]), x1 * __expf(Gs[s + 1]));
+    __syncthreads();   // A is done: T diag(beta) and T diag(beta gamma) go over it
+#pragma unroll
+    for (int j = 0; j < 8; ++j) {
+        const int c = warp * 8 + j;
+        const float b = Bs[c], bg = b * __expf(Gs[c]);
+        T1[gsw(lane, c, C)] = __float2half_rn(x0[j] * b);
+        T2[gsw(lane, c, C)] = __float2half_rn(x0[j] * bg);
+        T1[gsw(lane + 32, c, C)] = __float2half_rn(x1[j] * b);
+        T2[gsw(lane + 32, c, C)] = __float2half_rn(x1[j] * bg);
     }
     __syncthreads();
-    // 6. V as fp16 over T
-    for (int e = tid; e < C * (DK / 2); e += blockDim.x) {
-        const int t = e / (DK / 2), d = (e % (DK / 2)) * 2;
-        float2 v = {0.0f, 0.0f};
-        if (t < n) v = *reinterpret_cast<const float2*>(conv + size_t(t0 + t) * channels + v_off + d);
-        *reinterpret_cast<uint32_t*>(&Vs[gsw(t, d, DK)]) = pack_h2(v.x, v.y);
-    }
-    __syncthreads();
-    // 7. W = T diag(beta gamma) K (A fragments, fp16) and U~ = T diag(beta) V (fp32 rows):
+    // 5. W = T diag(beta gamma) K (A fragments, fp16) and U~ = T diag(beta) V (fp32 rows):
     //    warp = (product, row tile), the columns in two halves
     {
         const int prod = warp >> 2, mt = warp & 3;
@@ -2457,7 +2472,7 @@ void gdn_delta_prefill(const Spec& s, float* S, const float* conv, const float* 
     __half* Pf = Kt + items * C * DK;
     float* Ut = reinterpret_cast<float*>(Pf + items * C * C);
     float* gcb = Ut + items * C * DK;
-    const size_t smem_prep = size_t(3 * C * DK) * 2;   // K, Q (fp16) and A (fp32 [C][C] = C * DK halves)
+    const size_t smem_prep = size_t(3 * C * DK) * 2;   // K, Q (fp16) and A^T (fp32 [C][C] = C * DK halves)
     static const int nc = [] {   // FLASHRT_GDN_NC: value columns per state block (32, 64, 128)
         const char* e = std::getenv("FLASHRT_GDN_NC");
         return e ? std::atoi(e) : 32;
