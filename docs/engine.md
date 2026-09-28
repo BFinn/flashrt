@@ -108,17 +108,27 @@ graphs, and the next decode token captures them again (about 0.1 ms).
 
 ## Speculative decoding with the MTP head (P2)
 
-A round, in `fr_bench --spec K` (the engine binary does not run it yet):
+A round, in `fr_bench --spec K` and `flashrt-engine --spec K`:
 
 1. **Draft** (`MtpHead`, `arch/qwen4exp/mtp.cu`): the head runs over the rows the target kept in
    the last round (its catch-up, with the target's final streams as h), and the last row's
    logits give draft 1. Drafts 2..K come from `draft_chain`: one captured graph per step, fed its
-   token and position on the device by the previous step's argmax. One host sync per round.
+   token and position on the device by the previous step's draft. One host sync per round.
+   At temperature > 0 each draft is **sampled** from the head's q: its logits through the
+   target's sampler chain, with a salted per-position draw (`sample::draft_row`). q is kept on
+   the GPU. Greedy decoding and `--argmax-drafts` / `FLASHRT_ARGMAX_DRAFTS=1` use the argmax.
 2. **Verify** (`ForwardRef::forward_window`): the target runs the window `x_p, d_1 .. d_K` (T =
    K + 1 tokens) in one doorbell step on the fast path, captured as a graph pair per T.
-3. **Accept:** every row is sampled (`kernels/cuda/sample.cu`; greedy is argmax). Drafts are kept
-   while the sampled token equals the draft; the emitted tokens are the samples y_0 .. y_a. The
-   draft is deterministic, so this is exact speculative sampling.
+3. **Accept:**
+   - **Sampled drafts** (`sample::spec_verify`, sw85): draft j is kept when u * q(d) < p(d);
+     otherwise the token is drawn from max(0, p - q), normalised, and the round ends. The last
+     row is a plain sample.
+     - Exact in distribution (`test_spec_sample`; the distribution test).
+     - Tokens no longer equal plain sampling's one for one.
+     - First-draft acceptance at 32K rose from ~51% to ~76%.
+   - **Argmax drafts:** every row is sampled (greedy is argmax), and drafts are kept while the
+     sampled token equals the draft. With a deterministic draft this is also exact, and
+     token-for-token equal to plain sampling (position-keyed draws, `test_sample`).
 4. **Commit** (`ForwardRef::commit(a + 1)`): the recurrent states are rewound to the kept tokens.
 
 **The head** is the NextN block of the draft GGUF (`-noembd`: the target's embedding and LM head
@@ -238,6 +248,7 @@ cache after, from the prefill's routing counts and the startup prior.
 | **Prefill: every layer's experts streamed, not only the misses** | A 4K-8K chunk touches all 512 experts of a layer; one 676 MB copy per layer overlaps the previous layer, and the cache's VRAM is free for the chunk's buffers. | sw36-sw39 (P3): 136 → 2,135 tok/s at 32K |
 | **A VRAM mirror of host KV during prefill** | Chunk attention reading the host store over PCIe ran 2.6× slower. | sw42, sw43: 245K 738 → 1,940 tok/s |
 | **Tensor-core prefill attention, K/V gathered into fragments** | The FP32 split-K kernel ran at about 7 TFLOPS and wrote 0.8 MB of partials per token-layer. | sw46: 32K 2,193 → 2,644 tok/s; 64K attention 6.1 → 0.95 s |
+| **Sampled drafts at temperature > 0** | Argmax drafts accept with p(argmax q), sampled drafts with sum min(p, q): 0.48-0.58 against 0.66-0.71 (probe). 32K `--spec 1` 119.0 → 143.1 tok/s, 245K 91.7 → 97.1. With them a second draft is break-even or slightly ahead. | sw84, sw85 |
 | **Decode: work inside the CPU-miss window does not pay** | In a layer with CPU misses, the hits and the shared expert run while the host computes the misses, and `k_moe_combine_db` waits for it. Faster kernels there mostly lengthen the wait. Gains have to come from work outside that window (hc, mixers, dense mat-vecs), or from fewer misses. A CPU miss costs 41-46 µs in decode, near host-DRAM bandwidth. | sw78, sw79 (moe hits v2 reverted) |
 | **Decode hc kernels v2** | v1 ran at ~500 GB/s: shared-memory bound at T >= 2, with a serial norm preamble. v2: 2 rows per warp, weights before the norm, 1/rms after the dot product, up kernel as a PDL dependent in one wave. | sw75 (32K plain +2.7%) |
 | **Doorbell skip for tokens without misses** | 61% of layers at 32K have no CPU miss; they skip the x copy and the mailbox wait and read (the host still serves them, for statistics). | sw77 (`--spec 1` 32K +1.8%) |
@@ -411,8 +422,8 @@ cache after, from the prefill's routing counts and the startup prior.
 ## Next steps (priority order)
 
 `docs/sweet-spots.md` has the tuned configurations, the knee of each track and the untested
-paths ranked by expected value. At the top of that list: sampled drafts with speculative
-sampling (sw84: acceptance 0.48 → 0.66 at 32K).
+paths ranked by expected value. Sampled drafts with speculative sampling, the top of that
+list, are done (sw85: 32K `--spec 1` 119.0 → 143.1 tok/s, 245K 91.7 → 97.1).
 
 1. **Cheaper verify windows:** the misses dominate. They are host-DRAM bound (sw79), so the
    levers are fewer misses and a better drafter:

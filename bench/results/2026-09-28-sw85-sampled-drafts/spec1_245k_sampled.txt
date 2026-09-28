@@ -1,0 +1,40 @@
+expert arena registered in 1.7 s
+KV cache: q8_0, host-resident, hot set of 4096 blocks per layer
+MTP draft head: layer 48, 774 MiB of weights in VRAM, 1 drafts per verify round
+VRAM before prefill: 10657 MiB free
+state: MTP head state loaded
+state: loaded $BENCH/state-245k-q8-mtp.bin (245759 positions) in 1.4 s
+MTP draft vocabulary: 39015 tokens (32768 ranked, 6247 from the prompt)
+expert cache: 7835 slots (31.9% of experts), filled in 0.2 s from 10586 MiB free
+adaptive cache: decayed LFU, swap budget 8 (set up in 0.0 s)
+drafts: sampled from the head's q, verified by speculative sampling
+decode: 129 tokens at depth 245760 in 1.42 s: 90.78 tok/s (speculative, MTP drafts), window 1, hit rate 85.47%, swaps 300
+decode: 128 tokens at depth 245889 in 1.29 s: 98.92 tok/s (speculative, MTP drafts), window 2, hit rate 87.66%, swaps 800
+decode: 128 tokens at depth 246017 in 1.36 s: 94.11 tok/s (speculative, MTP drafts), window 3, hit rate 83.32%, swaps 1255
+decode: 128 tokens at depth 246145 in 1.37 s: 93.27 tok/s (speculative, MTP drafts), window 4, hit rate 88.76%, swaps 1678
+decode: 129 tokens at depth 246273 in 1.25 s: 103.25 tok/s (speculative, MTP drafts), window 5, hit rate 88.71%, swaps 2061
+decode: 128 tokens at depth 246402 in 1.25 s: 102.26 tok/s (speculative, MTP drafts), window 6, hit rate 86.00%, swaps 2472
+expert cache hit rate 86.67% (369404 hits, 56836 misses: 56836 on the CPU, 0 read over PCIe)
+host per token: 6.05 ms waiting for routing, 2.99 ms running misses
+misses per layer: count (share of layers) and mean host miss time
+   0 :  21.1%     1.1 us
+   1 :  22.0%    63.3 us
+   2 :  18.6%    99.8 us
+   3 :  13.7%   132.4 us
+   4 :   8.9%   172.6 us
+   5 :   5.7%   205.4 us
+   6 :   3.5%   237.6 us
+   7 :   2.3%   271.3 us
+   8 :   1.5%   303.6 us
+   9 :   0.9%   348.7 us
+  10 :   0.6%   379.1 us
+  11 :   0.5%   413.3 us
+  12 :   0.3%   429.9 us
+  13 :   0.3%   465.7 us
+  14 :   0.1%   500.5 us
+  15 :   0.0%   531.4 us
+  16+:   0.1%   590.6 us
+CUDA graphs: on (1 capture(s))
+speculative: 444 rounds, 1.734 tokens per round, 1.00 drafts verified per round; accepted drafts: 0:26.6% 1:73.4%
+  per round: draft 1.27 ms, verify 16.50 ms, commit 0.13 ms
+tokens: 279 2982 557 2512 328 46973 84 16094 2770 328 318 20483 14208 847 539 279 74702 266 3253 1208 852 21681 383 279

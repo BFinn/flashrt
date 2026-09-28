@@ -12,7 +12,7 @@ RTX 5080 16 GB, Ryzen 9 7900X, DDR5-3600 (EXPO off), Qwen3.8-Flash-Next GSQ Q2_0
 
 | Setting | Value | Why | Evidence |
 |---|---|---|---|
-| Speculation | `--spec 1` (one MTP draft per round) at temperature 1.0 | A second draft's acceptance does not pay for the wider window's extra expert misses. | sw33, sw84 |
+| Speculation | `--spec 1` or `--spec 2` with sampled drafts (the default at temperature > 0) | Sampled drafts with speculative sampling raised first-draft acceptance from ~51% to ~76% at 32K. With them a second draft is break-even or slightly ahead (32K 146.8 against 143.1, 245K 97.6 against 97.1). | sw85 |
 | | `--spec 2`-`3` only for greedy decoding of repetitive text | At depth, 2.7-3.5 tokens per round. | sw30, sw33 |
 | Draft head | Q2_0 experts (`--mtp-bits 2`) | Acceptance equal to Q4_0/Q8_0; frees ~500 cache slots (+5%). | sw26, sw65 |
 | | LM head trimmed to 32,768 ranked + prompt tokens | Halves the draft step; no measurable acceptance loss. | sw26, sw84 |
@@ -21,7 +21,16 @@ RTX 5080 16 GB, Ryzen 9 7900X, DDR5-3600 (EXPO off), Qwen3.8-Flash-Next GSQ Q2_0
 | CPU miss pool | 8 workers (6 is marginally better for plain decode, within noise) | | p1-moe-cpu, sw79 |
 | Kernels | all defaults on (see the toggles below) | | sw73-sw78 |
 
-**Measured (teacher-forced, same tokens every arm, 6 windows of 128):**
+**With sampled drafts at temperature 1.0 (sw85, sampled text, 6 windows of 128):**
+
+| Arm | tok/s |
+|---|---|
+| 32K `--spec 1` | 143.1 |
+| 32K `--spec 2` | 146.8 |
+| 245K `--spec 1` | 97.1 |
+| 245K `--spec 2` | 97.6 |
+
+**Measured before sampled drafts (teacher-forced, same tokens every arm, 6 windows of 128):**
 
 | Arm | tok/s |
 |---|---|
@@ -82,7 +91,7 @@ Ranked by expected value. None of these has been implemented or measured end to 
 
 | Path | Expected gain | Evidence so far | Effort, risk |
 |---|---|---|---|
-| **Sampled drafts with speculative sampling** (draw the draft from the head's q through the sampler chain; accept with min(1, p/q), else resample from max(0, p - q)) | Estimated **+12% at 32K, +15% at 245K** (`--spec 1`) | Acceptance 0.475 → 0.657 (32K) and 0.577 → 0.712 (245K) on real rounds (`--accept-probe`, sw84). | A few hours. Exact in distribution, but tokens no longer equal plain sampling token for token (the distribution test replaces the token test). |
+| ~~Sampled drafts with speculative sampling~~ | **Done (sw85): +20% at 32K (119.0 → 143.1 tok/s), +6% at 245K (91.7 → 97.1)**, `--spec 1`, temperature 1.0 | | |
 | **Adaptive draft length** from the head's calibrated q and the round's expected new experts | Unknown; depends on the above | Gating on the argmax head's probability did not beat a fixed K (sw29); a sampled q is better calibrated. The MoE literature reports verify cost 2.4x → ~1.5x (vault: "Speculative Decoding with MoE"). | Medium. |
 | **N-gram / prompt-lookup drafts stacked with the MTP head** | Large on repetitive content (code, RAG, long documents), none on fresh prose | Greedy at 245K keeps 3.5 tokens per round because the text repeats earlier context (sw33). | Medium. |
 | **Worker count per mode** (6 for one token, 8-11 for windows) | ~1-2% | Plain decode with 6 workers measured best but within noise (sw79). | Small. |
