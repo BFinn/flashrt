@@ -166,14 +166,15 @@ struct QsaCache {
     // with the host store while prefill chunks run, so their attention reads VRAM.
     void *mK = nullptr, *mV = nullptr;
     uint16_t *mKs = nullptr, *mVs = nullptr;
+    int mcap = 0;   // cells the mirror holds
     float* idx_pooled = nullptr;   // [capacity / block][idx_dim]
     float* idx_ring = nullptr;     // [qsa_ring_slots][idx_dim], slot = position % qsa_ring_slots
 };
 inline int qsa_ring_slots(const Spec& s) { return 2 * s.qsa_block; }
 QsaCache alloc_qsa_cache(const Spec& s, int capacity, bool q8 = false, int hot_blocks = 0);
-// Starts (copying positions [0, pos) from the host store) or ends a prefill mirror; no-op
-// without a hot set.
-void qsa_mirror_begin(const Spec& s, QsaCache& kv, int pos, cudaStream_t stream);
+// Starts a prefill mirror of `cells` cells (copying positions [0, pos) from the host store), or
+// ends it; no-op without a hot set.
+void qsa_mirror_begin(const Spec& s, QsaCache& kv, int pos, int cells, cudaStream_t stream);
 void qsa_mirror_end(QsaCache& kv);
 // Empties the hot set (every block misses until promoted again); no-op without one.
 void reset_qsa_hot(const Spec& s, QsaCache& kv, cudaStream_t stream);

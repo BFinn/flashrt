@@ -1395,9 +1395,11 @@ size_t qsa_cell_bytes(const Spec& s, bool q8) {
     return q8 ? n + n / 32 * 2 : n * 2;
 }
 
-void qsa_mirror_begin(const Spec& s, QsaCache& kv, int pos, cudaStream_t stream) {
+void qsa_mirror_begin(const Spec& s, QsaCache& kv, int pos, int cells, cudaStream_t stream) {
     if (!kv.hot_blocks || kv.mK) return;
-    const size_t n = size_t(kv.capacity) * s.n_head_kv * s.head_dim_k;
+    cells = std::min(kv.capacity, (std::max(cells, pos) + s.qsa_block - 1) / s.qsa_block * s.qsa_block);
+    kv.mcap = cells;
+    const size_t n = size_t(cells) * s.n_head_kv * s.head_dim_k;
     ck(cudaMalloc(&kv.mK, n), "cudaMalloc KV mirror");
     ck(cudaMalloc(&kv.mV, n), "cudaMalloc KV mirror");
     ck(cudaMalloc(&kv.mKs, n / 32 * 2), "cudaMalloc KV mirror");
@@ -1416,6 +1418,7 @@ void qsa_mirror_end(QsaCache& kv) {
         if (p) cudaFree(p);
     kv.mK = kv.mV = nullptr;
     kv.mKs = kv.mVs = nullptr;
+    kv.mcap = 0;
 }
 
 void reset_qsa_hot(const Spec& s, QsaCache& kv, cudaStream_t stream) {

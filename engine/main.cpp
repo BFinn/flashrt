@@ -4,6 +4,7 @@
 //
 //   flashrt-engine MODEL.gguf [--mtp DRAFT.gguf [--spec K] [--draft-vocab RANKS] [--mtp-bits B]]
 //                  [--ctx N] [--kv-hot BLOCKS] [--kv f16|q8] [--workers W] [--reserve-mib R] [--cache-prior FILE]
+//                  [--prefill-chunk C] [--chunk-min N]
 //
 // One sequence at a time: generate requests queue in arrival order. A reader thread takes the
 // input lines, so a "stop" for the running request cancels it between decode steps.
@@ -91,6 +92,8 @@ int main(int argc, char** argv) {
         else if (a == "--reserve-mib") o.reserve_mib = std::atoi(next());
         else if (a == "--swap-budget") o.swap_budget = std::atoi(next());
         else if (a == "--cache-prior") o.cache_prior = next();
+        else if (a == "--prefill-chunk") o.prefill_chunk = std::atoi(next());
+        else if (a == "--chunk-min") o.chunk_min = std::atoi(next());
         else { std::fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
     }
     std::unique_ptr<Session> session;

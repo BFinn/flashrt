@@ -406,7 +406,11 @@ void ForwardRef::forward(const int32_t* seq, int T, int out_from, float* logits_
             ck(cudaMemset(counts_dev_, 0, counts_.size() * 4), "memset routing counts");
         }
         use_bufs(chunk_);
-        for (int il : s.qsa_layers) qsa_mirror_begin(s, kv_[il], pos_, stream_);   // host KV: chunks attend from a VRAM mirror
+        const int need = std::max(look_n_, pos_ + T);   // host KV: chunks attend from a VRAM mirror up to the prompt's end
+        for (int il : s.qsa_layers) {
+            if (kv_[il].mK && kv_[il].mcap < pos_ + T) qsa_mirror_end(kv_[il]);
+            qsa_mirror_begin(s, kv_[il], pos_, need, stream_);
+        }
         expert_stream_prefetch(estream_, 0);   // layer 0's experts copy while the embedding and PLE run
     } else {
         use_bufs(dec_);

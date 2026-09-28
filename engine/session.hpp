@@ -36,6 +36,8 @@ struct SessionOptions {
     int reserve_mib = 1024;           // VRAM left free after the expert cache
     int swap_budget = 8;
     int prefill_batch = 64;
+    int prefill_chunk = 4096;         // prompts adding at least chunk_min tokens prefill in chunks of this
+    int chunk_min = 256;              // (the experts stream to the GPU; the expert cache is rebuilt after)
     std::string cache_prior;          // routing counts of a calibration prefill (fr_bench --save-counts)
 };
 

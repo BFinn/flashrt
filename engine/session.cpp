@@ -11,6 +11,7 @@
 #include "core/expert_arena.hpp"
 #include "core/gguf.hpp"
 #include "core/platform.hpp"
+#include "kernels/cuda/ggml_gemv.h"
 #include "quant/q2_0/q2_0.hpp"
 
 #include <cuda_runtime.h>
@@ -144,14 +145,46 @@ struct Session::Impl {
     }
 
     // The draft head catches up on target rows p0 .. p0 + T - 1 (their streams are in
-    // fwd->streams()): its input at q is (h_{q-1}, x_q).
+    // fwd->streams()): its input at q is (h_{q-1}, x_q). In slices of its batch.
     void mtp_catchup(const int32_t* toks, int p0, int T) {
         if (!mtp) return;
         cudaStream_t st = fwd->stream();
-        ck(cudaMemcpyAsync(h_buf, h_carry, hrow * 4, cudaMemcpyDeviceToDevice, st), "h");
-        if (T > 1) ck(cudaMemcpyAsync(h_buf + hrow, fwd->streams(), size_t(T - 1) * hrow * 4, cudaMemcpyDeviceToDevice, st), "h");
+        const int B = o.prefill_batch;
+        for (int j = 0; j < T; j += B) {
+            const int Tj = std::min(B, T - j);
+            const float* h = fwd->streams() + size_t(j - 1) * hrow;   // rows j-1 .. j+Tj-2
+            if (j == 0) {
+                ck(cudaMemcpyAsync(h_buf, h_carry, hrow * 4, cudaMemcpyDeviceToDevice, st), "h");
+                if (Tj > 1) ck(cudaMemcpyAsync(h_buf + hrow, fwd->streams(), size_t(Tj - 1) * hrow * 4, cudaMemcpyDeviceToDevice, st), "h");
+                h = h_buf;
+            }
+            mtp->forward(h, toks + p0 + j, Tj, p0 + j, Tj, nullptr);
+        }
         ck(cudaMemcpyAsync(h_carry, fwd->streams() + size_t(T - 1) * hrow, hrow * 4, cudaMemcpyDeviceToDevice, st), "h");
-        mtp->forward(h_buf, toks + p0, T, p0, T, nullptr);
+    }
+
+    // The expert cache's VRAM goes to prefill chunks, and comes back afterwards.
+    void cache_release() {
+        fwd->set_cache_manager(nullptr);
+        destroy_cache_manager(mgr);
+        mgr = nullptr;
+        ck(cudaFree(cache.slots), "free expert cache");
+        cache.slots = nullptr;
+        std::fill(cache.table.begin(), cache.table.end(), -1);
+        std::fill(cache.owner.begin(), cache.owner.end(), -1);
+        cache_filled = false;
+    }
+    void cache_restore() {
+        fwd->release_chunk_buffers();
+        size_t free_b = 0, total_b = 0;
+        ck(cudaMemGetInfo(&free_b, &total_b), "cudaMemGetInfo");
+        const size_t eb = cache.slot_bytes, keep = size_t(o.reserve_mib) << 20;
+        const int slots = int(std::min<size_t>(size_t(cache.owner.size()), (free_b - std::min(free_b, keep)) / eb));
+        ck(cudaMalloc(&cache.slots, size_t(slots) * eb + gemv::kWeightTailPad), "cudaMalloc expert cache");
+        ck(cudaMemset(cache.slots, 0, size_t(slots) * eb + gemv::kWeightTailPad), "memset expert cache");
+        cache.n_slots = slots;
+        cache.owner.assign(slots, -1);
+        refill_cache();
     }
 
     std::vector<int32_t> pick(const float* lg, int R, int64_t pos0, const GenerateRequest& r) {
@@ -247,13 +280,20 @@ GenerateResult Session::generate(const GenerateRequest& r, const std::function<v
     // up on each batch; checkpoint there, so the same prompt again or one extending it reuses all
     // of it; then the last token alone, for its logits
     const int from = int(m.seq.size());
-    for (int p = from; p < n - 1; p += m.o.prefill_batch) {
-        const int T = std::min(m.o.prefill_batch, n - 1 - p);
+    const bool chunked = n - 1 - from >= m.o.chunk_min;
+    const int step = chunked ? m.o.prefill_chunk : m.o.prefill_batch;
+    if (chunked) {   // experts stream to the GPU; the expert cache's memory is lent to the chunks
+        m.cache_release();
+        m.fwd->set_prefill_lookahead(P.data(), n - 1);
+    }
+    for (int p = from; p < n - 1; p += step) {
+        const int T = std::min(step, n - 1 - p);
         m.fwd->forward(P.data(), T, T, nullptr);
         m.mtp_catchup(P.data(), p, T);
         if (on_progress) on_progress(p + T, n);
         if (cancel.load()) {
             m.seq.assign(P.begin(), P.begin() + p + T);
+            if (chunked) m.cache_restore();
             res.finish = "cancelled";
             res.prompt_ms = ms_since(t0);
             return res;
@@ -262,7 +302,8 @@ GenerateResult Session::generate(const GenerateRequest& r, const std::function<v
     m.seq.assign(P.begin(), P.end() - 1);
     m.fwd->save_checkpoint();
     if (m.mtp) m.mtp->save_checkpoint(m.h_carry);
-    if (!m.cache_filled || n - from >= 4096) m.refill_cache();
+    if (chunked) m.cache_restore();   // refilled from the prefill's routing counts
+    else if (!m.cache_filled || n - from >= 4096) m.refill_cache();
     m.fwd->forward(P.data(), 1, 0, m.logits);
     m.mtp_catchup(P.data(), n - 1, 1);
     m.seq = P;
