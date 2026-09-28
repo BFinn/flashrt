@@ -51,6 +51,7 @@ struct Session::Impl {
     CacheManager* mgr = nullptr;
     bool cache_filled = false;
     std::vector<int32_t> ranked;   // the head's static vocabulary, best first
+    std::vector<float> prior;      // routing counts of a calibration prefill, scaled to 4,096 tokens
 
     std::vector<int32_t> seq;      // the tokens the target has processed: positions 0 .. pos() - 1
     size_t hrow = 0;
@@ -108,6 +109,20 @@ struct Session::Impl {
         pool->set_spin_us(2000);
         fwd->set_graphs(true);
         fwd->set_fast_moe(&cache, &host);
+        if (!o.cache_prior.empty()) {   // fill the cache now, so the first requests do not start cold
+            std::FILE* f = std::fopen(o.cache_prior.c_str(), "rb");
+            if (!f) throw std::runtime_error("cannot open " + o.cache_prior);
+            int64_t h[4] = {0, 0, 0, 0};
+            std::vector<uint32_t> c(size_t(s.n_layer) * s.n_expert);
+            const bool ok = std::fread(h, sizeof(h), 1, f) == 1 && h[0] == 0x50435246 && h[1] == s.n_layer && h[2] == s.n_expert &&
+                            std::fread(c.data(), 4, c.size(), f) == c.size();
+            std::fclose(f);
+            if (!ok || h[3] <= 0) throw std::runtime_error(o.cache_prior + " is not a routing prior for this model");
+            prior.resize(c.size());
+            for (size_t i = 0; i < c.size(); ++i) prior[i] = float(c[i]) * 4096.0f / float(h[3]);
+            refill_cache();
+            std::fprintf(stderr, "flashrt: expert cache filled from %s (%lld tokens)\n", o.cache_prior.c_str(), (long long)h[3]);
+        }
         std::fprintf(stderr, "flashrt: %s, %d layers, expert cache %d slots (%.1f%%), %s\n", s.arch.c_str(), s.n_layer, cache.n_slots,
                      100.0 * cache.n_slots / (s.n_layer * s.n_expert),
                      spec ? ("MTP drafts " + std::to_string(o.spec_k) + " per round").c_str() : "no speculation");
@@ -146,14 +161,16 @@ struct Session::Impl {
         return std::vector<int32_t>(tok_host, tok_host + R);
     }
 
-    // Refills the whole cache from the prefill's routing counts and restarts the adaptive policy.
+    // Refills the whole cache from the prefill's routing counts (plus the prior, worth 4,096
+    // tokens) and restarts the adaptive policy.
     void refill_cache() {
         fwd->set_cache_manager(nullptr);
         destroy_cache_manager(mgr);
         mgr = nullptr;
         std::fill(cache.table.begin(), cache.table.end(), -1);
         std::fill(cache.owner.begin(), cache.owner.end(), -1);
-        std::vector<uint32_t>& cnt = fwd->counts();
+        std::vector<uint32_t> cnt = fwd->counts();
+        for (size_t i = 0; i < cnt.size() && i < prior.size(); ++i) cnt[i] += uint32_t(prior[i] + 0.5f);
         std::vector<int> idx(cnt.size());
         std::iota(idx.begin(), idx.end(), 0);
         std::stable_sort(idx.begin(), idx.end(), [&](int a, int b) { return cnt[a] > cnt[b]; });
@@ -226,12 +243,13 @@ GenerateResult Session::generate(const GenerateRequest& r, const std::function<v
     }
     res.reused = int(m.seq.size());
 
-    // 2. prefill the new prompt tokens (reference path), the head catching up on each batch
+    // 2. prefill every new prompt token but the last in batches (reference path), the head catching
+    // up on each batch; checkpoint there, so the same prompt again or one extending it reuses all
+    // of it; then the last token alone, for its logits
     const int from = int(m.seq.size());
-    for (int p = from; p < n; p += m.o.prefill_batch) {
-        const int T = std::min(m.o.prefill_batch, n - p);
-        const bool last = p + T >= n;
-        m.fwd->forward(P.data(), T, last ? T - 1 : T, last ? m.logits : nullptr);
+    for (int p = from; p < n - 1; p += m.o.prefill_batch) {
+        const int T = std::min(m.o.prefill_batch, n - 1 - p);
+        m.fwd->forward(P.data(), T, T, nullptr);
         m.mtp_catchup(P.data(), p, T);
         if (on_progress) on_progress(p + T, n);
         if (cancel.load()) {
@@ -241,10 +259,14 @@ GenerateResult Session::generate(const GenerateRequest& r, const std::function<v
             return res;
         }
     }
-    m.seq = P;
+    m.seq.assign(P.begin(), P.end() - 1);
     m.fwd->save_checkpoint();
     if (m.mtp) m.mtp->save_checkpoint(m.h_carry);
     if (!m.cache_filled || n - from >= 4096) m.refill_cache();
+    m.fwd->forward(P.data(), 1, 0, m.logits);
+    m.mtp_catchup(P.data(), n - 1, 1);
+    m.seq = P;
+    if (on_progress) on_progress(n, n);
     if (m.mtp) m.set_draft_vocab(P);
     res.prompt_ms = ms_since(t0);
 

@@ -30,6 +30,8 @@
 // prompt's distinct tokens, at most 65536 rows. --draft-pmin P stops a round's drafting at the
 // first draft whose probability under the head is below P (then fewer than K are verified;
 // none if the first is below P).
+// --save-counts FILE writes the prefill's routing counts (use --count-half-life 0 for a whole
+// corpus): a cache prior for flashrt-engine --cache-prior.
 // --temp T [--top-k K] [--top-p P] [--min-p M] [--seed S] samples instead of greedy decoding
 // (defaults 20, 0.95, 0, 1; the draw for a position depends only on the seed and the position).
 // Speculative rounds then sample every verified row and keep drafts while the sample equals the
@@ -72,7 +74,7 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "usage: fr_bench MODEL.gguf --ids PROMPT.txt --n-prompt N --gen G [--slots S] [--reserve-mib R] [--reference]\n");
         return 2;
     }
-    std::string ids_path, trace_path, save_state, load_state, mtp_path, vocab_path;
+    std::string ids_path, trace_path, save_state, load_state, mtp_path, vocab_path, save_counts;
     int draft_k = 4, spec_k = 0, vocab_n = 32768;
     float draft_pmin = 0.0f;
     sample::Params sp;
@@ -124,6 +126,7 @@ int main(int argc, char** argv) {
         else if (a == "--min-p") sp.min_p = float(std::atof(next()));
         else if (a == "--seed") seed = std::strtoull(next(), nullptr, 10);
         else if (a == "--dist-test") dist_test = std::atoi(next());
+        else if (a == "--save-counts") save_counts = next();
         else { std::fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
     }
     std::vector<int32_t> seq;
@@ -232,6 +235,13 @@ int main(int argc, char** argv) {
         }
         const double prefill_s = std::chrono::duration<double>(Clock::now() - tp).count();
         std::printf("prefill: %d tokens in %.1f s (%.1f tok/s, reference path)\n", n_prompt, prefill_s, n_prompt / prefill_s);
+    }
+    if (!save_counts.empty()) {   // the prefill's routing counts, a cache prior for flashrt-engine --cache-prior
+        std::FILE* f = std::fopen(save_counts.c_str(), "wb");
+        const int64_t h[4] = {0x50435246 /* "FRCP" */, s.n_layer, s.n_expert, n_prompt};
+        const bool ok = f && std::fwrite(h, sizeof(h), 1, f) == 1 && std::fwrite(fwd.counts().data(), 4, fwd.counts().size(), f) == fwd.counts().size();
+        if (f) std::fclose(f);
+        std::printf("routing counts: %s %s\n", ok ? "saved to" : "FAILED to save", save_counts.c_str());
     }
     if (mtp && !vocab_path.empty()) {   // the drafter's vocabulary: top ranked tokens plus the prompt's, at most 65536
         std::vector<int32_t> ids;

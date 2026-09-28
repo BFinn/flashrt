@@ -36,6 +36,7 @@ struct SessionOptions {
     int reserve_mib = 1024;           // VRAM left free after the expert cache
     int swap_budget = 8;
     int prefill_batch = 64;
+    std::string cache_prior;          // routing counts of a calibration prefill (fr_bench --save-counts)
 };
 
 struct GenerateRequest {
