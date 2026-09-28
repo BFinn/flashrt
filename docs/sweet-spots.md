@@ -111,7 +111,6 @@ All default to the tuned setting. Setting one to `0` restores the older path for
 |---|---|---|---|
 | `FLASHRT_GDN_CHUNK` | on | chunked GDN on fp16 tensor cores (prefill, 64+ tokens) | sw71 |
 | `FLASHRT_GDN_COL` | on | the column kernel for 16-63 tokens | sw47 |
-| `FLASHRT_GDN_NC` | 32 | state block width (32, 64, 128; 648, 322 experiments) | sw72 |
 | `FLASHRT_ROUTE_WARP` | on | prefill routing a warp per token | sw81 |
 | `FLASHRT_Q3_Q8` | on | Q3_K multiplied as Q8_0 in prefill | sw69 |
 | `FLASHRT_MOE_Q2MMA` | on | own int8 expert kernels on the planar arena | sw55 |

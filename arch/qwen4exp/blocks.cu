@@ -3028,10 +3028,6 @@ void gdn_delta_prefill(const Spec& s, float* S, const float* conv, const float* 
     float* Ut = reinterpret_cast<float*>(Pf + items * C * C);
     float* gcb = Ut + items * C * DK;
     const size_t smem_prep = size_t(3 * C * DK) * 2;   // K, Q (fp16) and A^T (fp32 [C][C] = C * DK halves)
-    static const int nc = [] {   // FLASHRT_GDN_NC: value columns per state block (32, 64, 128)
-        const char* e = std::getenv("FLASHRT_GDN_NC");
-        return e ? std::atoi(e) : 32;
-    }();
     static bool attr = false;
     if (!attr) {
         ck(cudaFuncSetAttribute(k_gdn_chunk_prep<DK>, cudaFuncAttributeMaxDynamicSharedMemorySize, int(smem_prep)), "gdn prep smem");
@@ -3040,11 +3036,9 @@ void gdn_delta_prefill(const Spec& s, float* S, const float* conv, const float* 
     for (int t_base = 0; t_base < T; t_base += kGdnSlab * C) {
         const int n_chunks = std::min(kGdnSlab, (T - t_base + C - 1) / C);
         k_gdn_chunk_prep<DK><<<dim3(n_chunks, H), 256, smem_prep, stream>>>(conv, g, beta, T, t_base, groups, H, ch, Qh, Wf, Kt, Pf, Ut, gcb);
-        if (nc == 128) gdn_state_launch<128, 16, 1>(S, Qh, Wf, Kt, Pf, Ut, gcb, o, T, t_base, n_chunks, H, stream);
-        else if (nc == 64) gdn_state_launch<64, 16, 1>(S, Qh, Wf, Kt, Pf, Ut, gcb, o, T, t_base, n_chunks, H, stream);
-        else if (nc == 648) gdn_state_launch<64, 8, 2>(S, Qh, Wf, Kt, Pf, Ut, gcb, o, T, t_base, n_chunks, H, stream);
-        else if (nc == 322) gdn_state_launch<32, 8, 2>(S, Qh, Wf, Kt, Pf, Ut, gcb, o, T, t_base, n_chunks, H, stream);
-        else gdn_state_launch<32, 8, 3>(S, Qh, Wf, Kt, Pf, Ut, gcb, o, T, t_base, n_chunks, H, stream);
+        // 32 value columns x 8 warps, 3 blocks per SM: the best of the variants swept in sw72
+        // (64 or 128 columns, 2 blocks per SM, slabs of 4 or 16 chunks)
+        gdn_state_launch<32, 8, 3>(S, Qh, Wf, Kt, Pf, Ut, gcb, o, T, t_base, n_chunks, H, stream);
     }
     ck(cudaGetLastError(), "gdn chunked");
 }
