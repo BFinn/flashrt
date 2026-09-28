@@ -3,7 +3,7 @@
 // file (the P1 correctness gate), on the same tokens and chunks.
 //
 //   fr_kld MODEL.gguf BASE.bin [--ctx N] [--chunks K] [--batch B] [--fast] [--reserve-mib R] [--static-cache]
-//          [--pcie-frac F] [--kv q8] [--kv-hot BLOCKS]
+//          [--pcie-frac F] [--kv q8] [--kv-hot BLOCKS] [--window W]
 //
 // The base file holds: the magic "_logits_", int32 ctx, int32 n_vocab, int32 n_chunk, the
 // tokens of all chunks (n_chunk * ctx int32), then for every chunk the scored positions ctx/2 .. ctx-2, each as a float scale and a
@@ -15,6 +15,11 @@
 // batches (reference path), and the scored half runs one token at a time on the fast path
 // (VRAM expert cache filled from chunk 0's prefill routing counts, GPU routing, doorbells),
 // fed the chunk's own tokens. The cache adapts during decode unless --static-cache.
+//
+// --window W (with --fast) scores speculative verify windows instead: each step runs W tokens
+// in one window, of which only the first j (random, 1..W) are the chunk's and the rest random
+// tokens (rejected drafts), scores the j real rows and commits them, so every rewind path
+// (GDN state, conv and PLE histories, the KV caches and indexer ring) is exercised.
 #include "arch/qwen4exp/experts.hpp"
 #include "arch/qwen4exp/forward_ref.hpp"
 #include "arch/qwen4exp/gpu_weights.hpp"
@@ -32,6 +37,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <numeric>
+#include <random>
 #include <stdexcept>
 #include <vector>
 
@@ -48,7 +54,7 @@ int main(int argc, char** argv) {
     bool fast = false, adaptive = true;
     float pcie_frac = 0.0f;
     bool kv_q8 = false;
-    int kv_hot = 0;
+    int kv_hot = 0, window = 0;
     for (int i = 3; i < argc; ++i) {
         auto next = [&]() -> const char* { return i + 1 < argc ? argv[++i] : "0"; };
         if (!std::strcmp(argv[i], "--ctx")) ctx = std::atoi(next());
@@ -60,6 +66,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--pcie-frac")) pcie_frac = float(std::atof(next()));
         else if (!std::strcmp(argv[i], "--kv")) kv_q8 = !std::strcmp(next(), "q8");
         else if (!std::strcmp(argv[i], "--kv-hot")) kv_hot = std::atoi(next());
+        else if (!std::strcmp(argv[i], "--window")) window = std::atoi(next());
         else { std::fprintf(stderr, "unknown argument %s\n", argv[i]); return 2; }
     }
 
@@ -92,7 +99,9 @@ int main(int argc, char** argv) {
     load_experts(g, s, arena, 12);
     const std::vector<int> cpus = physical_cpus();
     CpuPool pool(8, cpus);
+    if (window > 0 && (!fast || window > 8 || window > batch)) { std::fprintf(stderr, "--window needs --fast and 1..8\n"); return 2; }
     ForwardRef fwd(g, s, w, arena, pool, ctx + 8, batch, kv_q8 || kv_hot > 0, kv_hot);
+    if (window > 0) fwd.enable_windows(window);
     std::printf("KV cache: %s, hot set %d blocks per layer\n", kv_q8 || kv_hot > 0 ? "q8_0" : "fp16", kv_hot);
 
     float* logits_dev = nullptr;
@@ -106,6 +115,8 @@ int main(int argc, char** argv) {
     ExpertCache cache;
     MoeFastHost host;
     CacheManager* mgr = nullptr;
+    std::mt19937 rng(1234);
+    long window_steps = 0, window_rewinds = 0;
 
     for (int ch = 0; ch < chunks; ++ch) {
         const int32_t* seq = tokens.data() + size_t(ch) * ctx;
@@ -113,10 +124,18 @@ int main(int argc, char** argv) {
         // steps (p0, T): batches, or in --fast mode batches up to `first` and then single tokens
         std::vector<std::pair<int, int>> steps;
         for (int p0 = 0; p0 < (fast ? first : ctx); p0 += batch) steps.push_back({p0, std::min(batch, (fast ? first : ctx) - p0)});
-        if (fast)
+        if (fast && window == 0)
             for (int p0 = first; p0 < ctx - 1; ++p0) steps.push_back({p0, 1});
+        if (fast && window > 0)   // windows: (p0, -j), j real tokens, the step's length is `window`
+            for (int p0 = first; p0 < ctx - 1;) {
+                const int j = std::min<int>(1 + int(rng() % unsigned(window)), ctx - 1 - p0);
+                steps.push_back({p0, -j});
+                p0 += j;
+            }
+        std::vector<int32_t> seqw;
         for (size_t si = 0; si < steps.size(); ++si) {
-            const int p0 = steps[si].first, T = steps[si].second;
+            const int p0 = steps[si].first, j_real = steps[si].second < 0 ? -steps[si].second : 0;
+            const int T = j_real ? j_real : steps[si].second;
             if (fast && p0 == first && !host.doorbell) {   // chunk 0's prefill is done: fill the cache, start the fast path
                 size_t free_b = 0, total_b = 0;
                 cudaMemGetInfo(&free_b, &total_b);
@@ -130,7 +149,7 @@ int main(int argc, char** argv) {
                 for (int i : idx) order.push_back({i / s.n_expert, i % s.n_expert});
                 cache = alloc_expert_cache(s, slots);
                 expert_cache_fill(s, cache, arena, order, fwd.stream());
-                host = alloc_moe_fast_host(s);
+                host = alloc_moe_fast_host(s, std::max(1, window));
                 host.arena = &arena;
                 host.pool = &pool;
                 start_doorbell(s, host, cpus[0]);
@@ -148,7 +167,16 @@ int main(int argc, char** argv) {
             // rows whose logits are scored: positions first .. ctx-2
             const int lo = std::max(first, p0), hi = std::min(ctx - 2, p0 + T - 1);
             const int out_from = lo <= hi ? lo - p0 : T;
-            fwd.forward(seq, T, out_from, lo <= hi ? logits_dev : nullptr);
+            if (j_real) {   // a window of `window` tokens: j_real real ones, then random ones
+                seqw.assign(seq, seq + p0 + j_real);
+                for (int k = j_real; k < window; ++k) seqw.push_back(int32_t(rng() % unsigned(n_vocab)));
+                fwd.forward_window(seqw.data(), window, logits_dev);
+                fwd.commit(j_real);
+                ++window_steps;
+                window_rewinds += j_real < window;
+            } else {
+                fwd.forward(seq, T, out_from, lo <= hi ? logits_dev : nullptr);
+            }
             if (lo > hi) continue;
             const int R = T - out_from;
             cudaMemcpy(logits.data(), logits_dev, size_t(R) * n_vocab * 4, cudaMemcpyDeviceToHost);
@@ -184,7 +212,7 @@ int main(int argc, char** argv) {
                 same_top += imax == imax_b;
                 ++count;
             }
-            if ((fast && T == 1) ? ((p0 + 1) % 1024 == 0 || p0 + 2 >= ctx) : ((p0 / batch) % 16 == 15 || p0 + T >= ctx)) {
+            if ((fast && (T == 1 || j_real)) ? ((p0 + T) / 1024 != p0 / 1024 || p0 + T + 1 >= ctx) : ((p0 / batch) % 16 == 15 || p0 + T >= ctx)) {
                 const double el = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
                 double m = 0;
                 for (double k : klds) m += k;
@@ -212,6 +240,7 @@ int main(int argc, char** argv) {
                     std::max(1L, host.hits + host.misses + host.gpu_misses), host.gpu_misses);
         if (mgr) std::printf(", %ld swaps", cache_manager_stats(mgr).swaps);
         std::printf("\n");
+        if (window > 0) std::printf("  windows of %d: %ld steps, %ld rewound\n", window, window_steps, window_rewinds);
         fwd.set_cache_manager(nullptr);
         destroy_cache_manager(mgr);
         free_moe_fast_host(host);
