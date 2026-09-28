@@ -227,6 +227,7 @@ int main(int argc, char** argv) {
         std::printf("state: loaded %s (%d positions) in %.1f s\n", load_state.c_str(), n_prompt - 1,
                     std::chrono::duration<double>(Clock::now() - tp).count());
     } else {
+        fwd.set_prefill_lookahead(seq.data(), n_prompt);
         for (int p = 0; p < n_prompt; p += chunk) {
             const int T = std::min(chunk, n_prompt - p);
             const bool last = p + T >= n_prompt;

@@ -15,6 +15,7 @@
 #include <cuda_runtime.h>
 
 #include <cstdint>
+#include <future>
 #include <memory>
 #include <string>
 #include <vector>
@@ -48,6 +49,12 @@ public:
     void forward(const int32_t* seq, int T, int out_from, float* logits_dev);
     void release_chunk_buffers();
     size_t chunk_buffer_bytes() const;
+    // The whole prompt a run of chunks comes from (valid until the prefill ends, or nullptr):
+    // while a chunk computes, the next chunk's n-gram rows are read from the SSD.
+    void set_prefill_lookahead(const int32_t* seq, int n) {
+        look_seq_ = seq;
+        look_n_ = n;
+    }
 
     // Decode (T == 1) uses the fast MoE path with this cache when set; batches keep the reference
     // path. Routing counts of the reference path accumulate into counts() (for a cache fill).
@@ -137,6 +144,12 @@ private:
     ExpertStream* estream_ = nullptr;
     uint32_t* counts_dev_ = nullptr;   // routing counts of chunks, [n_layer][n_expert]
     bool in_chunk_ = false;
+    // PLE lookahead: the next chunk's rows, read on another thread into their own pinned buffer
+    const int32_t* look_seq_ = nullptr;
+    int look_n_ = 0;
+    PleHost ple_next_;
+    std::future<void> ple_next_rows_;
+    int ple_next_pos_ = -1, ple_next_T_ = 0;
     cudaStream_t stream_ = nullptr;
     std::vector<GdnState> gdn_;
     std::vector<QsaCache> kv_;

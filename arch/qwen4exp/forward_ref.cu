@@ -29,9 +29,11 @@ ForwardRef::ForwardRef(const Gguf& g, const Spec& s, const GpuWeights& w, const 
                        int max_ctx, int max_batch, bool kv_q8, int kv_hot_blocks)
     : s_(s), w_(w), max_batch_(max_batch) {
     ple_ = parse_ple(g);
-    reader_ = std::make_unique<RowReader>(g.shards[ple_.table_shard], ple_.table_offset, ple_.row_bytes, 16);
+    reader_ = std::make_unique<RowReader>(g.shards[ple_.table_shard], ple_.table_offset, ple_.row_bytes, 64);
     ple_host_.ple = &ple_;
     ple_host_.reader = reader_.get();
+    ple_next_.ple = &ple_;
+    ple_next_.reader = reader_.get();
     moe_host_.arena = &arena;
     moe_host_.pool = &pool;
     counts_.assign(size_t(s.n_layer) * s.n_expert, 0);
@@ -60,8 +62,10 @@ ForwardRef::~ForwardRef() {
     if (ckpt_) cudaFree(ckpt_);
     free_bufs(dec_);
     release_chunk_buffers();
+    if (ple_next_rows_.valid()) ple_next_rows_.wait();
     if (ple_host_.raw_dev) cudaFree(ple_host_.raw_dev);
     if (ple_host_.raw_pinned) cudaFreeHost(ple_host_.raw_pinned);
+    if (ple_next_.raw_pinned) cudaFreeHost(ple_next_.raw_pinned);
     drop_graphs();
     cudaFree(argmax_dev_);
     cudaFree(params_dev_);
@@ -366,6 +370,10 @@ void ForwardRef::use_bufs(Bufs& b) {
 }
 
 void ForwardRef::release_chunk_buffers() {
+    if (ple_next_rows_.valid()) ple_next_rows_.wait();
+    ple_next_pos_ = -1;
+    look_seq_ = nullptr;
+    look_n_ = 0;
     if (x_ == chunk_.x) use_bufs(dec_);
     free_bufs(chunk_);
     destroy_expert_stream(estream_);
@@ -408,7 +416,18 @@ void ForwardRef::forward(const int32_t* seq, int T, int out_from, float* logits_
     // the PLE rows come from the SSD: read them on another thread while the embedding and the
     // layers before the first PLE layer run
     std::future<void> ple_rows;
-    if (!s.ple_layers.empty()) ple_rows = std::async(std::launch::async, [&] {
+    if (ple_next_rows_.valid()) {   // a lookahead read: use it if it is this chunk's, else let it finish
+        ple_next_rows_.get();
+        if (ple_next_pos_ == pos_ && ple_next_T_ == T) {
+            std::swap(ple_host_.raw_pinned, ple_next_.raw_pinned);
+            std::swap(ple_host_.raw_pinned_bytes, ple_next_.raw_pinned_bytes);
+        } else {
+            ple_next_pos_ = -1;
+        }
+    }
+    const bool have_rows = !s.ple_layers.empty() && ple_next_pos_ == pos_ && ple_next_T_ == T;
+    ple_next_pos_ = -1;
+    if (!s.ple_layers.empty() && !have_rows) ple_rows = std::async(std::launch::async, [&] {
             unpin_current_thread();
             ple_fetch(ple_host_, seq, pos_, T);
         });
@@ -458,6 +477,17 @@ void ForwardRef::forward(const int32_t* seq, int T, int out_from, float* logits_
         enqueue_pre(c, seq, T);
         if (ple_rows.valid()) ple_rows.get();
         enqueue_post(c, T, out_from, logits_dev);
+        // the next chunk's n-gram rows, while this one computes
+        const int next = pos_ + T, nT = std::min(T, look_n_ - next);
+        if (in_chunk_ && look_seq_ && !s.ple_layers.empty() && nT > max_batch_) {
+            ple_next_pos_ = next;
+            ple_next_T_ = nT;
+            const int32_t* ls = look_seq_;
+            ple_next_rows_ = std::async(std::launch::async, [this, ls, next, nT] {
+                unpin_current_thread();
+                ple_fetch(ple_next_, ls, next, nT);
+            });
+        }
     }
     // the adaptive cache learns from the previous step while this one runs on the GPU
     if (fast && cache_mgr_ && have_access_) cache_manager_step(cache_mgr_, *fast_host_, stream_);
