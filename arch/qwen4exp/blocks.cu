@@ -940,8 +940,8 @@ __global__ void __launch_bounds__(256, 2) k_gdn_chunk_prep(const float* conv, co
 //   2. W warps: U = U~ - X -> fp16 U in shared memory;
 //   3. all: S0 = gamma_C S0 + K^ U (fp32, in registers); Q^ warps: O = X + P U;
 //   4. the fp16 copy of S0 for the next chunk.
-template <int DK, int NC, int NW>
-__global__ void __launch_bounds__(32 * NW) k_gdn_chunk_state(float* S, const __half* Qh, const __half* Wf, const __half* Kt,
+template <int DK, int NC, int NW, int MINB>
+__global__ void __launch_bounds__(32 * NW, MINB) k_gdn_chunk_state(float* S, const __half* Qh, const __half* Wf, const __half* Kt,
                                                             const __half* Pf, const float* Ut, const float* gcb, float* o, int T, int t_base,
                                                             int n_chunks, int v_heads) {
     constexpr int C = kGdnChunk, NTW = NC / NW, SP = NC + 8;   // n-tiles per warp; padded row of the fp16 copies
@@ -2440,17 +2440,17 @@ size_t gdn_chunk_ws_bytes(const Spec& s) {
 }
 
 namespace {
-template <int NC, int NW>
+template <int NC, int NW, int MINB>
 void gdn_state_launch(float* S, const __half* Qh, const __half* Wf, const __half* Kt, const __half* Pf, const float* Ut, const float* gcb,
                       float* o, int T, int t_base, int n_chunks, int H, cudaStream_t stream) {
     constexpr int DK = 128;
     const size_t smem = size_t(DK + kGdnChunk) * (NC + 8) * 2;
     static bool attr = false;
     if (!attr) {
-        ck(cudaFuncSetAttribute(k_gdn_chunk_state<DK, NC, NW>, cudaFuncAttributeMaxDynamicSharedMemorySize, int(smem)), "gdn state smem");
+        ck(cudaFuncSetAttribute(k_gdn_chunk_state<DK, NC, NW, MINB>, cudaFuncAttributeMaxDynamicSharedMemorySize, int(smem)), "gdn state smem");
         attr = true;
     }
-    k_gdn_chunk_state<DK, NC, NW><<<dim3(H, DK / NC), 32 * NW, smem, stream>>>(S, Qh, Wf, Kt, Pf, Ut, gcb, o, T, t_base, n_chunks, H);
+    k_gdn_chunk_state<DK, NC, NW, MINB><<<dim3(H, DK / NC), 32 * NW, smem, stream>>>(S, Qh, Wf, Kt, Pf, Ut, gcb, o, T, t_base, n_chunks, H);
 }
 }  // namespace
 
@@ -2485,9 +2485,11 @@ void gdn_delta_prefill(const Spec& s, float* S, const float* conv, const float* 
     for (int t_base = 0; t_base < T; t_base += kGdnSlab * C) {
         const int n_chunks = std::min(kGdnSlab, (T - t_base + C - 1) / C);
         k_gdn_chunk_prep<DK><<<dim3(n_chunks, H), 256, smem_prep, stream>>>(conv, g, beta, T, t_base, groups, H, ch, Qh, Wf, Kt, Pf, Ut, gcb);
-        if (nc == 128) gdn_state_launch<128, 16>(S, Qh, Wf, Kt, Pf, Ut, gcb, o, T, t_base, n_chunks, H, stream);
-        else if (nc == 64) gdn_state_launch<64, 16>(S, Qh, Wf, Kt, Pf, Ut, gcb, o, T, t_base, n_chunks, H, stream);
-        else gdn_state_launch<32, 8>(S, Qh, Wf, Kt, Pf, Ut, gcb, o, T, t_base, n_chunks, H, stream);
+        if (nc == 128) gdn_state_launch<128, 16, 1>(S, Qh, Wf, Kt, Pf, Ut, gcb, o, T, t_base, n_chunks, H, stream);
+        else if (nc == 64) gdn_state_launch<64, 16, 1>(S, Qh, Wf, Kt, Pf, Ut, gcb, o, T, t_base, n_chunks, H, stream);
+        else if (nc == 648) gdn_state_launch<64, 8, 2>(S, Qh, Wf, Kt, Pf, Ut, gcb, o, T, t_base, n_chunks, H, stream);
+        else if (nc == 322) gdn_state_launch<32, 8, 2>(S, Qh, Wf, Kt, Pf, Ut, gcb, o, T, t_base, n_chunks, H, stream);
+        else gdn_state_launch<32, 8, 3>(S, Qh, Wf, Kt, Pf, Ut, gcb, o, T, t_base, n_chunks, H, stream);
     }
     ck(cudaGetLastError(), "gdn chunked");
 }
