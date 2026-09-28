@@ -193,7 +193,7 @@ struct Stage {
 // scales are constant over a weight block, so the two k-steps accumulate in int32 and each
 // element takes one conversion and one scaled add per block; with AB == 32, two.
 template <int NMAT, int AB>
-__global__ void __launch_bounds__(kThreads) k_moe_q2(const uint8_t* experts, size_t stride, size_t off0, size_t off1, int rows, int kdim,
+__global__ void __launch_bounds__(kThreads, NMAT == 1 ? 2 : 1) k_moe_q2(const uint8_t* experts, size_t stride, size_t off0, size_t off1, int rows, int kdim,
                                                      const int8_t* aq, const float* ad, const int32_t* am, const int32_t* a_row,
                                                      const int32_t* bounds, const int2* tiles, const int* n_tiles, int8_t* hq, float* hd,
                                                      int32_t* hm, float* y, const int32_t* slot_of) {
