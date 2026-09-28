@@ -44,6 +44,8 @@ struct BlockScratch {
     size_t gemm_ws_bytes = 0;
     void* q3k_tmp = nullptr;
     size_t q3k_tmp_bytes = 0;
+    void* q8_tmp = nullptr;   // a Q3_K matrix as Q8_0 (lossless), for the faster Q8_0 MMQ
+    size_t q8_tmp_bytes = 0;
     // Q8P hc down and up of one mix, dequantized to BF16 for hc_mix outside the fused decode
     // kernels (allocated with the scratch: a window may take that path inside a graph)
     void* hc_bf16 = nullptr;

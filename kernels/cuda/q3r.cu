@@ -229,6 +229,40 @@ void repack(const void* q3k, void* q3r, int64_t rows, int64_t K, cudaStream_t st
     ck(cudaGetLastError(), "repack");
 }
 
+namespace {
+// One thread per Q8_0 output byte position: superblock sb (110 bytes: hmask[32], qs[64], scales[12],
+// d) element y (0..255), in ggml's dequantize_row_q3_K order: half n, pair j, sub-block sub, l.
+__global__ void k_q3k_to_q8_0(const uint8_t* src, uint8_t* dst, int64_t n_super) {
+    const int64_t gid = int64_t(blockIdx.x) * blockDim.x + threadIdx.x;
+    const int64_t sb = gid >> 8;
+    if (sb >= n_super) return;
+    const int y = int(gid & 255);
+    const uint8_t* b = src + sb * 110;
+    const int n = y >> 7, j = (y >> 5) & 3, sub = (y >> 4) & 1, l = y & 15;
+    const int q = (b[32 + n * 32 + sub * 16 + l] >> (2 * j)) & 3;
+    const int hb = (b[sub * 16 + l] >> (n * 4 + j)) & 1;
+    const int is = n * 8 + j * 2 + sub;   // 6-bit scale index
+    const uint8_t* s = b + 96;
+    const int lo = is < 8 ? (s[is] & 0xF) : (s[is - 8] >> 4);
+    const int hi = (s[8 + (is & 3)] >> (2 * (is >> 2))) & 3;
+    const int sc = (lo | (hi << 4)) - 32;
+    const int v = -((q - (hb ? 0 : 4)) * sc);
+    uint8_t* blk = dst + (sb * 8 + (y >> 5)) * 34;
+    blk[2 + (y & 31)] = uint8_t(int8_t(v));
+    if ((y & 31) == 0) {   // d = -d_super (fp16 sign flip)
+        blk[0] = b[108];
+        blk[1] = uint8_t(b[109] ^ 0x80);
+    }
+}
+}  // namespace
+
+void q3k_to_q8_0(const void* q3k, void* q8, int64_t rows, int64_t K, cudaStream_t stream) {
+    if (K % kQK) throw std::runtime_error("q3r::q3k_to_q8_0: K must be a multiple of 256");
+    const int64_t n_super = rows * (K / 256);
+    k_q3k_to_q8_0<<<unsigned((n_super * 256 + 255) / 256), 256, 0, stream>>>(static_cast<const uint8_t*>(q3k), static_cast<uint8_t*>(q8), n_super);
+    ck(cudaGetLastError(), "q3k_to_q8_0");
+}
+
 void matvec(const void* q3r, const float* x, float* y, int64_t rows, int64_t K, int T, cudaStream_t stream) {
     if (K % kQK || K > 8192 || T < 1) throw std::runtime_error("q3r::matvec: unsupported shape");
     const int nb = int(K / 64), ts = T < kTok ? T : kTok;   // tokens per pass

@@ -790,6 +790,7 @@ void free_block_scratch(BlockScratch& b) {
     if (b.attn_part) cudaFree(b.attn_part);
     if (b.gemm_ws) cudaFree(b.gemm_ws);
     if (b.q3k_tmp) cudaFree(b.q3k_tmp);
+    if (b.q8_tmp) cudaFree(b.q8_tmp);
     if (b.hc_bf16) cudaFree(b.hc_bf16);
     if (b.tok_dev) cudaFree(b.tok_dev);
     b = BlockScratch{};
@@ -797,7 +798,7 @@ void free_block_scratch(BlockScratch& b) {
 
 void linear(const BlockCtx& c, const GpuTensor& W, const float* x, float* y, int T) {
     const int64_t cols = W.cols(), rows = W.rows();
-    const uint32_t mm_type = W.type == kTypeQ3R ? 11u /* Q3_K */ : W.type;
+    uint32_t mm_type = W.type == kTypeQ3R ? 11u /* Q3_K */ : W.type;
     if (T >= kGemmMinTokens && gemm::supported(mm_type)) {
         BlockScratch& bs = c.scratch;
         const void* Wp = W.dev;
@@ -811,6 +812,23 @@ void linear(const BlockCtx& c, const GpuTensor& W, const float* x, float* y, int
             }
             q3r::unpack(W.dev, bs.q3k_tmp, rows, cols, c.stream);
             Wp = bs.q3k_tmp;
+        }
+        // Q3_K -> Q8_0 (exact; ggml's Q8_0 MMQ is about 1.37x faster than its Q3_K; FLASHRT_Q3_Q8=0: off)
+        static const bool q3_q8 = [] {
+            const char* e = std::getenv("FLASHRT_Q3_Q8");
+            return !(e && e[0] == '0');
+        }();
+        if (mm_type == 11u && q3_q8 && cols % 256 == 0) {
+            const size_t need = size_t(rows) * (cols / 32) * 34 + gemv::kWeightTailPad;
+            if (bs.q8_tmp_bytes < need) {
+                if (bs.q8_tmp) cudaFree(bs.q8_tmp);
+                ck(cudaMalloc(&bs.q8_tmp, need), "cudaMalloc q8_0 copy");
+                ck(cudaMemset(bs.q8_tmp, 0, need), "memset q8_0 copy");
+                bs.q8_tmp_bytes = need;
+            }
+            q3r::q3k_to_q8_0(Wp, bs.q8_tmp, rows, cols, c.stream);
+            Wp = bs.q8_tmp;
+            mm_type = 8u;   // Q8_0
         }
         const size_t ws = gemm::workspace_bytes(cols, T);
         if (bs.gemm_ws_bytes < ws) {

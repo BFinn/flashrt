@@ -30,6 +30,12 @@ void repack(const void* q3k, void* q3r, int64_t rows, int64_t K, cudaStream_t st
 // GPU (prefill runs ggml's Q3_K matrix-matrix kernel on the result).
 void unpack(const void* q3r, void* q3k, int64_t rows, int64_t K, cudaStream_t stream);
 
+// ggml Q3_K rows -> ggml Q8_0 rows, exactly: a Q3_K weight is d * sc * (q - 4) with sc in -32..31
+// and q - 4 in -4..3, so -(q - 4) * sc lies in -128..124 and Q8_0 holds it with scale -d (the
+// product itself reaches +128). Prefill multiplies Q8_0 about 1.37x faster than Q3_K (ggml MMQ,
+// tools/bench_mmq). q8 must hold rows * K / 32 * 34 bytes.
+void q3k_to_q8_0(const void* q3k, void* q8, int64_t rows, int64_t K, cudaStream_t stream);
+
 // y[T][rows] = W x[T][K]. K <= 8192.
 void matvec(const void* q3r, const float* x, float* y, int64_t rows, int64_t K, int T, cudaStream_t stream);
 

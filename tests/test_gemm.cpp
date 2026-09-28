@@ -6,7 +6,8 @@
 // whose fp16 block sums carry the offset term: about 1.5e-2 on these random activations
 // (tolerance 3e-2); the KLD gate judges the effect on real activations. Also: gemm::moe on a real Q2_0 expert
 // tensor against gemv::moe_q (96 tokens over 24 experts, and 1,200 over all of them: several
-// blocks of the token grouping), and Q3R -> Q3_K (q3r::unpack) byte-exact against the original.
+// blocks of the token grouping), Q3R -> Q3_K (q3r::unpack) byte-exact against the original, and
+// Q3_K -> Q8_0 (q3r::q3k_to_q8_0) value-exact, its product matching Q3_K's.
 //
 //   test_gemm MODEL.gguf
 #include "core/gguf.hpp"
@@ -120,6 +121,34 @@ int main(int argc, char** argv) {
             const bool same = o == p;
             fail += !same;
             std::printf("q3r round trip %s: %s\n", t->name.c_str(), same ? "identical, ok" : "DIFFERENT, FAIL");
+            // Q3_K -> Q8_0 must give the same values, and the Q8_0 product must match the Q3_K one
+            void* q8;
+            float *d1, *d2;
+            const size_t ne = size_t(R) * K;
+            CK(cudaMalloc(&q8, ne / 32 * 34 + gemv::kWeightTailPad));
+            CK(cudaMemset(q8, 0, ne / 32 * 34 + gemv::kWeightTailPad));
+            CK(cudaMalloc(&d1, ne * 4));
+            CK(cudaMalloc(&d2, ne * 4));
+            q3r::q3k_to_q8_0(W, q8, R, K, nullptr);
+            gemv::dequantize(11, W, d1, int64_t(ne), nullptr);
+            gemv::dequantize(8, q8, d2, int64_t(ne), nullptr);
+            std::vector<float> v1(ne), v2(ne);
+            CK(cudaMemcpy(v1.data(), d1, ne * 4, cudaMemcpyDeviceToHost));
+            CK(cudaMemcpy(v2.data(), d2, ne * 4, cudaMemcpyDeviceToHost));
+            size_t diff = 0;
+            for (size_t i = 0; i < ne; ++i) diff += v1[i] != v2[i];
+            gemm::gemm(8, q8, dx, y1, K, R, T, ws, ws_bytes, nullptr);
+            CK(cudaDeviceSynchronize());
+            std::vector<float> c8(size_t(T) * R);
+            CK(cudaMemcpy(c8.data(), y1, c8.size() * 4, cudaMemcpyDeviceToHost));
+            const double e8 = rel(c8, b);
+            const bool ok8 = diff == 0 && e8 < 1e-3;
+            fail += !ok8;
+            std::printf("q3_k -> q8_0 %s: %zu of %zu values differ, product against Q3_K %.2e %s\n", t->name.c_str(), diff, ne, e8,
+                        ok8 ? "ok" : "FAIL");
+            cudaFree(q8);
+            cudaFree(d1);
+            cudaFree(d2);
             cudaFree(r);
             cudaFree(back);
         }
