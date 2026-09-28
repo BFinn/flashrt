@@ -387,7 +387,7 @@ __global__ void __launch_bounds__(32 * kHcDownWarps) k_hc_down2(const float* x, 
 // per row, each lane 16-byte loads of 8 weights, each weight used for all tokens. Needs rank % 64
 // == 0 and TT * rank <= 4096. lo comes as k_hc_down's partials [TT][HC][rank + n_inject]; block 0
 // also sums the inject rows.
-template <int TT, typename WU>
+template <int TT, typename WU, bool PF = false>
 __global__ void k_hc_up_mix(WU W, const float* part, int n_inject, float scale, const float* xn, float* mixed,
                             float* inject, int n, int rank) {
     constexpr int HC = 4, MAXC = 8;   // rank <= 64 * MAXC
@@ -399,10 +399,13 @@ __global__ void k_hc_up_mix(WU W, const float* part, int n_inject, float scale, 
     // this lane's weights first (independent of the partials), then the preamble
     typename WU::Raw raw[MAXC];
     const size_t e0 = (size_t(st) * n + i) * rank;
-    if (i < n)
+    auto load_all = [&] {
+        if (i < n)
 #pragma unroll
-        for (int k = 0; k < MAXC; ++k)
-            if (l8 + 8 * k < rank / 8) raw[k] = W.load(e0 + 8 * size_t(l8 + 8 * k));
+            for (int k = 0; k < MAXC; ++k)
+                if (l8 + 8 * k < rank / 8) raw[k] = W.load(e0 + 8 * size_t(l8 + 8 * k));
+    };
+    if (PF) load_all();
     for (int t = 0; t < TT; ++t)
         for (int j = threadIdx.x; j < rank; j += blockDim.x) {
             float lo = 0.0f;
@@ -419,6 +422,7 @@ __global__ void k_hc_up_mix(WU W, const float* part, int n_inject, float scale, 
         inject[t * n_inject + k] = a;
     }
     __syncthreads();
+    if (!PF) load_all();
     float acc[TT];
 #pragma unroll
     for (int t = 0; t < TT; ++t) acc[t] = 0.0f;
@@ -485,7 +489,12 @@ void hc_fused_launch(const float* x, const float* w_norm, WD Wd, const uint16_t*
         k_hc_down2<TT, WD><<<dim3((rows + per - 1) / per, hc), 32 * kHcDownWarps, smem, st>>>(x, w_norm, Wd, Wi, xn, part, n, rank, n_inj, eps);
     } else
         k_hc_down<TT, WD><<<dim3((rows + 15) / 16, hc), 512, smem, st>>>(x, w_norm, Wd, Wi, xn, part, n, rank, n_inj, eps);
-    k_hc_up_mix<TT, WU><<<(n + 7) / 8, 256, 0, st>>>(Wu, part, n_inj, 1.0f / hc, xn, mixed, inject, n, rank);
+    static const bool up_pf = [] {   // experiment: the up weights loaded before the preamble
+        const char* e = std::getenv("FLASHRT_HC_UP_PF");
+        return e && e[0] == '1';
+    }();
+    if (up_pf) k_hc_up_mix<TT, WU, true><<<(n + 7) / 8, 256, 0, st>>>(Wu, part, n_inj, 1.0f / hc, xn, mixed, inject, n, rank);
+    else k_hc_up_mix<TT, WU><<<(n + 7) / 8, 256, 0, st>>>(Wu, part, n_inj, 1.0f / hc, xn, mixed, inject, n, rank);
 }
 
 // Q8P (kTypeQ8P) -> BF16, for the hc paths that multiply BF16 (one thread per element)
