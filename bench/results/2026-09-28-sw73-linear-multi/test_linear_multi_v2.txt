@@ -1,0 +1,16 @@
+router + shexp gate  T 1: error 1.4e-07 ok; fused 6.19 us, separate 6.30 us
+router + shexp gate  T 2: error 1.4e-07 ok; fused 6.14 us, separate 7.18 us
+router + shexp gate  T 3: error 1.4e-07 ok; fused 6.18 us, separate 7.39 us
+router + shexp gate  T 4: error 1.4e-07 ok; fused 6.17 us, separate 10.27 us
+router + shexp gate  T 8: error 1.4e-07 ok; fused 8.21 us, separate 12.95 us
+alpha + beta         T 1: error 1.4e-07 ok; fused 4.13 us, separate 4.08 us
+alpha + beta         T 2: error 1.5e-07 ok; fused 4.11 us, separate 4.44 us
+alpha + beta         T 3: error 1.4e-07 ok; fused 4.12 us, separate 4.75 us
+alpha + beta         T 4: error 1.4e-07 ok; fused 4.20 us, separate 6.78 us
+alpha + beta         T 8: error 1.4e-07 ok; fused 6.18 us, separate 7.89 us
+indexer q + k        T 1: error 1.3e-07 ok; fused 6.18 us, separate 6.90 us
+indexer q + k        T 2: error 1.3e-07 ok; fused 6.18 us, separate 7.63 us
+indexer q + k        T 3: error 1.3e-07 ok; fused 6.18 us, separate 7.91 us
+indexer q + k        T 4: error 1.4e-07 ok; fused 6.17 us, separate 10.47 us
+indexer q + k        T 8: error 1.4e-07 ok; fused 8.20 us, separate 13.67 us
+all passed
