@@ -40,6 +40,8 @@ void gemm_bf16_out(const void* W, const float* x, void* y_bf16, int64_t ncols, i
 // Where in a workspace (of at least workspace_bytes(ncols, T)) T x ncols BF16 activations fit:
 // the region gemm() itself converts into, so it is overwritten by the next gemm()/moe call.
 void* bf16_staging(void* ws, size_t ws_bytes, int64_t ncols, int64_t T);
+// x (n floats) -> BF16 (round to nearest), for gemm_bf16's input
+void to_bf16(const float* x, void* y_bf16, size_t n, cudaStream_t stream);
 
 // Grouped expert products in two steps, so several weight tensors share one routing: prepare()
 // groups the tokens by expert and quantizes the activations (it waits for the stream once, to

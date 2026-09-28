@@ -268,6 +268,11 @@ void gemm_bf16_out(const void* W, const float* x, void* y_bf16, int64_t ncols, i
 
 void* bf16_staging(void* ws, size_t ws_bytes, int64_t ncols, int64_t T) { return carve(ws, ws_bytes, ncols, T, true).act; }
 
+void to_bf16(const float* x, void* y_bf16, size_t n, cudaStream_t stream) {
+    k_to_bf16<<<unsigned((n + 255) / 256), 256, 0, stream>>>(x, static_cast<__nv_bfloat16*>(y_bf16), n);
+    ck(cudaGetLastError(), "to_bf16");
+}
+
 MoePlan moe_prepare(uint32_t t, int E, const float* x, bool x_per_slot, const int32_t* ids, int64_t T, int K, int64_t ncols, void* ws,
                     size_t ws_bytes, cudaStream_t stream) {
     const TypeInfo ti = info(t);

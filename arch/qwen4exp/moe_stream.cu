@@ -235,6 +235,15 @@ void expert_stream_prefetch(ExpertStream* es, int il) {
     es->planar_layer[b] = il;
 }
 
+namespace {
+// the router logits and the shared expert's gate logit: one BF16 conversion of x for both
+void route_and_gate(const BlockCtx& c, int il, const float* x, ExpertStream& es, int T) {
+    const GpuTensor* ws[2] = {&c.w.layer(il, "ffn_gate_inp.weight"), &c.w.layer(il, "ffn_gate_inp_shexp.weight")};
+    float* ys[2] = {es.logits, es.gate};
+    linear_shared(c, ws, ys, 2, x, T);
+}
+}  // namespace
+
 void moe_block_stream(const BlockCtx& c, int il, const float* x, int T, ExpertStream& es, float* out, uint32_t* counts) {
     const Spec& s = c.s;
     const int E = s.n_expert, K = s.top_k, n = s.d_model, ff = s.d_ff_expert, ffs = s.d_ff_shared;
@@ -246,7 +255,7 @@ void moe_block_stream(const BlockCtx& c, int il, const float* x, int T, ExpertSt
         // routing, then the experts straight from the planar slice (released after them), and the
         // next layer's copy into the other buffer meanwhile
         if (il + 1 < s.n_layer) expert_stream_prefetch(&es, il + 1);
-        linear(c, c.w.layer(il, "ffn_gate_inp.weight"), x, es.logits, T);
+        route_and_gate(c, il, x, es, T);
         moe_route_topk(c.stream, es.logits, T, E, K, es.ids, es.wts, counts ? counts + size_t(il) * E : nullptr);
         moe_q2::run(es.planar[b], es.arena->stride, E, n, ff, x, es.ids, T, K, es.yd, es.ws, es.ws_bytes, c.stream, use_ab64(), use_yd16());
         ck(cudaEventRecord(es.released[b], c.stream), "cudaEventRecord");
@@ -259,7 +268,7 @@ void moe_block_stream(const BlockCtx& c, int il, const float* x, int T, ExpertSt
         ck(cudaGetLastError(), "planar to ggml");
         ck(cudaEventRecord(es.released[b], c.stream), "cudaEventRecord");
         if (il + 1 < s.n_layer) expert_stream_prefetch(&es, il + 1);
-        linear(c, c.w.layer(il, "ffn_gate_inp.weight"), x, es.logits, T);
+        route_and_gate(c, il, x, es, T);
         moe_route_topk(c.stream, es.logits, T, E, K, es.ids, es.wts, counts ? counts + size_t(il) * E : nullptr);
         const int64_t gu_stride = int64_t(ff) * (n / 64) * 18, d_stride = int64_t(n) * (ff / 64) * 18;
         const gemm::MoePlan pgu = gemm::moe_prepare(kQ2_0, E, x, false, es.ids, T, K, n, es.ws, es.ws_bytes, c.stream);
@@ -276,7 +285,6 @@ void moe_block_stream(const BlockCtx& c, int il, const float* x, int T, ExpertSt
     const size_t ns = size_t(T) * ffs;
     k_swiglu_rows<<<unsigned((ns + 255) / 256), 256, 0, c.stream>>>(es.sg, es.su, ns);
     linear(c, c.w.layer(il, "ffn_down_shexp.weight"), es.sg, es.sh, T);
-    linear(c, c.w.layer(il, "ffn_gate_inp_shexp.weight"), x, es.gate, T);
     if (use_yd16())
         k_stream_combine<<<dim3((n + 255) / 256, T), 256, 0, c.stream>>>(out, static_cast<const __nv_bfloat16*>(es.yd), es.wts, es.sh,
                                                                         es.gate, n, K);

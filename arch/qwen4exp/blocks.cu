@@ -1471,6 +1471,28 @@ bool q8_act(const GpuTensor& W, int T) {
 }
 
 void linear_shared(const BlockCtx& c, const GpuTensor* const* Ws, float* const* ys, int n, const float* x, int T) {
+    constexpr uint32_t kBF16 = 30;   // GGML_TYPE_BF16
+    if (T >= kGemmMinTokens && fuse_epi()) {   // prefill: the BF16 products share one conversion of x
+        int nb = 0;
+        for (int i = 0; i < n; ++i) nb += Ws[i]->type == kBF16 && Ws[i]->cols() == Ws[0]->cols();
+        if (nb >= 2) {
+            BlockScratch& bs = c.scratch;
+            const int64_t cols = Ws[0]->cols();
+            const size_t need = gemm::workspace_bytes(cols, T);
+            if (bs.gemm_ws_bytes < need) {
+                if (bs.gemm_ws) cudaFree(bs.gemm_ws);
+                ck(cudaMalloc(&bs.gemm_ws, need), "cudaMalloc gemm workspace");
+                bs.gemm_ws_bytes = need;
+            }
+            void* xb = gemm::bf16_staging(bs.gemm_ws, bs.gemm_ws_bytes, cols, T);
+            gemm::to_bf16(x, xb, size_t(T) * cols, c.stream);
+            for (int i = 0; i < n; ++i)   // the BF16 ones first: the others' gemm() reuses the staging
+                if (Ws[i]->type == kBF16 && Ws[i]->cols() == cols) gemm::gemm_bf16(Ws[i]->dev, xb, ys[i], cols, Ws[i]->rows(), T, c.stream);
+            for (int i = 0; i < n; ++i)
+                if (!(Ws[i]->type == kBF16 && Ws[i]->cols() == cols)) linear(c, *Ws[i], x, ys[i], T);
+            return;
+        }
+    }
     int nq = 0;
     for (int i = 0; i < n; ++i) nq += q8_act(*Ws[i], T);
     const bool share = fuse_epi() && nq >= 2 && Ws[0]->cols() > 0;
@@ -1986,8 +2008,9 @@ void gdn_mixer(const BlockCtx& c, int il, const float* x, int T, GdnState& st, f
     const bool ab_fused = linear_multi_ok(ab, 2, T);   // decode: alpha, beta and the gates in one launch
     if (ab_fused) linear_multi(c, ab, 2, x, T);
     else {
-        linear(c, *ab[1].W, x, beta, T);
-        linear(c, *ab[0].W, x, alpha, T);
+        const GpuTensor* ws2[2] = {ab[1].W, ab[0].W};
+        float* ys2[2] = {beta, alpha};
+        linear_shared(c, ws2, ys2, 2, x, T);
     }
     const bool conv_l2 = dk == 128 && fuse_epi();   // the conv kernel normalises q and k (a block per head)
     if (T > 8) {
@@ -3269,8 +3292,9 @@ void qsa_mixer(const BlockCtx& c, int il, const float* x, int T, int pos0, QsaCa
     const LinearOut qk[2] = {{&c.w.layer(il, "indexer.q_proj.weight"), qi}, {&c.w.layer(il, "indexer.k_proj.weight"), ki}};
     if (linear_multi_ok(qk, 2, T)) linear_multi(c, qk, 2, x, T);
     else {
-        linear(c, *qk[0].W, x, qi, T);
-        linear(c, *qk[1].W, x, ki, T);
+        const GpuTensor* ws2[2] = {qk[0].W, qk[1].W};
+        float* ys2[2] = {qi, ki};
+        linear_shared(c, ws2, ys2, 2, x, T);
     }
     k_norm_rope<float><<<T * IH, 128, 0, c.stream>>>(qi, IH * ID, ID, static_cast<const float*>(c.w.layer(il, "indexer.q_norm.weight").dev),
                                                     qi, IH, ID, s.rope_dims, pos0, theta_scale, eps, 0, c.dparams);
