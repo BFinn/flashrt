@@ -122,6 +122,41 @@ void q8_0_to_q4_0(const uint8_t* src, uint8_t* dst, size_t nblocks) {
     }
 }
 
+// Q8_0 blocks (32) -> ggml Q2_0 blocks (64: an fp16 scale d and 2-bit codes q, value (q - 1) * d,
+// element j in byte j / 4 at bit 2 * (j % 4)). Round to nearest with the scale that minimises
+// the block's squared error over a small set of candidates.
+void q8_0_to_q2_0(const uint8_t* src, uint8_t* dst, size_t nblocks64) {
+    for (size_t b = 0; b < nblocks64; ++b, src += 68, dst += 18) {
+        float x[64], amax = 0.0f;
+        for (int h = 0; h < 2; ++h) {
+            const uint8_t* s8 = src + 34 * h;
+            const float d8 = fp16_to_fp32(uint16_t(s8[0] | (s8[1] << 8)));
+            for (int j = 0; j < 32; ++j) amax = std::max(amax, std::fabs(x[32 * h + j] = d8 * float(int8_t(s8[2 + j]))));
+        }
+        float best_d = 0.0f, best_e = INFINITY;
+        for (int c = 0; c < 24 && amax > 0.0f; ++c) {   // d from amax / 2.5 up to amax
+            const float d = amax / (2.5f - 1.5f * float(c) / 23.0f);
+            const uint16_t dh = fp32_to_fp16(d);
+            const float dq = fp16_to_fp32(dh);
+            float e = 0.0f;
+            for (int j = 0; j < 64; ++j) {
+                const int q = std::min(2, std::max(-1, int(std::lround(x[j] / dq))));
+                const float r = x[j] - float(q) * dq;
+                e += r * r;
+            }
+            if (e < best_e) { best_e = e; best_d = dq; }
+        }
+        const uint16_t dh = fp32_to_fp16(best_d);
+        dst[0] = uint8_t(dh & 0xff);
+        dst[1] = uint8_t(dh >> 8);
+        std::memset(dst + 2, 0, 16);
+        for (int j = 0; j < 64; ++j) {
+            const int q = best_d > 0.0f ? std::min(2, std::max(-1, int(std::lround(x[j] / best_d)))) : 0;
+            dst[2 + j / 4] |= uint8_t((q + 1) << (2 * (j % 4)));
+        }
+    }
+}
+
 // v = [argmax index, token, p]: token = ids[index] (or the index itself), and with want_p, p =
 // 1 / sum exp(x - x[index]), the top token's softmax probability. One block of 1024 threads.
 __global__ void k_draft_top(const float* x, int n, const int32_t* ids, int32_t* v, bool want_p) {
@@ -152,7 +187,7 @@ __global__ void k_gather_rows(const uint8_t* src, const int32_t* ids, uint8_t* d
 }  // namespace
 
 MtpHead::MtpHead(const Gguf& g, const Spec& target, const GpuWeights& target_w, cudaStream_t stream, int max_ctx, int max_batch,
-                 bool kv_q8, int kv_hot_blocks, bool expert_q8)
+                 bool kv_q8, int kv_hot_blocks, int expert_bits)
     : s_(target), ts_(target), tw_(target_w), max_batch_(max_batch), stream_(stream) {
     if (g.get_string("general.architecture") != "qwen4exp") throw std::runtime_error("MTP: the draft GGUF is not qwen4exp");
     // the draft block is the one with nextn tensors; the borrowed embedding and head are skipped
@@ -164,7 +199,7 @@ MtpHead::MtpHead(const Gguf& g, const Spec& target, const GpuWeights& target_w, 
         if (!std::regex_match(t.name, m, blk)) continue;
         const std::string rest = m[2];
         if (rest == "nextn.embed_tokens.weight" || rest == "nextn.shared_head_head.weight") continue;
-        if (!expert_q8 && (rest == "ffn_gate_exps.weight" || rest == "ffn_up_exps.weight" || rest == "ffn_down_exps.weight")) continue;
+        if (expert_bits != 8 && (rest == "ffn_gate_exps.weight" || rest == "ffn_up_exps.weight" || rest == "ffn_down_exps.weight")) continue;
         const int l = std::stoi(m[1]);
         if (rest == "nextn.eh_proj.weight") {
             if (il_ >= 0 && il_ != l) throw std::runtime_error("MTP: more than one draft block");
@@ -178,12 +213,14 @@ MtpHead::MtpHead(const Gguf& g, const Spec& target, const GpuWeights& target_w, 
     s_.n_layer = il_ + 1;
     s_.mixer.push_back(Mixer::QSA);
     s_.qsa_layers.push_back(il_);
-    if (expert_q8) {
+    if (expert_bits == 8) {
         exps_[0] = w_.layer(il_, "ffn_gate_exps.weight");
         exps_[1] = w_.layer(il_, "ffn_up_exps.weight");
         exps_[2] = w_.layer(il_, "ffn_down_exps.weight");
+    } else if (expert_bits == 4 || expert_bits == 2) {
+        load_experts_q4(g, expert_bits == 2);
     } else {
-        load_experts_q4(g);
+        throw std::runtime_error("MTP: expert bits must be 8, 4 or 2");
     }
     if (exps_[0].dims != std::vector<int64_t>{s_.d_model, s_.d_ff_expert, s_.n_expert} || s_.n_expert > 1024 || s_.top_k > 32)
         throw std::runtime_error("MTP: unexpected expert shape");
@@ -215,32 +252,33 @@ MtpHead::MtpHead(const Gguf& g, const Spec& target, const GpuWeights& target_w, 
     gate_ = dalloc<float>(B);
 }
 
-void MtpHead::load_experts_q4(const Gguf& g) {
-    constexpr uint32_t kQ8_0 = 8, kQ4_0 = 2;
+void MtpHead::load_experts_q4(const Gguf& g, bool q2) {
+    constexpr uint32_t kQ8_0 = 8, kQ4_0 = 2, kQ2_0 = 42;
+    const size_t in_blk = q2 ? 68 : 34, out_blk = 18, per_blk = q2 ? 64 : 32;   // bytes per output block, elements
     const char* names[3] = {"ffn_gate_exps.weight", "ffn_up_exps.weight", "ffn_down_exps.weight"};
     const GgufTensor* src[3];
     size_t off[4] = {0, 0, 0, 0};
     for (int i = 0; i < 3; ++i) {
         src[i] = g.tensor("blk." + std::to_string(il_) + "." + names[i]);
         if (!src[i] || src[i]->type != kQ8_0) throw std::runtime_error(std::string("MTP: expert tensor missing or not Q8_0: ") + names[i]);
-        const size_t q4 = size_t(src[i]->n_elements()) / 32 * 18;
-        off[i + 1] = off[i] + ((q4 + gemv::kWeightTailPad + 255) & ~size_t(255));
+        const size_t qb = size_t(src[i]->n_elements()) / per_blk * out_blk;
+        off[i + 1] = off[i] + ((qb + gemv::kWeightTailPad + 255) & ~size_t(255));
     }
     exp_bytes_ = off[3];
     ck(cudaMalloc(&exp_dev_, exp_bytes_), "cudaMalloc MTP experts");
     ck(cudaMemset(exp_dev_, 0, exp_bytes_), "memset MTP experts");
     // per tensor: read in chunks of whole blocks, convert on a few threads, upload
-    constexpr size_t kChunkBlocks = size_t(1) << 20;   // 34 MB of Q8_0
-    std::vector<uint8_t> in(kChunkBlocks * 34), out(kChunkBlocks * 18);
+    constexpr size_t kChunkBlocks = size_t(1) << 20;   // output blocks per chunk
+    std::vector<uint8_t> in(kChunkBlocks * in_blk), out(kChunkBlocks * out_blk);
     for (int i = 0; i < 3; ++i) {
         const GgufTensor& t = *src[i];
         const int fd = open(g.shards[t.shard].c_str(), O_RDONLY);
         if (fd < 0) throw std::runtime_error("open " + g.shards[t.shard]);
-        const size_t nb = size_t(t.n_elements()) / 32;
+        const size_t nb = size_t(t.n_elements()) / per_blk;
         for (size_t b0 = 0; b0 < nb; b0 += kChunkBlocks) {
             const size_t n = std::min(kChunkBlocks, nb - b0);
-            for (size_t r = 0; r < n * 34;) {
-                const ssize_t got = pread(fd, in.data() + r, n * 34 - r, off_t(t.file_offset + b0 * 34 + r));
+            for (size_t r = 0; r < n * in_blk;) {
+                const ssize_t got = pread(fd, in.data() + r, n * in_blk - r, off_t(t.file_offset + b0 * in_blk + r));
                 if (got <= 0) throw std::runtime_error("short read of " + t.name);
                 r += size_t(got);
             }
@@ -249,16 +287,18 @@ void MtpHead::load_experts_q4(const Gguf& g) {
             for (int k = 0; k < nt; ++k)
                 th.emplace_back([&, k] {
                     const size_t a = n * k / nt, e = n * (k + 1) / nt;
-                    q8_0_to_q4_0(in.data() + a * 34, out.data() + a * 18, e - a);
+                    if (q2) q8_0_to_q2_0(in.data() + a * in_blk, out.data() + a * out_blk, e - a);
+                    else q8_0_to_q4_0(in.data() + a * in_blk, out.data() + a * out_blk, e - a);
                 });
             for (auto& x : th) x.join();
-            ck(cudaMemcpy(static_cast<uint8_t*>(exp_dev_) + off[i] + b0 * 18, out.data(), n * 18, cudaMemcpyHostToDevice), "upload MTP experts");
+            ck(cudaMemcpy(static_cast<uint8_t*>(exp_dev_) + off[i] + b0 * out_blk, out.data(), n * out_blk, cudaMemcpyHostToDevice),
+               "upload MTP experts");
         }
         close(fd);
         exps_[i].dev = static_cast<uint8_t*>(exp_dev_) + off[i];
-        exps_[i].type = kQ4_0;
+        exps_[i].type = q2 ? kQ2_0 : kQ4_0;
         exps_[i].dims = t.dims;
-        exps_[i].bytes = nb * 18;
+        exps_[i].bytes = nb * out_blk;
     }
 }
 

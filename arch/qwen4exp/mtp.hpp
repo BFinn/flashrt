@@ -13,8 +13,8 @@
 //
 // The weights come from the draft GGUF (the "-noembd" export: token embedding and LM head are
 // the target's). Everything lives in VRAM, routed on the GPU. The experts are requantized from
-// the GGUF's Q8_0 to Q4_0 at load (half the VRAM; only draft acceptance depends on it) unless
-// expert_q8. With set_vocab, the head covers a subset of the vocabulary (the drafter's argmax
+// the GGUF's Q8_0 at load to expert_bits: 4 (Q4_0, half the VRAM), 2 (ggml Q2_0) or 8 (as is);
+// only draft acceptance depends on it. With set_vocab, the head covers a subset of the vocabulary (the drafter's argmax
 // can only pick those tokens), a gathered copy of those rows of the target's LM head.
 #pragma once
 
@@ -39,7 +39,7 @@ public:
     // g: the draft GGUF; target, target_w: the target model (embedding, LM head, shapes). The KV
     // cache is sized and formatted like the target's (kv_q8, kv_hot_blocks: see ForwardRef).
     MtpHead(const Gguf& g, const Spec& target, const GpuWeights& target_w, cudaStream_t stream, int max_ctx, int max_batch,
-            bool kv_q8 = false, int kv_hot_blocks = 0, bool expert_q8 = false);
+            bool kv_q8 = false, int kv_hot_blocks = 0, int expert_bits = 4);
     ~MtpHead();
     MtpHead(const MtpHead&) = delete;
     MtpHead& operator=(const MtpHead&) = delete;
@@ -69,7 +69,7 @@ public:
 
 private:
     void moe(const BlockCtx& c, const float* x, int T, float* out);
-    void load_experts_q4(const Gguf& g);
+    void load_experts_q4(const Gguf& g, bool q2);   // Q4_0, or Q2_0 when q2
 
     Spec s_;                 // the target's spec with the draft layer appended
     const Spec& ts_;

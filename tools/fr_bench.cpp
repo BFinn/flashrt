@@ -25,7 +25,7 @@
 // target then decodes). The decode tok/s includes the drafting. --spec K decodes speculatively
 // instead (greedy): each round the head drafts K tokens, the target verifies the window of K + 1
 // in one step, and the matching prefix plus the target's next token are kept. The head's experts
-// are Q4_0 (requantized at load) unless --mtp-q8. --draft-vocab RANKS (bench/mtp_vocab.py) trims
+// are Q4_0 (requantized at load; --mtp-bits 8 keeps the GGUF's Q8_0, 2 uses Q2_0). --draft-vocab RANKS (bench/mtp_vocab.py) trims
 // the drafter's LM head to the top --draft-vocab-n ranked tokens (default 32768) plus the
 // prompt's distinct tokens, at most 65536 rows. --draft-pmin P stops a round's drafting at the
 // first draft whose probability under the head is below P (then fewer than K are verified;
@@ -79,7 +79,7 @@ int main(int argc, char** argv) {
     sp.temperature = 0.0f;
     uint64_t seed = 1;
     int dist_test = 0;
-    bool mtp_q8 = false;
+    int mtp_bits = 4;
     int n_prompt = 1024, gen = 128, slots = 0, reserve_mib = 1024, workers = 8, windows = 1;
     bool reference = false, doorbell = true, adaptive = true;
     int swap_budget = 8;
@@ -114,7 +114,7 @@ int main(int argc, char** argv) {
         else if (a == "--mtp") mtp_path = next();
         else if (a == "--draft") draft_k = std::max(1, std::atoi(next()));
         else if (a == "--spec") spec_k = std::max(1, std::atoi(next()));
-        else if (a == "--mtp-q8") mtp_q8 = true;
+        else if (a == "--mtp-bits") mtp_bits = std::atoi(next());
         else if (a == "--draft-vocab") vocab_path = next();
         else if (a == "--draft-vocab-n") vocab_n = std::atoi(next());
         else if (a == "--draft-pmin") draft_pmin = float(std::atof(next()));
@@ -175,7 +175,7 @@ int main(int argc, char** argv) {
     if (!mtp_path.empty()) {
         g_mtp = std::make_unique<Gguf>(Gguf::open(mtp_path));
         mtp = std::make_unique<MtpHead>(*g_mtp, s, w, fwd.stream(), n_prompt + windows * gen + 16 + draft_k, 64, kv_q8 || kv_hot > 0, kv_hot,
-                                        mtp_q8);
+                                        mtp_bits);
         cudaMalloc(&h_carry, hrow * 4);
         cudaMemset(h_carry, 0, hrow * 4);
         cudaMalloc(&h_buf, 64 * hrow * 4);
