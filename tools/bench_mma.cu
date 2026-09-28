@@ -71,7 +71,8 @@ void run(const char* name, int mmas_per_iter) {
     cudaMalloc(&out, 4);
     const int iters = 4096;
     for (int warps : {4, 8, 16}) {
-        const dim3 grid(nsm * 4), block(32 * warps);
+      for (int per_sm : {1, 4}) {   // CTAs per SM
+        const dim3 grid(nsm * per_sm), block(32 * warps);
         k_bench<MODE><<<grid, block>>>(16, 1, out);
         cudaEvent_t e0, e1;
         cudaEventCreate(&e0);
@@ -83,7 +84,8 @@ void run(const char* name, int mmas_per_iter) {
         float ms = 0;
         cudaEventElapsedTime(&ms, e0, e1);
         const double ops = double(grid.x) * warps * iters * mmas_per_iter * 16.0 * 8 * 32 * 2;
-        std::printf("%-44s %2d warps/CTA: %6.1f TOPS\n", name, warps, ops / (ms * 1e-3) / 1e12);
+        std::printf("%-44s %2d warps/CTA, %d CTA(s)/SM: %6.1f TOPS\n", name, warps, per_sm, ops / (ms * 1e-3) / 1e12);
+      }
     }
     cudaFree(out);
 }
