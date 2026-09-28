@@ -1,0 +1,8 @@
+T 1 with the combine: x 2.7e-08, mixed 7.2e-08, inject 9.8e-08 relative ok; 18.27 us per combine + mix
+T 2 with the combine: x 3.7e-08, mixed 7.4e-08, inject 1.1e-07 relative ok; 20.50 us per combine + mix
+T 3 with the combine: x 3.7e-08, mixed 7.3e-08, inject 1.5e-07 relative ok; 23.22 us per combine + mix
+T 4 with the combine: x 3.9e-08, mixed 7.4e-08, inject 1.5e-07 relative ok; 26.65 us per combine + mix
+T 1 with the combine: x 2.7e-08, mixed 7.2e-08, inject 9.8e-08 relative ok; 18.76 us per combine + mix
+T 2 with the combine: x 3.7e-08, mixed 7.4e-08, inject 1.1e-07 relative ok; 24.48 us per combine + mix
+T 3 with the combine: x 3.7e-08, mixed 7.3e-08, inject 1.5e-07 relative ok; 26.46 us per combine + mix
+T 4 with the combine: x 3.9e-08, mixed 7.4e-08, inject 1.5e-07 relative ok; 28.60 us per combine + mix
