@@ -62,6 +62,8 @@ ForwardRef::~ForwardRef() {
     for (int il : s_.gdn_layers) free_gdn_state(gdn_[il]);
     for (int il : s_.qsa_layers) free_qsa_cache(kv_[il]);
     for (int il : s_.ple_layers) free_ple_state(ple_state_[il]);
+    for (GdnWindow& w : gdn_win_) free_gdn_window(w);
+    for (PleWindow& w : ple_win_) free_ple_window(w);
     free_block_scratch(scratch_);
     for (float* p : {emb_, x_, mixed_, inject_, blk_, pemb_, norm_}) cudaFree(p);
     if (ple_host_.raw_dev) cudaFree(ple_host_.raw_dev);
@@ -233,15 +235,56 @@ void ForwardRef::enqueue_post(const BlockCtx& c, int T, int out_from, float* log
 void ForwardRef::enqueue_layer(const BlockCtx& c, int il, int T) {
     const Spec& s = s_;
     for (int pl : s.ple_layers)
-        if (pl == il) ple_block(c, il, ple_, pemb_, x_, T, ple_state_[il]);
+        if (pl == il) ple_block(c, il, ple_, pemb_, x_, T, ple_state_[il], in_window_ ? &ple_win_[il] : nullptr);
     hc_mix(c, il, 0, x_, T, mixed_, inject_);
     if (s.mixer[il] == Mixer::QSA) qsa_mixer(c, il, mixed_, T, pos_, kv_[il], blk_);
-    else gdn_mixer(c, il, mixed_, T, gdn_[il], blk_);
+    else gdn_mixer(c, il, mixed_, T, gdn_[il], blk_, nullptr, in_window_ ? &gdn_win_[il] : nullptr);
     hc_combine(c, x_, blk_, inject_, T);
     hc_mix(c, il, 1, x_, T, mixed_, inject_);
-    if (T == 1 && fast_cache_) moe_block_fast(c, il, mixed_, *fast_cache_, *fast_host_, blk_);
+    if ((T == 1 || in_window_) && fast_cache_) moe_block_fast(c, il, mixed_, *fast_cache_, *fast_host_, blk_, T);
     else moe_block(c, il, mixed_, T, moe_host_, blk_);
     hc_combine(c, x_, blk_, inject_, T);
+}
+
+void ForwardRef::enable_windows(int W) {
+    if (W <= max_window_) return;
+    if (W > max_batch_) throw std::runtime_error("enable_windows: window longer than the batch");
+    for (GdnWindow& w : gdn_win_) free_gdn_window(w);
+    for (PleWindow& w : ple_win_) free_ple_window(w);
+    gdn_win_.assign(s_.n_layer, GdnWindow{});
+    ple_win_.assign(s_.n_layer, PleWindow{});
+    for (int il : s_.gdn_layers) gdn_win_[il] = alloc_gdn_window(s_, W);
+    for (int il : s_.ple_layers) ple_win_[il] = alloc_ple_window(s_, ple_, W);
+    max_window_ = W;
+}
+
+void ForwardRef::forward_window(const int32_t* seq, int T, float* logits_dev) {
+    if (T < 1 || T > max_window_ || !fast_cache_ || !fast_host_->doorbell || T > fast_host_->max_window)
+        throw std::runtime_error("forward_window: windows not enabled, or no fast MoE in doorbell mode");
+    if (window_pos0_ >= 0) throw std::runtime_error("forward_window: the previous window was not committed");
+    window_pos0_ = pos_;
+    window_T_ = T;
+    in_window_ = true;
+    try {
+        forward(seq, T, 0, logits_dev);
+    } catch (...) {
+        in_window_ = false;
+        throw;
+    }
+    in_window_ = false;
+}
+
+void ForwardRef::commit(int n) {
+    if (window_pos0_ < 0 || n < 1 || n > window_T_) throw std::runtime_error("commit: no window, or n out of range");
+    if (n < window_T_) {
+        const BlockCtx c{s_, w_, scratch_, stream_};
+        for (int il : s_.gdn_layers) gdn_rewind(c, gdn_[il], gdn_win_[il], window_T_, n);
+        for (int il : s_.ple_layers) ple_rewind(c, il, ple_, ple_state_[il], ple_win_[il], window_T_, n);
+        ck(cudaStreamSynchronize(stream_), "commit");
+        pos_ = window_pos0_ + n;
+    }
+    fast_host_->access_prev_T = n;   // the cache learns from the kept tokens only
+    window_pos0_ = -1;
 }
 
 int ForwardRef::first_ple_layer() const { return s_.ple_layers.empty() ? s_.n_layer : s_.ple_layers.front(); }
@@ -303,8 +346,9 @@ void ForwardRef::forward(const int32_t* seq, int T, int out_from, float* logits_
             unpin_current_thread();
             ple_fetch(ple_host_, seq, pos_, T);
         });
-    const bool db = T == 1 && fast_cache_ && fast_host_->doorbell;
-    if (db) doorbell_begin_token(*fast_host_);
+    const bool fast = (T == 1 || in_window_) && fast_cache_;
+    const bool db = fast && fast_host_->doorbell;
+    if (db) doorbell_begin_token(*fast_host_, T);
     if (graph) {
         params_host_[0] = seq[pos_];
         params_host_[1] = pos_;
@@ -323,13 +367,16 @@ void ForwardRef::forward(const int32_t* seq, int T, int out_from, float* logits_
         if (ple_rows.valid()) ple_rows.get();
         enqueue_post(c, T, out_from, logits_dev);
     }
-    // the adaptive cache learns from the previous token while this one runs on the GPU
-    if (T == 1 && fast_cache_ && cache_mgr_ && have_access_) cache_manager_step(cache_mgr_, *fast_host_, stream_);
+    // the adaptive cache learns from the previous step while this one runs on the GPU
+    if (fast && cache_mgr_ && have_access_) cache_manager_step(cache_mgr_, *fast_host_, stream_);
     ck(cudaStreamSynchronize(stream_), "forward");
     if (db) doorbell_end_token(*fast_host_, s_);
-    have_access_ = T == 1 && fast_cache_;
-    if (have_access_) fast_host_->access_prev = fast_host_->access;
-    if (!(T == 1 && fast_cache_) && count_half_life_ > 0 && (count_tokens_ += T) >= count_half_life_) {
+    have_access_ = fast;
+    if (have_access_) {
+        fast_host_->access_prev = fast_host_->access;
+        fast_host_->access_prev_T = T;
+    }
+    if (!fast && count_half_life_ > 0 && (count_tokens_ += T) >= count_half_life_) {
         for (uint32_t& c : counts_) c >>= 1;
         count_tokens_ -= count_half_life_;
     }

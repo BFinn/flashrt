@@ -4,7 +4,7 @@
 //   fr_bench MODEL.gguf --ids PROMPT.txt --n-prompt N --gen G [--slots S] [--reserve-mib R]
 //            [--reference] [--workers W] [--no-doorbell] [--spin-us U] [--windows N] [--trace FILE]
 //            [--static-cache] [--swap-budget B] [--pcie-frac F] [--save-state FILE | --load-state FILE] [--no-q3r]
-//            [--no-graphs] [--kv q8] [--kv-hot BLOCKS] [--count-half-life N] [--mtp DRAFT.gguf [--draft K]]
+//            [--no-graphs] [--kv q8] [--kv-hot BLOCKS] [--count-half-life N] [--mtp DRAFT.gguf [--draft K | --spec K]]
 //
 // Prefills N prompt tokens in 64-token batches (reference path; its routing counts pick the
 // cache contents), fills the VRAM expert cache with the most-routed experts (S slots, or all
@@ -22,7 +22,9 @@
 // --mtp loads the MTP draft head (it runs over the prompt too, to fill its KV cache) and probes
 // it: before each decode token, it drafts K tokens ahead (default 4), and the report gives the
 // acceptance a greedy verifier would see (the drafts' matching prefix against the tokens the
-// target then decodes). The decode tok/s includes the drafting.
+// target then decodes). The decode tok/s includes the drafting. --spec K decodes speculatively
+// instead (greedy): each round the head drafts K tokens, the target verifies the window of K + 1
+// in one step, and the matching prefix plus the target's next token are kept.
 #include "arch/qwen4exp/experts.hpp"
 #include "arch/qwen4exp/forward_ref.hpp"
 #include "arch/qwen4exp/gpu_weights.hpp"
@@ -57,7 +59,7 @@ int main(int argc, char** argv) {
         return 2;
     }
     std::string ids_path, trace_path, save_state, load_state, mtp_path;
-    int draft_k = 4;
+    int draft_k = 4, spec_k = 0;
     int n_prompt = 1024, gen = 128, slots = 0, reserve_mib = 1024, workers = 8, windows = 1;
     bool reference = false, doorbell = true, adaptive = true;
     int swap_budget = 8;
@@ -91,6 +93,7 @@ int main(int argc, char** argv) {
         else if (a == "--load-state") load_state = next();
         else if (a == "--mtp") mtp_path = next();
         else if (a == "--draft") draft_k = std::max(1, std::atoi(next()));
+        else if (a == "--spec") spec_k = std::max(1, std::atoi(next()));
         else { std::fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
     }
     std::vector<int32_t> seq;
@@ -111,7 +114,10 @@ int main(int argc, char** argv) {
     load_experts(g, s, arena, 12);
     const std::vector<int> cpus = physical_cpus();
     CpuPool pool(workers, cpus);   // pins this thread to cpus[0]
-    ForwardRef fwd(g, s, w, arena, pool, n_prompt + windows * gen + 16, 64, kv_q8 || kv_hot > 0, kv_hot);
+    if (spec_k > 0 && mtp_path.empty()) { std::fprintf(stderr, "--spec needs --mtp\n"); return 2; }
+    if (spec_k > 0) draft_k = spec_k;
+    ForwardRef fwd(g, s, w, arena, pool, n_prompt + windows * gen + 16 + draft_k, 64, kv_q8 || kv_hot > 0, kv_hot);
+    if (spec_k > 0) fwd.enable_windows(spec_k + 1);
     fwd.set_count_half_life(half_life);
     std::printf("KV cache: %s%s\n", kv_q8 || kv_hot > 0 ? "q8_0" : "fp16",
                 kv_hot > 0 ? (", host-resident, hot set of " + std::to_string(kv_hot) + " blocks per layer").c_str() : "");
@@ -133,8 +139,8 @@ int main(int argc, char** argv) {
         cudaMemset(h_carry, 0, hrow * 4);
         cudaMalloc(&h_buf, 64 * hrow * 4);
         cudaMalloc(&mtp_logits, size_t(s.n_vocab) * 4);
-        std::printf("MTP draft head: layer %d, %.0f MiB of weights in VRAM, %d drafts per token (probe)\n", mtp->layer(),
-                    mtp->weight_bytes() / 1048576.0, draft_k);
+        std::printf("MTP draft head: layer %d, %.0f MiB of weights in VRAM, %d drafts %s\n", mtp->layer(),
+                    mtp->weight_bytes() / 1048576.0, draft_k, spec_k > 0 ? "per verify round" : "per token (probe)");
     }
     auto mtp_catchup = [&](int p0, int T) {
         if (!mtp) return;
@@ -197,7 +203,7 @@ int main(int argc, char** argv) {
         std::printf("expert cache: %d slots (%.1f%% of experts), filled in %.1f s from %.0f MiB free\n", slots,
                     100.0 * slots / (s.n_layer * s.n_expert), std::chrono::duration<double>(Clock::now() - tf).count(),
                     free_b / 1048576.0);
-        host = alloc_moe_fast_host(s);
+        host = alloc_moe_fast_host(s, spec_k + 1);
         host.arena = &arena;
         host.pool = &pool;
         if (doorbell) {   // the miss server takes the pool's caller CPU; this thread moves off it
@@ -227,12 +233,63 @@ int main(int argc, char** argv) {
     std::vector<int32_t> drafts;       // [token][draft_k]: the drafts made before each decode token
     std::vector<int> draft_pos;        // the position of the newest token when they were made
     double mtp_s = 0;
+    // speculative decoding state: the MTP rows still to run (positions p - pend + 1 .. p, their h
+    // in h_buf), and statistics
+    int pend = 1;
+    if (spec_k > 0) cudaMemcpy(h_buf, h_carry, hrow * 4, cudaMemcpyDeviceToDevice);
+    float* logits_win = nullptr;
+    if (spec_k > 0) cudaMalloc(&logits_win, size_t(spec_k + 1) * s.n_vocab * 4);
+    std::vector<long> acc_hist(spec_k + 1, 0);
+    long rounds = 0;
+    double draft_s = 0, verify_s = 0, commit_s = 0;
     cudaProfilerStart();   // nsys --capture-range=cudaProfilerApi profiles the decode loop only
     for (int wi = 0; wi < windows; ++wi) {
         const long hits0 = host.hits, misses0 = host.misses, gmiss0 = host.gpu_misses;
         const int depth = int(seq.size()) - 1;
         const auto td = Clock::now();
-        for (int i = 0; i < gen; ++i) {
+        int emitted = 0;
+        while (spec_k > 0 && emitted < gen) {
+            // 1. draft: the pending MTP rows (catch-up) give d1, then K - 1 chained steps
+            const auto t0 = Clock::now();
+            const int p = int(seq.size()) - 1;
+            std::vector<int32_t> win(seq.end() - 1, seq.end());   // x_p, d1 .. dK
+            mtp->forward(h_buf, seq.data() + p - pend + 1, pend, p - pend + 1, pend - 1, mtp_logits);
+            int32_t d = fwd.argmax(mtp_logits);
+            win.push_back(d);
+            for (int j = 1; j < spec_k; ++j) {
+                mtp->forward(mtp->h_out() + size_t(j == 1 ? pend - 1 : 0) * hrow, &d, 1, p + j, 0, mtp_logits);
+                d = fwd.argmax(mtp_logits);
+                win.push_back(d);
+            }
+            // 2. verify the window x_p, d1 .. dK
+            const auto t1 = Clock::now();
+            std::vector<int32_t> seqw(seq.begin(), seq.end() - 1);
+            seqw.insert(seqw.end(), win.begin(), win.end());
+            fwd.forward_window(seqw.data(), spec_k + 1, logits_win);
+            int a = 0;
+            std::vector<int32_t> y;
+            for (int j = 0; j <= spec_k; ++j) {
+                y.push_back(fwd.argmax(logits_win + size_t(j) * s.n_vocab));
+                if (j == a && j < spec_k && y[j] == win[j + 1]) ++a;
+            }
+            // 3. keep x_p, d1 .. da; emit y_0 .. y_a
+            const auto t2 = Clock::now();
+            fwd.commit(a + 1);
+            cudaMemcpyAsync(h_buf, fwd.streams(), size_t(a + 1) * hrow * 4, cudaMemcpyDeviceToDevice, fwd.stream());
+            pend = a + 1;
+            for (int j = 0; j <= a; ++j) {
+                seq.push_back(y[j]);
+                out.push_back(y[j]);
+            }
+            emitted += a + 1;
+            ++acc_hist[a];
+            ++rounds;
+            const auto t3 = Clock::now();
+            draft_s += std::chrono::duration<double>(t1 - t0).count();
+            verify_s += std::chrono::duration<double>(t2 - t1).count();
+            commit_s += std::chrono::duration<double>(t3 - t2).count();
+        }
+        for (int i = 0; spec_k == 0 && i < gen; ++i) {
             if (mtp) {   // draft from (h_{p-1}, x_p): the first step is also position p's catch-up
                 const auto tm = Clock::now();
                 const int p = int(seq.size()) - 1;
@@ -253,8 +310,9 @@ int main(int argc, char** argv) {
                 for (int32_t e : host.access) trace.push_back(int16_t(e));
         }
         const double dec_s = std::chrono::duration<double>(Clock::now() - td).count();
-        std::printf("decode: %d tokens at depth %d in %.2f s: %.2f tok/s (%s)", gen, depth, dec_s, gen / dec_s,
-                    reference ? "reference path" : doorbell ? "fast path, doorbell" : "fast path, host sync per layer");
+        const int n_dec = spec_k > 0 ? emitted : gen;
+        std::printf("decode: %d tokens at depth %d in %.2f s: %.2f tok/s (%s)", n_dec, depth, dec_s, n_dec / dec_s,
+                    spec_k > 0 ? "speculative, MTP drafts" : reference ? "reference path" : doorbell ? "fast path, doorbell" : "fast path, host sync per layer");
         if (windows > 1 && !reference)
             std::printf(", window %d, hit rate %.2f%%", wi + 1,
                         100.0 * (host.hits - hits0) /
@@ -286,6 +344,14 @@ int main(int argc, char** argv) {
                     trace_path.c_str());
     }
     std::printf("CUDA graphs: %s (%ld capture(s))\n", graphs ? "on" : "off", fwd.graph_captures());
+    if (spec_k > 0 && rounds > 0) {
+        long toks = 0;
+        for (int a = 0; a <= spec_k; ++a) toks += acc_hist[a] * (a + 1);
+        std::printf("speculative: %ld rounds, %.3f tokens per round; accepted drafts:", rounds, double(toks) / rounds);
+        for (int a = 0; a <= spec_k; ++a) std::printf(" %d:%.1f%%", a, 100.0 * acc_hist[a] / rounds);
+        std::printf("\n  per round: draft %.2f ms, verify %.2f ms, commit %.2f ms\n", 1e3 * draft_s / rounds, 1e3 * verify_s / rounds,
+                    1e3 * commit_s / rounds);
+    }
     if (mtp && !draft_pos.empty()) {   // greedy acceptance: the drafts' matching prefix
         std::vector<long> hist(draft_k + 1, 0);
         long n = 0;
@@ -339,6 +405,7 @@ int main(int argc, char** argv) {
         cudaFree(h_carry);
         cudaFree(h_buf);
         cudaFree(mtp_logits);
+        if (logits_win) cudaFree(logits_win);
     }
     arena_free(arena);
     return 0;

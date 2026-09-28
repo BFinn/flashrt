@@ -278,18 +278,23 @@ __global__ void k_gdn_delta(float* S, const float* conv_out, const float* g, con
 // The same delta rule with the state in registers: one block per (head, 32 columns), 32 x 8
 // threads; thread (x, y) holds S[j][i] for column i = 32 * blockIdx.y + x and rows
 // j = y * DK/8 .. +DK/8, so S is read and written once per call however many tokens it has.
+// S_in -> S_out (the same buffer in a plain call); with S_bak, the state before the call is
+// saved there too (a speculative window's backup). A rewind replays from the backup.
 template <int DK>
-__global__ void k_gdn_delta_reg(float* S, const float* conv_out, const float* g, const float* beta, float* o, int T,
-                                int k_heads, int v_heads, int channels) {
+__global__ void k_gdn_delta_reg(const float* S_in, float* S_out, float* S_bak, const float* conv_out, const float* g, const float* beta,
+                                float* o, int T, int k_heads, int v_heads, int channels) {
     constexpr int JG = 8, JPT = DK / JG;
     __shared__ float qs[DK], ks[DK];
     __shared__ float red[JG][33];
     const int h = blockIdx.x, tx = threadIdx.x, ty = threadIdx.y, i = blockIdx.y * 32 + tx, hk = h % k_heads;
     const int tid = ty * 32 + tx;
-    float* Sh = S + size_t(h) * DK * DK;
+    const float* Si = S_in + size_t(h) * DK * DK;
     float st[JPT];
 #pragma unroll
-    for (int jj = 0; jj < JPT; ++jj) st[jj] = Sh[size_t(ty * JPT + jj) * DK + i];
+    for (int jj = 0; jj < JPT; ++jj) st[jj] = Si[size_t(ty * JPT + jj) * DK + i];
+    if (S_bak)
+#pragma unroll
+        for (int jj = 0; jj < JPT; ++jj) S_bak[size_t(h) * DK * DK + size_t(ty * JPT + jj) * DK + i] = st[jj];
     const float scale = rsqrtf(float(DK));
     for (int t = 0; t < T; ++t) {
         const float* row = conv_out + size_t(t) * channels;
@@ -329,8 +334,18 @@ __global__ void k_gdn_delta_reg(float* S, const float* conv_out, const float* g,
         }
         __syncthreads();
     }
+    float* So = S_out + size_t(h) * DK * DK;
 #pragma unroll
-    for (int jj = 0; jj < JPT; ++jj) Sh[size_t(ty * JPT + jj) * DK + i] = st[jj];
+    for (int jj = 0; jj < JPT; ++jj) So[size_t(ty * JPT + jj) * DK + i] = st[jj];
+}
+
+// Rewinds a history of H rows (oldest first, C values each) after a call of T inputs to its
+// first n: row j = row j + n of [old history ; the call's inputs].
+__global__ void k_hist_rewind(float* hist, const float* old, const float* rows, int H, int C, int n) {
+    const int c = blockIdx.x * blockDim.x + threadIdx.x, j = blockIdx.y;
+    if (c >= C) return;
+    const int q = j + n;
+    hist[size_t(j) * C + c] = q < H ? old[size_t(q) * C + c] : rows[size_t(q - H) * C + c];
 }
 
 // per (token, head): y = rms_norm(o) * w * sigmoid(z)
@@ -458,10 +473,30 @@ void free_gdn_state(GdnState& st) {
     st = GdnState{};
 }
 
-void gdn_mixer(const BlockCtx& c, int il, const float* x, int T, GdnState& st, float* out, float* o_inner) {
+GdnWindow alloc_gdn_window(const Spec& s, int max_tokens) {
+    GdnWindow w;
+    w.max_tokens = max_tokens;
+    const size_t ch = gdn_channels(s), H = s.ssm_heads;
+    ck(cudaMalloc(&w.S_bak, H * s.ssm_state * s.ssm_state * 4), "cudaMalloc gdn backup");
+    ck(cudaMalloc(&w.conv_old, size_t(s.ssm_conv - 1) * ch * 4), "cudaMalloc gdn conv backup");
+    ck(cudaMalloc(&w.qkv, size_t(max_tokens) * ch * 4), "cudaMalloc gdn window");
+    ck(cudaMalloc(&w.conv, size_t(max_tokens) * ch * 4), "cudaMalloc gdn window");
+    ck(cudaMalloc(&w.g, size_t(max_tokens) * H * 4), "cudaMalloc gdn window");
+    ck(cudaMalloc(&w.beta, size_t(max_tokens) * H * 4), "cudaMalloc gdn window");
+    return w;
+}
+
+void free_gdn_window(GdnWindow& w) {
+    for (float* p : {w.S_bak, w.conv_old, w.qkv, w.conv, w.g, w.beta})
+        if (p) cudaFree(p);
+    w = GdnWindow{};
+}
+
+void gdn_mixer(const BlockCtx& c, int il, const float* x, int T, GdnState& st, float* out, float* o_inner, GdnWindow* win) {
     const Spec& s = c.s;
     const int ch = gdn_channels(s), H = s.ssm_heads, dk = s.ssm_state, inner = H * dk;
     if (s.ssm_conv > 8 || dk > 1024) throw std::runtime_error("gdn_mixer: unsupported shape");
+    if (win && (T > win->max_tokens || dk != 128)) throw std::runtime_error("gdn_mixer: window too long or unsupported shape");
     float* qkv = c.scratch.f32;                    // [T][ch]
     float* conv = qkv + size_t(T) * ch;           // [T][ch]
     float* z = conv + size_t(T) * ch;             // [T][inner]
@@ -470,6 +505,13 @@ void gdn_mixer(const BlockCtx& c, int il, const float* x, int T, GdnState& st, f
     float* o = beta + size_t(T) * H;              // [T][inner]
     float* fin = o + size_t(T) * inner;           // [T][inner]
     if (size_t(fin + size_t(T) * inner - c.scratch.f32) > c.scratch.f32_elems) throw std::runtime_error("gdn_mixer: scratch too small");
+    if (win) {   // the rewind inputs are kept in the window buffers
+        qkv = win->qkv;
+        conv = win->conv;
+        alpha = win->g;
+        beta = win->beta;
+        ck(cudaMemcpyAsync(win->conv_old, st.conv, size_t(s.ssm_conv - 1) * ch * 4, cudaMemcpyDeviceToDevice, c.stream), "gdn conv backup");
+    }
 
     linear(c, c.w.layer(il, "attn_qkv.weight"), x, qkv, T);
     linear(c, c.w.layer(il, "attn_gate.weight"), x, z, T);
@@ -481,13 +523,27 @@ void gdn_mixer(const BlockCtx& c, int il, const float* x, int T, GdnState& st, f
     k_l2_norm<<<T * 2 * s.ssm_groups, 128, 0, c.stream>>>(conv, dk, ch, 2 * s.ssm_groups, float(s.rms_eps));
     k_gdn_gates<<<(T * H + 127) / 128, 128, 0, c.stream>>>(alpha, beta, static_cast<const float*>(c.w.layer(il, "ssm_dt.bias").dev),
                                                           static_cast<const float*>(c.w.layer(il, "ssm_a").dev), H, T);
-    if (dk == 128) k_gdn_delta_reg<128><<<dim3(H, 128 / 32), dim3(32, 8), 0, c.stream>>>(st.S, conv, alpha, beta, o, T, s.ssm_groups, H, ch);
+    if (dk == 128)
+        k_gdn_delta_reg<128><<<dim3(H, 128 / 32), dim3(32, 8), 0, c.stream>>>(st.S, st.S, win ? win->S_bak : nullptr, conv, alpha, beta, o, T,
+                                                                          s.ssm_groups, H, ch);
     else k_gdn_delta<<<H, dk, size_t(2) * dk * 4, c.stream>>>(st.S, conv, alpha, beta, o, T, s.ssm_groups, H, dk, ch);
     if (o_inner) ck(cudaMemcpyAsync(o_inner, o, size_t(T) * inner * 4, cudaMemcpyDeviceToDevice, c.stream), "copy o");
     k_gated_rms_norm<<<T * H, 128, 0, c.stream>>>(o, static_cast<const float*>(c.w.layer(il, "ssm_norm.weight").dev), z, fin, dk,
                                                  float(s.rms_eps));
     linear(c, c.w.layer(il, "ssm_out.weight"), fin, out, T);
     ck(cudaGetLastError(), "gdn_mixer");
+}
+
+void gdn_rewind(const BlockCtx& c, GdnState& st, const GdnWindow& win, int T, int n) {
+    if (n >= T) return;
+    const Spec& s = c.s;
+    const int ch = gdn_channels(s), H = s.ssm_heads;
+    if (n < 0 || T > win.max_tokens) throw std::runtime_error("gdn_rewind: bad window");
+    float* o = c.scratch.f32;   // the replay's outputs are not needed
+    k_gdn_delta_reg<128><<<dim3(H, 128 / 32), dim3(32, 8), 0, c.stream>>>(win.S_bak, st.S, nullptr, win.conv, win.g, win.beta, o, n,
+                                                                      s.ssm_groups, H, ch);
+    k_hist_rewind<<<dim3((ch + 255) / 256, s.ssm_conv - 1), 256, 0, c.stream>>>(st.conv, win.conv_old, win.qkv, s.ssm_conv - 1, ch, n);
+    ck(cudaGetLastError(), "gdn_rewind");
 }
 
 }  // namespace flashrt::qwen4exp
@@ -1596,7 +1652,30 @@ void argmax_dev(cudaStream_t stream, const float* x, int n, int32_t* out_dev) {
     ck(cudaGetLastError(), "argmax");
 }
 
-void ple_block(const BlockCtx& c, int il, const Ple& p, const float* emb, float* x, int T, PleState& st) {
+PleWindow alloc_ple_window(const Spec& s, const Ple& p, int max_tokens) {
+    PleWindow w;
+    w.max_tokens = max_tokens;
+    ck(cudaMalloc(&w.hist_old, size_t(p.ngram) * 3 * size_t(s.hc_count) * s.d_model * 4 + 4), "cudaMalloc ple backup");
+    ck(cudaMalloc(&w.rows, size_t(max_tokens) * s.hc_count * s.d_model * 4), "cudaMalloc ple window");
+    return w;
+}
+
+void free_ple_window(PleWindow& w) {
+    if (w.hist_old) cudaFree(w.hist_old);
+    if (w.rows) cudaFree(w.rows);
+    w = PleWindow{};
+}
+
+void ple_rewind(const BlockCtx& c, int il, const Ple& p, PleState& st, const PleWindow& win, int T, int n) {
+    if (n >= T) return;
+    const Spec& s = c.s;
+    const int C = s.hc_count * s.d_model, K = int(c.w.layer(il, "ple_conv1d.weight").dims.at(0)), H = (K - 1) * p.ngram;
+    if (H == 0) return;
+    k_hist_rewind<<<dim3((C + 255) / 256, H), 256, 0, c.stream>>>(st.hist, win.hist_old, win.rows, H, C, n);
+    ck(cudaGetLastError(), "ple_rewind");
+}
+
+void ple_block(const BlockCtx& c, int il, const Ple& p, const float* emb, float* x, int T, PleState& st, PleWindow* win) {
     const Spec& s = c.s;
     const int n = s.d_model, hc = s.hc_count, C = hc * n;
     const int K = int(c.w.layer(il, "ple_conv1d.weight").dims.at(0));
@@ -1608,6 +1687,11 @@ void ple_block(const BlockCtx& c, int il, const Ple& p, const float* emb, float*
     float* gated = gate + size_t(T) * hc;            // [T][C]
     float* normed = gated + size_t(T) * C;           // [T][C]
     if (size_t(normed + size_t(T) * C - c.scratch.f32) > c.scratch.f32_elems) throw std::runtime_error("ple_block: scratch too small");
+    if (win) {   // the conv inputs go to the window, and the history is backed up
+        if (T > win->max_tokens) throw std::runtime_error("ple_block: window too long");
+        normed = win->rows;
+        ck(cudaMemcpyAsync(win->hist_old, st.hist, size_t((K - 1) * p.ngram) * C * 4, cudaMemcpyDeviceToDevice, c.stream), "ple backup");
+    }
     const float eps = float(s.rms_eps);
     linear(c, c.w.layer(il, "ple_key.weight"), emb, key, T);
     linear(c, c.w.layer(il, "ple_value.weight"), emb, value, T);

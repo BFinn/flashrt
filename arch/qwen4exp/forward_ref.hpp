@@ -65,6 +65,17 @@ public:
     // counts favour its recent text, which predicts the decode better (default 4096).
     void set_count_half_life(int tokens) { count_half_life_ = tokens; }
 
+    // Speculative verify windows of up to W tokens (allocates what a rewind needs; the fast MoE
+    // host must have max_window >= W).
+    void enable_windows(int W);
+    // Runs seq[pos() .. pos() + T) (T <= W) on the fast path in one doorbell step, every row's
+    // logits to logits_dev [T][n_vocab], and advances pos() by T. commit() must follow.
+    void forward_window(const int32_t* seq, int T, float* logits_dev);
+    // Keeps the first n (1 <= n <= T) tokens of the last window: the recurrent states are rewound
+    // and pos() becomes the window's start + n. The KV caches need nothing: the positions past
+    // it are rewritten before anything reads them.
+    void commit(int n);
+
     // Greedy token from a logits row on the device (GPU argmax; 4 bytes come back).
     int32_t argmax(const float* logits_row_dev);
 
@@ -125,6 +136,12 @@ private:
     const void* graph_ple_dev_ = nullptr;
     long graph_captures_ = 0;
     int32_t* argmax_host_ = nullptr;   // pinned
+    // speculative windows
+    int max_window_ = 0;
+    bool in_window_ = false;          // enqueueing a window (the layers keep their rewind data)
+    int window_T_ = 0, window_pos0_ = -1;
+    std::vector<GdnWindow> gdn_win_;
+    std::vector<PleWindow> ple_win_;
 };
 
 }  // namespace flashrt::qwen4exp

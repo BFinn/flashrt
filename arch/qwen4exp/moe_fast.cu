@@ -29,13 +29,14 @@ constexpr int kRouteSel = 2 + 2 * kMaxK;   // route record: offset of the select
 constexpr int kRouteGpu = kRouteSel + kMaxK;   // route record: misses the GPU reads from host memory
 constexpr int kRouteInts = kRouteGpu + 1;
 
-// mailbox layout (one per layer, doorbell mode)
-constexpr size_t kMbRouted = 0;     // uint32, GPU -> host: routing and x are in place for token seq
-constexpr size_t kMbDone = 64;      // uint32, host -> GPU: out is in place for token seq
-constexpr size_t kMbErr = 96;       // uint32, GPU -> host: the combine gave up waiting for token seq
-constexpr size_t kMbRoute = 128;    // int32 [2 + 2K], as route_dev
-constexpr size_t kMbX = 512;        // float [d_model]
-size_t mb_out_off(int n) { return (kMbX + size_t(n) * 4 + 63) & ~size_t(63); }   // float [d_model]
+// mailbox layout (one per layer, doorbell mode), for windows of up to W tokens
+constexpr int kMaxWindow = 8;
+constexpr size_t kMbRouted = 0;     // uint32 [W], GPU -> host: token t's routing and x are in place for step seq
+constexpr size_t kMbDone = 64;      // uint32, host -> GPU: out is in place for step seq
+constexpr size_t kMbErr = 96;       // uint32, GPU -> host: the combine gave up waiting for step seq
+constexpr size_t kMbRoute = 128;    // int32 [W][kRouteInts], as route_dev
+size_t mb_x_off(int W) { return (kMbRoute + size_t(W) * kRouteInts * 4 + 63) & ~size_t(63); }   // float [W][d_model]
+size_t mb_out_off(int n, int W) { return (mb_x_off(W) + size_t(W) * n * 4 + 63) & ~size_t(63); }   // float [W][d_model]
 
 __device__ __forceinline__ uint64_t global_ns() {
     uint64_t t;
@@ -115,10 +116,12 @@ __device__ __forceinline__ int dot_block64(uint4 c, const uint32_t* xw, int ld, 
 // mapped host memory) for 64 rows (blockIdx.x), SwiGLU, and
 // the hidden block quantized for the down kernel: hq words [k][16][ff/64], hscale/hsum [k][ff/64].
 // 512 threads: 16 warps x 4 rows, 8 lanes per row. Needs n % 512 == 0 and ff % 64 == 0.
+// Windows: blockIdx.y = t * K + k for token t (x row t, hit_n[t], hit_ptr[t * K + k]).
 __global__ void k_moe_gate_up(const uint8_t* const* hit_ptr, const int32_t* hit_n, const float* x, int n, int ff, uint32_t* hq,
-                              float* hscale, int32_t* hsum) {
-    const int k = blockIdx.y;
-    if (k >= *hit_n) return;
+                              float* hscale, int32_t* hsum, int K) {
+    const int k = blockIdx.y, tok = k / K;
+    if (k % K >= hit_n[tok]) return;
+    x += size_t(tok) * n;
     extern __shared__ __align__(16) uint32_t xw[];   // [16][nb] words, then scale [nb], sum [nb]
     __shared__ float hrow[kQB];
     const int nb = n / kQB, warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
@@ -158,9 +161,9 @@ __global__ void k_moe_gate_up(const uint8_t* const* hit_ptr, const int32_t* hit_
 // Down of cache-hit expert k for 128 rows: yh[k][r]. 512 threads: 16 warps x 8 rows, 4 lanes
 // per row. Needs n % 128 == 0, ff % 64 == 0, ff / 64 <= 64.
 __global__ void k_moe_down(const uint8_t* const* hit_ptr, const int32_t* hit_n, const uint32_t* hq, const float* hscale,
-                           const int32_t* hsum, float* yh, int n, int ff) {
+                           const int32_t* hsum, float* yh, int n, int ff, int K) {
     const int k = blockIdx.y;
-    if (k >= *hit_n) return;
+    if (k % K >= hit_n[k / K]) return;
     __shared__ uint32_t hw[16 * 64];
     __shared__ float hs[64];
     __shared__ int hm[64];
@@ -193,12 +196,20 @@ __global__ void k_moe_down(const uint8_t* const* hit_ptr, const int32_t* hit_n, 
 // GPU experts: hits point at their cache slot (slots + slot * slot_bytes); with arena_dev set,
 // floor(misses * pcie_frac) (at most pcie_max) of the misses point at their blob in mapped host
 // memory and are read over PCIe by the hit kernels, and only the rest go to the CPU.
+// Windows: one block per token t (blockIdx.x), each with its own logits, x, hit list, route
+// record and routed flag.
 __global__ void k_route(const float* logits, const int32_t* table, int E, int K, const uint8_t* slots, size_t slot_bytes,
                         const uint8_t** hit_ptr, float* hit_w, int32_t* hit_n, const uint8_t* arena_dev, size_t arena_stride,
                         int layer, float pcie_frac, int pcie_max, int32_t* route_dev, const float* x, int n, uint8_t* mb,
-                        uint32_t seq, const int32_t* dp) {
+                        size_t x_off, uint32_t seq, const int32_t* dp) {
     if (dp) seq = uint32_t(dp[2]);
-    if (mb) route_dev = reinterpret_cast<int32_t*>(mb + kMbRoute);
+    const int tok = blockIdx.x;
+    logits += size_t(tok) * E;
+    hit_ptr += size_t(tok) * K;
+    hit_w += size_t(tok) * K;
+    hit_n += tok;
+    x += size_t(tok) * n;
+    route_dev = mb ? reinterpret_cast<int32_t*>(mb + kMbRoute) + size_t(tok) * kRouteInts : route_dev + size_t(tok) * kRouteInts;
     __shared__ float p[1024];
     __shared__ float red_v[32];
     __shared__ int sel[kMaxK];
@@ -316,11 +327,11 @@ __global__ void k_route(const float* logits, const int32_t* table, int E, int K,
         *hit_n = nh + ng;
     }
     if (mb) {
-        float* xh = reinterpret_cast<float*>(mb + kMbX);
+        float* xh = reinterpret_cast<float*>(mb + x_off) + size_t(tok) * n;
         for (int i = e; i < n; i += blockDim.x) xh[i] = x[i];
         __threadfence_system();
         __syncthreads();
-        if (e == 0) *reinterpret_cast<volatile uint32_t*>(mb + kMbRouted) = seq;
+        if (e == 0) reinterpret_cast<volatile uint32_t*>(mb + kMbRouted)[tok] = seq;
     }
 }
 
@@ -340,8 +351,9 @@ __global__ void k_moe_combine(float* out, const float* yh, const float* hit_w, c
 // raised its done flag to seq. After 10 s (and at least 10M polls, so a timer glitch cannot
 // fire it) it gives up, records seq in the mailbox's error word, and carries on with whatever
 // is there; the host reports the error after the token.
+// Windows: blockIdx.y = token t.
 __global__ void k_moe_combine_db(float* out, const float* yh, const float* hit_w, const int32_t* hit_n, uint8_t* mb,
-                                 size_t out_off, uint32_t seq, const float* shexp, const float* gate, int n, const int32_t* dp) {
+                                 size_t out_off, uint32_t seq, const float* shexp, const float* gate, int n, int Kmax, const int32_t* dp) {
     if (dp) seq = uint32_t(dp[2]);
     if (threadIdx.x == 0) {
         const volatile uint32_t* done = reinterpret_cast<const volatile uint32_t*>(mb + kMbDone);
@@ -356,34 +368,34 @@ __global__ void k_moe_combine_db(float* out, const float* yh, const float* hit_w
         __threadfence_system();
     }
     __syncthreads();
-    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    const int i = blockIdx.x * blockDim.x + threadIdx.x, t = blockIdx.y;
     if (i >= n) return;
-    float acc = reinterpret_cast<const volatile float*>(mb + out_off)[i];
-    const int K = *hit_n;
-    for (int k = 0; k < K; ++k) acc += hit_w[k] * yh[size_t(k) * n + i];
-    const float g = 1.0f / (1.0f + __expf(-gate[0]));
-    out[i] = acc + shexp[i] * g;
+    float acc = reinterpret_cast<const volatile float*>(mb + out_off)[size_t(t) * n + i];
+    const int K = hit_n[t];
+    for (int k = 0; k < K; ++k) acc += hit_w[t * Kmax + k] * yh[(size_t(t) * Kmax + k) * n + i];
+    const float g = 1.0f / (1.0f + __expf(-gate[t]));
+    out[size_t(t) * n + i] = acc + shexp[size_t(t) * n + i] * g;
 }
 
-__global__ void k_swiglu_1(float* g, const float* u, int n) {
+__global__ void k_swiglu_1(float* g, const float* u, int n) {   // any number of rows
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) g[i] = g[i] / (1.0f + __expf(-g[i])) * u[i];
 }
 
 }  // namespace
 
-size_t moe_hits_scratch_bytes(int K, int ff) { return size_t(K) * (ff / kQB) * (8 + 64) + 256; }
+size_t moe_hits_scratch_bytes(int K, int ff, int T) { return size_t(T) * K * (ff / kQB) * (8 + 64) + 256; }
 
 void moe_hits(const uint8_t* const* hit_ptr, const int32_t* hit_n, int K, const float* x, int n, int ff, void* scratch, float* yh,
-              cudaStream_t stream) {
-    if (n % 512 || ff % kQB || ff / kQB > 64 || K > kMaxK) throw std::runtime_error("moe_hits: unsupported expert shape");
-    const int nbh = ff / kQB;
-    float* hscale = static_cast<float*>(scratch);                               // [K][ff/64]
-    int32_t* hsum = reinterpret_cast<int32_t*>(hscale + size_t(K) * nbh);       // [K][ff/64]
-    uint32_t* hq = reinterpret_cast<uint32_t*>(hsum + size_t(K) * nbh);         // [K][16][ff/64]
+              cudaStream_t stream, int T) {
+    if (n % 512 || ff % kQB || ff / kQB > 64 || K > kMaxK || T < 1) throw std::runtime_error("moe_hits: unsupported expert shape");
+    const int nbh = ff / kQB, TK = T * K;
+    float* hscale = static_cast<float*>(scratch);                               // [T*K][ff/64]
+    int32_t* hsum = reinterpret_cast<int32_t*>(hscale + size_t(TK) * nbh);      // [T*K][ff/64]
+    uint32_t* hq = reinterpret_cast<uint32_t*>(hsum + size_t(TK) * nbh);        // [T*K][16][ff/64]
     const size_t smem_gu = size_t(n / kQB) * (16 * 4 + 8);
-    k_moe_gate_up<<<dim3(ff / kQB, K), 512, smem_gu, stream>>>(hit_ptr, hit_n, x, n, ff, hq, hscale, hsum);
-    k_moe_down<<<dim3(n / 128, K), 512, 0, stream>>>(hit_ptr, hit_n, hq, hscale, hsum, yh, n, ff);
+    k_moe_gate_up<<<dim3(ff / kQB, TK), 512, smem_gu, stream>>>(hit_ptr, hit_n, x, n, ff, hq, hscale, hsum, K);
+    k_moe_down<<<dim3(n / 128, TK), 512, 0, stream>>>(hit_ptr, hit_n, hq, hscale, hsum, yh, n, ff, K);
     ck(cudaGetLastError(), "moe_hits");
 }
 
@@ -425,10 +437,12 @@ void expert_cache_fill(const Spec& s, ExpertCache& cache, const ExpertArena& are
     ck(cudaStreamSynchronize(stream), "expert_cache_fill");
 }
 
-MoeFastHost alloc_moe_fast_host(const Spec& s) {
+MoeFastHost alloc_moe_fast_host(const Spec& s, int max_window) {
     MoeFastHost h;
+    if (max_window < 1 || max_window > kMaxWindow) throw std::runtime_error("alloc_moe_fast_host: window must be 1..8");
+    h.max_window = max_window;
     ck(cudaHostAlloc(&h.route_host, size_t(kRouteInts) * 4, cudaHostAllocDefault), "cudaHostAlloc route");
-    h.access.assign(size_t(s.n_layer) * s.top_k, -1);
+    h.access.assign(size_t(max_window) * s.n_layer * s.top_k, -1);
     ck(cudaHostAlloc(&h.x_host, size_t(s.d_model) * 4, cudaHostAllocDefault), "cudaHostAlloc x");
     ck(cudaHostAlloc(&h.cpu_out, size_t(s.d_model) * 4, cudaHostAllocDefault), "cudaHostAlloc cpu out");
     ck(cudaEventCreateWithFlags(&h.routed, cudaEventDisableTiming), "cudaEventCreate");
@@ -543,16 +557,17 @@ void cache_manager_step(CacheManager* m, const MoeFastHost& h, cudaStream_t stre
     ExpertCache& c = *m->cache;
     const int E = s.n_expert, K = s.top_k;
     TableUpdates upd{};
-    // 1. learn from the previous token's routing
+    // 1. learn from the previous step's routing (every token of it)
     std::vector<int> missed;
-    for (int il = 0; il < s.n_layer; ++il)
-        for (int k = 0; k < K; ++k) {
-            const int e = h.access_prev[size_t(il) * K + k];
-            if (e < 0) continue;
-            const int key = il * E + e;
-            m->bump(key, float(m->w));
-            if (c.table[key] < 0 && !m->is_pending[key]) missed.push_back(key);
-        }
+    for (int t = 0; t < h.access_prev_T; ++t)
+        for (int il = 0; il < s.n_layer; ++il)
+            for (int k = 0; k < K; ++k) {
+                const int e = h.access_prev[(size_t(t) * s.n_layer + il) * K + k];
+                if (e < 0) continue;
+                const int key = il * E + e;
+                m->bump(key, float(m->w));
+                if (c.table[key] < 0 && !m->is_pending[key]) missed.push_back(key);
+            }
     if (++m->token % m->cfg.decay_every == 0) {
         m->w /= m->cfg.decay;
         if (m->w > 1e18) m->renormalise();
@@ -627,12 +642,19 @@ struct MissServer {
         const Spec& sp = *s;
         const int n = sp.d_model, K = sp.top_k;
         const q2_0::ExpertShape es{n, sp.d_ff_expert};
-        std::vector<uint8_t> act_mem(q2_0::q8_bytes(n) + 64);
-        q2_0::Q8Act act =
-            q2_0::q8_view(reinterpret_cast<void*>((reinterpret_cast<uintptr_t>(act_mem.data()) + 63) & ~uintptr_t(63)), n);
-        std::vector<uint8_t> scratch(q2_0::moe_cpu_scratch_bytes(es, kMaxK, h->pool->size()));
-        q2_0::Miss miss[kMaxK];
-        const size_t out_off = mb_out_off(n);
+        const int W = h->max_window;
+        const size_t qb = (q2_0::q8_bytes(n) + 63) & ~size_t(63);
+        std::vector<uint8_t> act_mem(qb * W + 64);
+        std::vector<q2_0::Q8Act> act(W);
+        for (int t = 0; t < W; ++t)
+            act[t] = q2_0::q8_view(
+                reinterpret_cast<void*>(((reinterpret_cast<uintptr_t>(act_mem.data()) + 63) & ~uintptr_t(63)) + size_t(t) * qb), n);
+        // a window's misses grouped by expert, up to 4 tokens per entry
+        const int max_miss = W * kMaxK;
+        std::vector<uint8_t> scratch(q2_0::moe_cpu_scratch_bytes(es, max_miss, h->pool->size()));
+        std::vector<q2_0::Miss> miss(max_miss);
+        std::vector<int> slot_of(sp.n_expert, -1), entry_expert(max_miss);
+        const size_t out_off = mb_out_off(n, W), x_off = mb_x_off(W);
         uint32_t seen = post.load();
         for (;;) {
             uint32_t seq;
@@ -641,40 +663,59 @@ struct MissServer {
                 post.wait(seen, std::memory_order_acquire);
             }
             seen = seq;
+            const int T = h->window_T;
             for (int il = 0; il < sp.n_layer; ++il) {
                 uint8_t* mb = h->mbox + size_t(il) * h->mbox_stride;
                 cur_layer.store(il, std::memory_order_relaxed);
                 cur_phase.store(1, std::memory_order_relaxed);
                 const auto t0 = std::chrono::steady_clock::now();
                 int k = 0;
-                while (__atomic_load_n(reinterpret_cast<uint32_t*>(mb + kMbRouted), __ATOMIC_ACQUIRE) != seq) {
+                for (int t = 0; t < T; ++t)
+                    while (__atomic_load_n(reinterpret_cast<uint32_t*>(mb + kMbRouted) + t, __ATOMIC_ACQUIRE) != seq) {
 #if defined(__x86_64__)
-                    _mm_pause();
+                        _mm_pause();
 #endif
-                    if (++k == 4096) {
-                        k = 0;
-                        if (quit.load()) return;
-                        if (std::chrono::steady_clock::now() - t0 > std::chrono::seconds(10)) {
-                            error = "miss server: no routing from the GPU for layer " + std::to_string(il) + " in 10 s";
-                            failed.store(true);
-                            return;
+                        if (++k == 4096) {
+                            k = 0;
+                            if (quit.load()) return;
+                            if (std::chrono::steady_clock::now() - t0 > std::chrono::seconds(10)) {
+                                error = "miss server: no routing from the GPU for layer " + std::to_string(il) + " in 10 s";
+                                failed.store(true);
+                                return;
+                            }
                         }
                     }
-                }
                 const auto t1 = std::chrono::steady_clock::now();
                 cur_phase.store(2, std::memory_order_relaxed);
-                const int32_t* route = reinterpret_cast<const int32_t*>(mb + kMbRoute);
-                const int nh = route[0], nm = route[1];
-                h->gpu_misses += route[kRouteGpu];
-                for (int k = 0; k < K; ++k) h->access[size_t(il) * K + k] = route[kRouteSel + k];
-                float* out = reinterpret_cast<float*>(mb + out_off);
-                if (nm > 0) {
-                    q2_0::quantize_q8(reinterpret_cast<const float*>(mb + kMbX), act);
+                int nh = 0, nm = 0, n_entries = 0;
+                for (int t = 0; t < T; ++t) {
+                    const int32_t* route = reinterpret_cast<const int32_t*>(mb + kMbRoute) + size_t(t) * kRouteInts;
                     const float* mw = reinterpret_cast<const float*>(route + 2 + K);
-                    for (int i = 0; i < nm; ++i) miss[i] = q2_0::Miss{h->arena->blob(il, route[2 + i]), 1, {0}, {mw[i]}};
-                    q2_0::moe_cpu(*h->pool, es, miss, nm, &act, 1, out, n, scratch.data());
+                    nh += route[0];
+                    h->gpu_misses += route[kRouteGpu];
+                    for (int k = 0; k < K; ++k) h->access[(size_t(t) * sp.n_layer + il) * K + k] = route[kRouteSel + k];
+                    for (int i = 0; i < route[1]; ++i) {
+                        const int e = route[2 + i];
+                        int& sl = slot_of[e];
+                        if (sl < 0 || miss[sl].n_tok == 4) {   // a new entry for this expert
+                            sl = n_entries++;
+                            miss[sl] = q2_0::Miss{h->arena->blob(il, e), 0, {0}, {0}};
+                            entry_expert[sl] = e;
+                        }
+                        q2_0::Miss& m = miss[sl];
+                        m.tok[m.n_tok] = t;
+                        m.w[m.n_tok] = mw[i];
+                        ++m.n_tok;
+                        ++nm;
+                    }
+                }
+                float* out = reinterpret_cast<float*>(mb + out_off);
+                if (n_entries > 0) {
+                    for (int t = 0; t < T; ++t) q2_0::quantize_q8(reinterpret_cast<const float*>(mb + x_off) + size_t(t) * n, act[t]);
+                    q2_0::moe_cpu(*h->pool, es, miss.data(), n_entries, act.data(), T, out, n, scratch.data());
+                    for (int i = 0; i < n_entries; ++i) slot_of[entry_expert[i]] = -1;
                 } else {
-                    std::memset(out, 0, size_t(n) * 4);
+                    std::memset(out, 0, size_t(T) * n * 4);
                 }
                 const auto t2 = std::chrono::steady_clock::now();
                 h->hits += nh;
@@ -682,8 +723,8 @@ struct MissServer {
                 h->wait_s += std::chrono::duration<double>(t1 - t0).count();
                 const double dt = std::chrono::duration<double>(t2 - t1).count();
                 h->cpu_s += dt;
-                h->cpu_by_nm[std::min(nm, 16)] += dt;
-                ++h->layers_by_nm[std::min(nm, 16)];
+                h->cpu_by_nm[std::min(n_entries, 16)] += dt;
+                ++h->layers_by_nm[std::min(n_entries, 16)];
                 __atomic_store_n(reinterpret_cast<uint32_t*>(mb + kMbDone), seq, __ATOMIC_RELEASE);
             }
             cur_phase.store(0, std::memory_order_relaxed);
@@ -694,7 +735,7 @@ struct MissServer {
 
 void start_doorbell(const Spec& s, MoeFastHost& h, int cpu) {
     if (s.top_k > kMaxK) throw std::runtime_error("start_doorbell: top-k too large");
-    h.mbox_stride = (mb_out_off(s.d_model) + size_t(s.d_model) * 4 + 4095) & ~size_t(4095);
+    h.mbox_stride = (mb_out_off(s.d_model, h.max_window) + size_t(h.max_window) * s.d_model * 4 + 4095) & ~size_t(4095);
     const size_t bytes = size_t(s.n_layer) * h.mbox_stride;
     ck(cudaHostAlloc(&h.mbox, bytes, cudaHostAllocMapped), "cudaHostAlloc mailboxes");
     std::memset(h.mbox, 0, bytes);
@@ -708,7 +749,9 @@ void start_doorbell(const Spec& s, MoeFastHost& h, int cpu) {
     h.doorbell = true;
 }
 
-void doorbell_begin_token(MoeFastHost& h) {
+void doorbell_begin_token(MoeFastHost& h, int T) {
+    if (T < 1 || T > h.max_window) throw std::runtime_error("doorbell_begin_token: window longer than the mailboxes");
+    h.window_T = T;
     ++h.seq;
     h.server->post.store(h.seq, std::memory_order_release);
     h.server->post.notify_one();
@@ -745,33 +788,34 @@ void free_moe_fast_host(MoeFastHost& h) {
     h = MoeFastHost{};
 }
 
-void moe_block_fast(const BlockCtx& c, int il, const float* x, const ExpertCache& cache, MoeFastHost& h, float* out) {
+void moe_block_fast(const BlockCtx& c, int il, const float* x, const ExpertCache& cache, MoeFastHost& h, float* out, int T) {
     const Spec& s = c.s;
     const int n = s.d_model, E = s.n_expert, K = s.top_k, ff = s.d_ff_expert, ffs = s.d_ff_shared;
     if (K > kMaxK || E > 1024) throw std::runtime_error("moe_block_fast: unsupported routing shape");
-    // device scratch layout
-    float* logits = c.scratch.f32;                 // [E]
-    float* sg = logits + E;                        // [ffs]
-    float* su = sg + ffs;                          // [ffs]
-    float* sh = su + ffs;                          // [n]
-    float* gate = sh + n;                          // [1] (padded to 4)
-    float* yh = gate + 4;                          // [K][n]
-    float* cpu_dev = yh + size_t(K) * n;           // [n]
-    float* hit_w = cpu_dev + n;                    // [K]
-    const uint8_t** hit_ptr = reinterpret_cast<const uint8_t**>(hit_w + kMaxK);   // [K] (8-byte aligned: n, K even)
-    int32_t* route_dev = reinterpret_cast<int32_t*>(hit_ptr + kMaxK);             // [kRouteInts]
+    if (T < 1 || T > h.max_window || (T > 1 && !h.doorbell)) throw std::runtime_error("moe_block_fast: window needs doorbell mode and fitting mailboxes");
+    // device scratch layout (per-token blocks back to back)
+    float* logits = c.scratch.f32;                 // [T][E]
+    float* sg = logits + size_t(T) * E;            // [T][ffs]
+    float* su = sg + size_t(T) * ffs;              // [T][ffs]
+    float* sh = su + size_t(T) * ffs;              // [T][n]
+    float* gate = sh + size_t(T) * n;              // [T] (padded to 8)
+    float* yh = gate + 8;                          // [T][K][n]
+    float* cpu_dev = yh + size_t(T) * K * n;       // [n]
+    float* hit_w = cpu_dev + n;                    // [T][K]
+    const uint8_t** hit_ptr = reinterpret_cast<const uint8_t**>(hit_w + size_t(T) * kMaxK);   // [T][K] (8-byte aligned: n even)
+    int32_t* route_dev = reinterpret_cast<int32_t*>(hit_ptr + size_t(T) * kMaxK);             // [T][kRouteInts]
     if (reinterpret_cast<uintptr_t>(hit_ptr) % 8) throw std::runtime_error("moe_block_fast: misaligned scratch");
-    int32_t* hit_n = route_dev + kRouteInts;                            // [1] (padded to 4)
-    float* hits_scratch = reinterpret_cast<float*>(hit_n + 4);          // moe_hits_scratch_bytes
-    if (size_t(hits_scratch - c.scratch.f32) * 4 + moe_hits_scratch_bytes(K, ff) > c.scratch.f32_elems * 4)
+    int32_t* hit_n = route_dev + size_t(T) * kRouteInts;                // [T] (padded to 8)
+    float* hits_scratch = reinterpret_cast<float*>(hit_n + 8);          // moe_hits_scratch_bytes
+    if (size_t(hits_scratch - c.scratch.f32) * 4 + moe_hits_scratch_bytes(K, ff, T) > c.scratch.f32_elems * 4)
         throw std::runtime_error("moe_block_fast: scratch too small");
 
     // 1. routing, and the input for the CPU
-    linear(c, c.w.layer(il, "ffn_gate_inp.weight"), x, logits, 1);
+    linear(c, c.w.layer(il, "ffn_gate_inp.weight"), x, logits, T);
     uint8_t* mb = h.doorbell ? h.mbox_dev + size_t(il) * h.mbox_stride : nullptr;
-    k_route<<<1, ((E + 31) / 32) * 32, 0, c.stream>>>(logits, cache.table_dev + size_t(il) * E, E, K, cache.slots, cache.slot_bytes,
+    k_route<<<T, ((E + 31) / 32) * 32, 0, c.stream>>>(logits, cache.table_dev + size_t(il) * E, E, K, cache.slots, cache.slot_bytes,
                                                      hit_ptr, hit_w, hit_n, h.arena_dev, h.arena_stride, il, h.pcie_frac, h.pcie_max,
-                                                     route_dev, x, n, mb, h.seq, c.dparams);
+                                                     route_dev, x, n, mb, mb_x_off(h.max_window), h.seq, c.dparams);
     if (!h.doorbell) {
         ck(cudaMemcpyAsync(h.route_host, route_dev, size_t(kRouteInts) * 4, cudaMemcpyDeviceToHost, c.stream), "route to host");
         ck(cudaMemcpyAsync(h.x_host, x, size_t(n) * 4, cudaMemcpyDeviceToHost, c.stream), "x to host");
@@ -779,16 +823,16 @@ void moe_block_fast(const BlockCtx& c, int il, const float* x, const ExpertCache
     }
 
     // 2. GPU: cache hits (fused gate+up, then down) and the shared expert
-    moe_hits(hit_ptr, hit_n, K, x, n, ff, hits_scratch, yh, c.stream);
-    linear(c, c.w.layer(il, "ffn_gate_shexp.weight"), x, sg, 1);
-    linear(c, c.w.layer(il, "ffn_up_shexp.weight"), x, su, 1);
-    k_swiglu_1<<<(ffs + 255) / 256, 256, 0, c.stream>>>(sg, su, ffs);
-    linear(c, c.w.layer(il, "ffn_down_shexp.weight"), sg, sh, 1);
-    linear(c, c.w.layer(il, "ffn_gate_inp_shexp.weight"), x, gate, 1);
+    moe_hits(hit_ptr, hit_n, K, x, n, ff, hits_scratch, yh, c.stream, T);
+    linear(c, c.w.layer(il, "ffn_gate_shexp.weight"), x, sg, T);
+    linear(c, c.w.layer(il, "ffn_up_shexp.weight"), x, su, T);
+    k_swiglu_1<<<(T * ffs + 255) / 256, 256, 0, c.stream>>>(sg, su, T * ffs);
+    linear(c, c.w.layer(il, "ffn_down_shexp.weight"), sg, sh, T);
+    linear(c, c.w.layer(il, "ffn_gate_inp_shexp.weight"), x, gate, T);
 
     if (h.doorbell) {   // 3'. the miss server fills the mailbox; the combine waits for it on the GPU
-        k_moe_combine_db<<<(n + 255) / 256, 256, 0, c.stream>>>(out, yh, hit_w, hit_n, mb, mb_out_off(n), h.seq, sh, gate, n,
-                                                                c.dparams);
+        k_moe_combine_db<<<dim3((n + 255) / 256, T), 256, 0, c.stream>>>(out, yh, hit_w, hit_n, mb, mb_out_off(n, h.max_window), h.seq,
+                                                                        sh, gate, n, K, c.dparams);
         ck(cudaGetLastError(), "moe_block_fast");
         return;
     }

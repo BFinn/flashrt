@@ -53,17 +53,22 @@ struct MoeFastHost {
     size_t arena_stride = 0;
     float pcie_frac = 0.0f;
     int pcie_max = 0;
-    // the experts each layer selected for the last token, [n_layer][top_k] (for cache policy
-    // and traces); complete once forward() returns
+    // Windows (speculative verify): up to max_window tokens per doorbell step; the mailboxes are
+    // sized for it (set before start_doorbell). window_T: the current step's token count.
+    int max_window = 1;
+    int window_T = 1;
+    // the experts each layer selected for the last step's tokens, [token][n_layer][top_k] (for
+    // cache policy and traces); complete once forward() returns
     std::vector<int32_t> access;
-    std::vector<int32_t> access_prev;   // the previous token's (ForwardRef copies it at token end)
+    std::vector<int32_t> access_prev;   // the previous step's (ForwardRef copies it at step end)
+    int access_prev_T = 0;              // tokens in access_prev
     // statistics
     long hits = 0, misses = 0, gpu_misses = 0;   // misses: CPU-served; gpu_misses: read over PCIe
     double wait_s = 0, cpu_s = 0;     // host time waiting for the routing, and running the misses
     double cpu_by_nm[17] = {};        // miss time by the layer's miss count
     long layers_by_nm[17] = {};
 };
-MoeFastHost alloc_moe_fast_host(const Spec& s);
+MoeFastHost alloc_moe_fast_host(const Spec& s, int max_window = 1);
 void free_moe_fast_host(MoeFastHost& h);   // also stops the miss server
 
 // Lets the GPU serve floor(misses * frac) (at most max_per_layer) of each layer's misses by
@@ -74,9 +79,9 @@ void enable_pcie_misses(MoeFastHost& h, const ExpertArena& arena, float frac, in
 // Switches h to doorbell mode: allocates the mailboxes and starts the miss server pinned to
 // `cpu` (the pool's caller CPU; the pool must not be used by another thread meanwhile).
 void start_doorbell(const Spec& s, MoeFastHost& h, int cpu);
-// Brackets one decode token in doorbell mode: begin before enqueuing the layers, end after the
-// stream has synchronised (throws if the miss server failed).
-void doorbell_begin_token(MoeFastHost& h);
+// Brackets one decode step (T tokens, T <= max_window) in doorbell mode: begin before enqueuing
+// the layers, end after the stream has synchronised (throws if the miss server failed).
+void doorbell_begin_token(MoeFastHost& h, int T = 1);
 void doorbell_end_token(MoeFastHost& h, const Spec& s);
 
 // Adaptive expert cache: decayed LFU with hysteresis and a per-token swap budget. Every
@@ -111,12 +116,14 @@ CacheStats cache_manager_stats(const CacheManager* m);
 // memory); rows k >= *hit_n are not written. x [n] float; activations are quantized to int8
 // per 64 values inside. scratch holds moe_hits_scratch_bytes(K, ff) bytes. Needs n % 512 == 0,
 // ff % 64 == 0, ff <= 4096.
-size_t moe_hits_scratch_bytes(int K, int ff);
+// Windows (T tokens): x [T][n], hit_ptr [T][K], hit_n [T], yh [T][K][n].
+size_t moe_hits_scratch_bytes(int K, int ff, int T = 1);
 void moe_hits(const uint8_t* const* hit_ptr, const int32_t* hit_n, int K, const float* x, int n, int ff, void* scratch, float* yh,
-              cudaStream_t stream);
+              cudaStream_t stream, int T = 1);
 
-// One token: out [d_model] = routed experts (hits on the GPU, misses on the CPU) + gated shared
-// expert. Same math as moe_block.
-void moe_block_fast(const BlockCtx& c, int il, const float* x, const ExpertCache& cache, MoeFastHost& h, float* out);
+// T tokens (T > 1: a speculative window, doorbell mode only): out [T][d_model] = routed experts
+// (hits on the GPU, misses on the CPU, each missed expert read once for the window) + gated
+// shared expert. Same math as moe_block.
+void moe_block_fast(const BlockCtx& c, int il, const float* x, const ExpertCache& cache, MoeFastHost& h, float* out, int T = 1);
 
 }  // namespace flashrt::qwen4exp

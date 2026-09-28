@@ -78,10 +78,30 @@ GdnState alloc_gdn_state(const Spec& s);
 void reset_gdn_state(const Spec& s, GdnState& st, cudaStream_t stream);
 void free_gdn_state(GdnState& st);
 
+// Speculative windows: what one GDN layer keeps so that a call of T tokens can be rewound to its
+// first n (gdn_rewind): the state and conv history from before the call, the call's conv inputs,
+// and the delta rule's per-token inputs, from which the accepted tokens are replayed.
+struct GdnWindow {
+    int max_tokens = 0;
+    float* S_bak = nullptr;      // [heads][state][state]
+    float* conv_old = nullptr;   // [conv-1][channels]
+    float* qkv = nullptr;        // [max_tokens][channels], the conv inputs
+    float* conv = nullptr;       // [max_tokens][channels], normalised conv outputs
+    float* g = nullptr;          // [max_tokens][heads]
+    float* beta = nullptr;       // [max_tokens][heads]
+};
+GdnWindow alloc_gdn_window(const Spec& s, int max_tokens);
+void free_gdn_window(GdnWindow& w);
+
 // GDN mixer for T consecutive tokens (state advances token by token). x [T][d_model] is the
 // hyper-connection mix; out [T][d_model]. o_inner, if given, gets the delta-rule output
-// before the gated norm, [T][heads][state] (llama.cpp's "attn_output" in GDN layers).
-void gdn_mixer(const BlockCtx& c, int il, const float* x, int T, GdnState& st, float* out, float* o_inner = nullptr);
+// before the gated norm, [T][heads][state] (llama.cpp's "attn_output" in GDN layers). With win
+// (T <= win->max_tokens), the call can be rewound.
+void gdn_mixer(const BlockCtx& c, int il, const float* x, int T, GdnState& st, float* out, float* o_inner = nullptr,
+               GdnWindow* win = nullptr);
+// Rewinds the last gdn_mixer call (T tokens, with win) to its first n tokens (n < T; n == T is a
+// no-op): the state is replayed from the backup over n tokens, the conv history rebuilt.
+void gdn_rewind(const BlockCtx& c, GdnState& st, const GdnWindow& win, int T, int n);
 
 // KV cache of one QSA layer for one sequence: post-norm, post-rope K and V, [cell][kv_head][dim].
 // Cell index = position. Stored as F32 holding values rounded to F16, like the parity
@@ -196,8 +216,18 @@ void ple_upload(const BlockCtx& c, PleHost& h, int T, float* emb);
 
 // out_dev[0] = index of the largest of x[0 .. n) (the lowest index on ties), on the GPU.
 void argmax_dev(cudaStream_t stream, const float* x, int n, int32_t* out_dev);
+// Speculative windows for a PLE layer: the conv history before the call and the call's conv inputs.
+struct PleWindow {
+    int max_tokens = 0;
+    float* hist_old = nullptr;   // as PleState::hist
+    float* rows = nullptr;       // [max_tokens][hc*d_model]
+};
+PleWindow alloc_ple_window(const Spec& s, const Ple& p, int max_tokens);
+void free_ple_window(PleWindow& w);
 // x [T][hc][d_model] += gated value + conv(normalised gated value), per llama.cpp's build_ple.
-void ple_block(const BlockCtx& c, int il, const Ple& p, const float* emb, float* x, int T, PleState& st);
+// With win (T <= win->max_tokens), the call can be rewound by ple_rewind.
+void ple_block(const BlockCtx& c, int il, const Ple& p, const float* emb, float* x, int T, PleState& st, PleWindow* win = nullptr);
+void ple_rewind(const BlockCtx& c, int il, const Ple& p, PleState& st, const PleWindow& win, int T, int n);
 
 // logits [T][n_vocab] = output.weight x norm [T][d_model]
 void head_logits(const BlockCtx& c, const float* norm, int T, float* logits);
