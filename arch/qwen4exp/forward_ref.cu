@@ -185,8 +185,7 @@ void ForwardRef::enqueue_layer(const BlockCtx& c, int il, int T) {
     hc_mix(c, il, 0, x_, T, mixed_, inject_);
     if (s.mixer[il] == Mixer::QSA) qsa_mixer(c, il, mixed_, T, pos_, kv_[il], blk_);
     else gdn_mixer(c, il, mixed_, T, gdn_[il], blk_, nullptr, in_window_ ? &gdn_win_[il] : nullptr);
-    hc_combine(c, x_, blk_, inject_, T);
-    hc_mix(c, il, 1, x_, T, mixed_, inject_);
+    hc_combine_mix(c, il, 1, x_, blk_, inject_, T, mixed_, inject_);
     if (in_chunk_) moe_block_stream(c, il, mixed_, T, *estream_, blk_, counts_dev_);
     else if ((T == 1 || in_window_) && fast_cache_) moe_block_fast(c, il, mixed_, *fast_cache_, *fast_host_, blk_, T);
     else moe_block(c, il, mixed_, T, moe_host_, blk_);

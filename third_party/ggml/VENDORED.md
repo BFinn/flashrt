@@ -11,8 +11,8 @@ They are the include closure of four kernel files:
 - src/ggml-cuda/convert.cu   dequantization to F32 (embedding and PLE rows); adds dequantize.cuh
 - src/ggml-cuda/mmq.cuh      quantized matrix-matrix products (int8 tensor cores), for prefill; with
                              its configs, mma.cuh, mmq-load-tiles.cuh and mmq-vec-dot.cuh
-- src/ggml-cuda/mmid.cu      the expert grouping (ids -> per-expert token lists) for MMQ's MoE path;
-                             compiled on its own (added 2026-09-28, same commit)
+(src/ggml-cuda/mmid.cu, ggml's expert grouping, was vendored on 2026-09-28 and removed the same
+day: kernels/cuda/ggml_gemm.cu groups the tokens itself.)
 
 These .cu files are not compiled on their own. flashrt's wrapper, kernels/cuda/ggml_gemv.cu,
 includes them into one translation unit and calls their raw-pointer dispatchers; the MMQ

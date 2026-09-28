@@ -5,7 +5,8 @@
 // 2e-4 relative (tolerance 1e-2). The offset types (Q4_0, Q5_0, Q4_K, Q5_K) take MMQ's DS4 layout,
 // whose fp16 block sums carry the offset term: about 1.5e-2 on these random activations
 // (tolerance 3e-2); the KLD gate judges the effect on real activations. Also: gemm::moe on a real Q2_0 expert
-// tensor against gemv::moe_q, and Q3R -> Q3_K (q3r::unpack) byte-exact against the original.
+// tensor against gemv::moe_q (96 tokens over 24 experts, and 1,200 over all of them: several
+// blocks of the token grouping), and Q3R -> Q3_K (q3r::unpack) byte-exact against the original.
 //
 //   test_gemm MODEL.gguf
 #include "core/gguf.hpp"
@@ -68,7 +69,7 @@ int main(int argc, char** argv) {
     std::mt19937 rng(3);
     std::normal_distribution<float> nd(0.0f, 1.0f);
     int fail = 0;
-    size_t ws_bytes = gemm::workspace_bytes(12288, T * 10) + (64 << 20);
+    size_t ws_bytes = gemm::workspace_bytes(12288, 1200 * 10) + (64 << 20);
     void* ws;
     CK(cudaMalloc(&ws, ws_bytes));
     void* q8;
@@ -129,11 +130,12 @@ int main(int argc, char** argv) {
     }
 
     // grouped experts: layer 0's gate (with up: fused SwiGLU is not in gemm, so gate alone) and down
+    for (int big = 0; big < 2; ++big)
     for (const char* name : {"blk.0.ffn_gate_exps.weight", "blk.0.ffn_down_exps.weight"}) {
         const GgufTensor* t = g.tensor(name);
         if (!t) continue;
         const int64_t K = t->dims[0], R = t->dims[1], E = t->dims[2];
-        const int k = 10, TT = 96;
+        const int k = 10, TT = big ? 1200 : 96, n_used = big ? int(E) : 24;
         const bool per_slot = std::string(name).find("down") != std::string::npos;
         void* W = upload(g, *t);
         const int64_t stride = gemv::row_bytes(t->type, K) * R;
@@ -143,13 +145,12 @@ int main(int argc, char** argv) {
                 int e;
                 bool dup;
                 do {
-                    e = int(rng() % 24);   // few experts, so they are shared across tokens
+                    e = int(rng() % n_used);   // 24: few experts, shared across tokens
                     dup = false;
                     for (int jj = 0; jj < j; ++jj) dup |= ids[size_t(i) * k + jj] == e;
                 } while (dup);
                 ids[size_t(i) * k + j] = e;
             }
-        (void)E;
         const size_t xrows = per_slot ? size_t(TT) * k : size_t(TT);
         std::vector<float> x(xrows * K);
         for (float& v : x) v = nd(rng);

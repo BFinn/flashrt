@@ -83,6 +83,41 @@ __global__ void k_grouped_rms_norm_v4(const float* x, const float* w, float* y, 
     }
 }
 
+// Prefill, 4 streams: k_hc_combine (x += out * 2 sigmoid(inject / 4) per stream) and then
+// k_grouped_rms_norm_v4 on the new x, in one pass. One block per token; thread i holds float4 i
+// of each stream, so out is read once and x once. Same arithmetic as the two kernels.
+__global__ void k_hc_combine_norm4(float* x, const float* out, const float* inject, const float* w, float* y, __nv_bfloat16* yb, int n,
+                                   float eps) {
+    constexpr int HC = 4;
+    const int t = blockIdx.x, i = threadIdx.x;
+    const float4 o = reinterpret_cast<const float4*>(out + size_t(t) * n)[i];
+    float4 v[HC];
+#pragma unroll
+    for (int s = 0; s < HC; ++s) {
+        const float wv = 2.0f / (1.0f + __expf(-inject[t * HC + s] / HC));
+        float4* xp = reinterpret_cast<float4*>(x + (size_t(t) * HC + s) * n) + i;
+        float4 a = *xp;
+        a.x += o.x * wv;
+        a.y += o.y * wv;
+        a.z += o.z * wv;
+        a.w += o.w * wv;
+        *xp = a;
+        v[s] = a;
+    }
+#pragma unroll
+    for (int s = 0; s < HC; ++s) {
+        const float4 a = v[s];
+        const float ss = block_sum(a.x * a.x + a.y * a.y + a.z * a.z + a.w * a.w);
+        const float inv = rsqrtf(ss / n + eps);
+        const float4 wv = reinterpret_cast<const float4*>(w + size_t(s) * n)[i];
+        const float4 r = make_float4(a.x * inv * wv.x, a.y * inv * wv.y, a.z * inv * wv.z, a.w * inv * wv.w);
+        const size_t row = size_t(t) * HC + s;
+        reinterpret_cast<float4*>(y + row * n)[i] = r;
+        __nv_bfloat162 b[2] = {__floats2bfloat162_rn(r.x, r.y), __floats2bfloat162_rn(r.z, r.w)};
+        reinterpret_cast<uint2*>(yb + row * n)[i] = *reinterpret_cast<uint2*>(b);
+    }
+}
+
 // Decode (TT tokens, a step or a verify window): the hyper-connection RMS norm, down-projection
 // and inject projection in one kernel. Block (rb, g) normalises stream g of every token (xn = x *
 // inv_g * w) into shared memory (block row 0 also writes it out), then its warps take one row
@@ -619,7 +654,25 @@ void linear(const BlockCtx& c, const GpuTensor& W, const float* x, float* y, int
     }
 }
 
+namespace {
+// hc_mix, after hc_combine(x, comb_out, comb_inject) if comb_out is given (fused into the norm
+// in prefill)
+void hc_mix_impl(const BlockCtx& c, int il, int which, float* x, const float* comb_out, const float* comb_inject, int T, float* mixed,
+                 float* inject, float* xn_out);
+}  // namespace
+
 void hc_mix(const BlockCtx& c, int il, int which, const float* x, int T, float* mixed, float* inject, float* xn_out) {
+    hc_mix_impl(c, il, which, const_cast<float*>(x), nullptr, nullptr, T, mixed, inject, xn_out);
+}
+
+void hc_combine_mix(const BlockCtx& c, int il, int which, float* x, const float* out, const float* comb_inject, int T, float* mixed,
+                    float* inject) {
+    hc_mix_impl(c, il, which, x, out, comb_inject, T, mixed, inject, nullptr);
+}
+
+namespace {
+void hc_mix_impl(const BlockCtx& c, int il, int which, float* x, const float* comb_out, const float* comb_inject, int T, float* mixed,
+                 float* inject, float* xn_out) {
     const Spec& s = c.s;
     const int n = s.d_model, hc = s.hc_count, hcd = hc * n;
     std::string pre;
@@ -635,6 +688,12 @@ void hc_mix(const BlockCtx& c, int il, int which, const float* x, int T, float* 
     float* gate = lo + size_t(T) * s.hc_rank;                             // [T][hcd]
     const GpuTensor* w_inj = which < 2 ? &c.w.get(pre + "inject.weight") : nullptr;
     constexpr uint32_t kBF16 = 30;   // GGML_TYPE_BF16
+    const bool v4 = n % 4 == 0 && n / 4 <= 1024 && (n / 4) % 32 == 0;
+    const bool prefill_bf16 = v4 && T >= kGemmMinTokens && w_down.type == kBF16 && (!w_inj || w_inj->type == kBF16);
+    if (comb_out && !(prefill_bf16 && hc == 4)) {   // not fused: the combine first
+        hc_combine(c, x, comb_out, comb_inject, T);
+        comb_out = nullptr;
+    }
     if (T <= 4 && hc == 4 && s.hc_rank % 64 == 0 && T * s.hc_rank <= 4096 && n % 8 == 0 && size_t(T) * n * 4 <= 96 * 1024 &&
         w_up.type == kBF16 && w_down.type == kBF16 && (!w_inj || w_inj->type == kBF16)) {
         // decode steps and verify windows: norm + down + inject in one kernel, then up + silu +
@@ -656,8 +715,7 @@ void hc_mix(const BlockCtx& c, int il, int which, const float* x, int T, float* 
         ck(cudaGetLastError(), "hc_mix");
         return;
     }
-    const bool v4 = n % 4 == 0 && n / 4 <= 1024 && (n / 4) % 32 == 0;
-    if (v4 && T >= kGemmMinTokens && w_down.type == kBF16 && (!w_inj || w_inj->type == kBF16)) {
+    if (prefill_bf16) {
         // prefill: the norm writes xn in BF16 too, into the GEMM workspace, and the down and inject
         // products read it there (before the up product, which reuses that space)
         BlockScratch& bs = c.scratch;
@@ -668,7 +726,11 @@ void hc_mix(const BlockCtx& c, int il, int which, const float* x, int T, float* 
             bs.gemm_ws_bytes = ws;
         }
         auto* xb = static_cast<__nv_bfloat16*>(gemm::bf16_staging(bs.gemm_ws, bs.gemm_ws_bytes, hcd, T));
-        k_grouped_rms_norm_v4<<<T * hc, n / 4, 0, c.stream>>>(x, static_cast<const float*>(w_norm.dev), xn, n, hc, float(s.rms_eps), xb);
+        if (comb_out)
+            k_hc_combine_norm4<<<T, n / 4, 0, c.stream>>>(x, comb_out, comb_inject, static_cast<const float*>(w_norm.dev), xn, xb, n,
+                                                         float(s.rms_eps));
+        else
+            k_grouped_rms_norm_v4<<<T * hc, n / 4, 0, c.stream>>>(x, static_cast<const float*>(w_norm.dev), xn, n, hc, float(s.rms_eps), xb);
         gemm::gemm_bf16(w_down.dev, xb, lo, hcd, s.hc_rank, T, c.stream);
         if (w_inj) gemm::gemm_bf16(w_inj->dev, xb, inject, hcd, w_inj->rows(), T, c.stream);
         k_scale_silu<<<(T * s.hc_rank + 255) / 256, 256, 0, c.stream>>>(lo, T * s.hc_rank, 1.0f / hc);
@@ -688,6 +750,7 @@ void hc_mix(const BlockCtx& c, int il, int which, const float* x, int T, float* 
     if (w_inj) linear(c, *w_inj, xn, inject, T);
     ck(cudaGetLastError(), "hc_mix");
 }
+}  // namespace
 
 void rms_norm_rows(const BlockCtx& c, const float* x, const float* w, float* y, int n, int groups, int rows) {
     k_grouped_rms_norm<<<rows, 256, 0, c.stream>>>(x, w, y, n, groups, float(c.s.rms_eps));

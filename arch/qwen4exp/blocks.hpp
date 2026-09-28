@@ -79,6 +79,10 @@ void linear(const BlockCtx& c, const GpuTensor& W, const float* x, float* y, int
 // no inject). Writes mixed [T][d_model], inject [T][hc] (for which < 2), and optionally xn
 // [T][hc*d_model] (the grouped-norm output).
 void hc_mix(const BlockCtx& c, int il, int which, const float* x, int T, float* mixed, float* inject, float* xn_out = nullptr);
+// hc_combine(c, x, out, comb_inject, T) then hc_mix(c, il, which, x, ...), the combine fused into
+// the mix's RMS norm in prefill (comb_inject may be inject: it is read first).
+void hc_combine_mix(const BlockCtx& c, int il, int which, float* x, const float* out, const float* comb_inject, int T, float* mixed,
+                    float* inject);
 
 // y[row] = x[row] / rms(x[row]) * w[(row % groups) * n ..], for `rows` rows of n values.
 void rms_norm_rows(const BlockCtx& c, const float* x, const float* w, float* y, int n, int groups, int rows);
