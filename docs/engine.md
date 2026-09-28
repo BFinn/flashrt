@@ -312,7 +312,7 @@ cache after, from the prefill's routing counts and the startup prior.
 | **245K, temperature 1.0: plain / `--spec 1` / `--spec 2`, 6 windows, means** | 78.5 / 90.2 / 83.2 | same |
 | **245K greedy `--spec 2`, fresh prefill with the head, 3 windows** | 83.7 / 94.8 / 92.3 | `2026-09-28-sw30-spec-245k` |
 | Verify window KLD (windows of 3 with rewinds, hot set 512) | 0.009232 | `2026-09-28-sw33-p2-temp1-rerun` |
-| **Prefill, automatic chunks, 32K / 64K (q8 KV)** | 5,955-5,978 / 5,982-6,012 tok/s | `2026-09-28-sw71-gdn-tc`, `sw72` |
+| **Prefill, automatic chunks, 32K / 64K (q8 KV)** | 6,216 / 6,239 tok/s | `2026-09-28-sw83-moeq2-pack` (sw71: 5,955 / 5,982) |
 | **Prefill, automatic chunks, 245K (q8 KV / host KV + mirror)** | 5,309 / 5,170 tok/s | `2026-09-28-sw61-milestone` |
 | **Engine: 32K prompt, MTP head, cache rebuild** | 7.9 s | `2026-09-28-sw61-milestone` |
 | Prefill KLD (logits from chunks; fp16, q8; fast path after chunks) | 0.0082-0.0087 | sw47, sw49, sw50 |
@@ -418,12 +418,22 @@ cache after, from the prefill's routing counts and the startup prior.
    GPU work inside the miss window does not pay (sw78, sw79). The grouped window hit kernels
    take 39 µs at T = 2 against 25 µs at T = 1 for the same 10 experts (`test_moe_hits`), which
    only matters in layers without misses.
-2. **Prefill** (64K, 10.9 s). Q3_K now multiplies as Q8_0, exactly (sw69, +3%). Left, in order:
+2. **Prefill** (64K, 10.5 s). Done since sw69:
+   - Q3_K as Q8_0;
+   - the chunked GDN;
+   - routing a warp per token (26x, sw81);
+   - the q/k norm in the conv;
+   - one BF16 conversion per input (sw82);
+   - packed moe_q2 scales (sw83).
+
+   sw80's profile of what is left: dense MMQ ~22%, hc ~21% (at bandwidth), routed experts ~19%,
+   GDN ~9%, attention ~9%. In order:
    - GDN: the chunked form is in (sw71). Left there:
      - prep traffic: raw Q and K^T per key group, and V read by the state kernel with T in the
        state step, would cut about 70 → 35 MB per slab;
      - the state kernel's imbalance: 192 blocks on 84 SMs.
-   - moe_q2's gate/up: about 170 TOPS against a 283-TOPS ceiling at its occupancy.
+   - moe_q2's gate/up: about 175 TOPS against a 283-TOPS ceiling. The per-32 scale arithmetic
+     is the floor, short of per-64 scales, which KLD rejected (sw57).
    - attention (L2-bound gathers);
    - the hc gated mean and norm, at bandwidth.
    Decode: the small mat-vecs that share an input, and the norms and SwiGLU in front of a
