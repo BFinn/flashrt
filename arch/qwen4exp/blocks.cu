@@ -1744,7 +1744,6 @@ __global__ void k_hc_init(const float* emb, float* x, int n, int hc) {
 }
 
 __global__ void k_route_topk(const float* logits, int E, int K, int32_t* ids, float* wts, uint32_t* counts) {
-    __shared__ float p[1024];
     __shared__ float red[32];
     __shared__ float selp[32];
     const int t = blockIdx.x, e = threadIdx.x, lane = e & 31, warp = e >> 5, nw = blockDim.x >> 5;
@@ -1764,13 +1763,42 @@ __global__ void k_route_topk(const float* logits, int E, int K, int32_t* ids, fl
     sum = 0.0f;
     for (int w = 0; w < nw; ++w) sum += red[w];
     const float pe = e < E ? ex / sum : -1.0f;
-    p[e] = pe;
+    // Only candidates can be in the top K: p >= the K-th largest warp maximum (K warps hold an
+    // element at least that large). Everything ranked ahead of a candidate is a candidate, so
+    // ranking among the candidates gives the global rank (higher p first, ties by lower index),
+    // as k_route does in decode. Was a rank count over all E (sw81).
+    __shared__ float wmax[32];
+    __shared__ int cand_i[1024];
+    __shared__ float cand_p[1024];
+    __shared__ int n_cand;
+    {
+        float wm = pe;
+        for (int o = 16; o > 0; o >>= 1) wm = fmaxf(wm, __shfl_xor_sync(0xffffffff, wm, o));
+        if (lane == 0) wmax[warp] = wm;
+        if (e == 0) n_cand = 0;
+    }
     __syncthreads();
-    if (e < E) {
+    float thr = -1.0f;
+    if (K <= nw)
+        for (int w = 0; w < nw; ++w) {
+            const float v = wmax[w];
+            int ahead = 0;
+            for (int u = 0; u < nw; ++u) ahead += (wmax[u] > v) | ((wmax[u] == v) & (u < w));
+            if (ahead == K - 1) thr = v;
+        }
+    const bool cand = e < E && pe >= thr;
+    if (cand) {
+        const int ci = atomicAdd(&n_cand, 1);
+        cand_i[ci] = e;
+        cand_p[ci] = pe;
+    }
+    __syncthreads();
+    if (cand) {
         int rank = 0;
-        for (int j = 0; j < E; ++j) {
-            const float pj = p[j];
-            rank += (pj > pe) | ((pj == pe) & (j < e));
+        const int nc = n_cand;
+        for (int j = 0; j < nc; ++j) {
+            const float pj = cand_p[j];
+            rank += (pj > pe) | ((pj == pe) & (cand_i[j] < e));
         }
         if (rank < K) {
             ids[size_t(t) * K + rank] = e;
