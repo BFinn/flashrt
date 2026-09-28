@@ -180,8 +180,20 @@ __global__ void k_hc_combine_norm4(float* x, const float* out, const float* inje
 // arithmetic for every TT).
 // Weight matrices of the decode hc kernels, read 8 consecutive elements at a time (element offset
 // e, a multiple of 8): BF16, or Q8P (kTypeQ8P: int8 [rows][cols], then fp16 scales per 32).
+// load(e) fetches the raw bytes (so a kernel can issue many loads before decoding any), dec()
+// expands them.
 struct WBf16 {
     const uint16_t* w;
+    using Raw = uint4;
+    __device__ __forceinline__ Raw load(size_t e) const { return __ldg(reinterpret_cast<const uint4*>(w + e)); }
+    __device__ __forceinline__ static void dec(const Raw& u, float (&v)[8]) {
+        const uint32_t wv[4] = {u.x, u.y, u.z, u.w};
+#pragma unroll
+        for (int k = 0; k < 4; ++k) {
+            v[2 * k] = __uint_as_float(wv[k] << 16);
+            v[2 * k + 1] = __uint_as_float(wv[k] & 0xffff0000u);
+        }
+    }
     __device__ __forceinline__ void get8(size_t e, float (&v)[8]) const {
         const uint4 u = *reinterpret_cast<const uint4*>(w + e);
         const uint32_t wv[4] = {u.x, u.y, u.z, u.w};
@@ -195,6 +207,19 @@ struct WBf16 {
 struct WQ8P {
     const int8_t* q;
     const __half* d;
+    struct Raw {
+        uint2 q;
+        __half d;
+    };
+    __device__ __forceinline__ Raw load(size_t e) const { return Raw{__ldg(reinterpret_cast<const uint2*>(q + e)), d[e / 32]}; }
+    __device__ __forceinline__ static void dec(const Raw& u, float (&v)[8]) {
+        const float sc = __half2float(u.d);
+#pragma unroll
+        for (int k = 0; k < 4; ++k) {
+            v[k] = float(int8_t(u.q.x >> (8 * k))) * sc;
+            v[4 + k] = float(int8_t(u.q.y >> (8 * k))) * sc;
+        }
+    }
     __device__ __forceinline__ void get8(size_t e, float (&v)[8]) const {
         const uint2 u = *reinterpret_cast<const uint2*>(q + e);
         const float sc = __half2float(d[e / 32]);
@@ -254,6 +279,108 @@ __global__ void k_hc_down(const float* x, const float* w_norm, WD Wd, const uint
     }
 }
 
+// v2 of k_hc_down (sw75): a warp takes RPW rows (each x value read from shared memory serves RPW
+// weights) and loads all its weights into registers before the norm, whose 1 / rms is applied
+// after the dot product: part = inv * W (x * w_norm). One barrier. Needs n % 256 == 0 and
+// n / 256 <= kHcDownMaxK. The inject rows (BF16, r >= rank, whole warps since rank % RPW == 0)
+// take the plain loop.
+constexpr int kHcDownMaxK = 12, kHcDownWarps = 8, kHcDownRpw = 2;
+template <int TT, typename WD>
+__global__ void __launch_bounds__(32 * kHcDownWarps) k_hc_down2(const float* x, const float* w_norm, WD Wd, const uint16_t* Wi,
+                                                                float* xn_out, float* part, int n, int rank, int n_inject, float eps) {
+    constexpr int RPW = kHcDownRpw, NW = kHcDownWarps;
+    extern __shared__ __align__(16) float xs[];   // [TT][n]: x * w_norm
+    __shared__ float red[TT][NW];
+    const int g = blockIdx.y, hc = gridDim.y, rows = rank + n_inject, nk = n / 256;
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, r0 = (blockIdx.x * NW + warp) * RPW;
+    const size_t hcn = size_t(hc) * n;
+    // the weights first
+    typename WD::Raw raw[RPW][kHcDownMaxK];
+    const bool down = r0 < rank;
+    if (down)
+#pragma unroll
+        for (int j = 0; j < RPW; ++j)
+#pragma unroll
+            for (int k = 0; k < kHcDownMaxK; ++k)
+                if (k < nk) raw[j][k] = Wd.load(size_t(r0 + j) * hcn + size_t(g) * n + 8 * size_t(lane + 32 * k));
+    // x * w_norm into shared memory, and the sum of squares
+    for (int t = 0; t < TT; ++t) {
+        const float4* xg = reinterpret_cast<const float4*>(x + (size_t(t) * hc + g) * n);
+        const float4* wg = reinterpret_cast<const float4*>(w_norm + size_t(g) * n);
+        float ss = 0.0f;
+        for (int i = threadIdx.x; i < n / 4; i += blockDim.x) {
+            const float4 v = xg[i], w = wg[i];
+            ss += v.x * v.x + v.y * v.y + v.z * v.z + v.w * v.w;
+            reinterpret_cast<float4*>(xs + size_t(t) * n)[i] = make_float4(v.x * w.x, v.y * w.y, v.z * w.z, v.w * w.w);
+        }
+#pragma unroll
+        for (int o = 16; o > 0; o >>= 1) ss += __shfl_xor_sync(~0u, ss, o);
+        if (lane == 0) red[t][warp] = ss;
+    }
+    __syncthreads();
+    float inv[TT];
+#pragma unroll
+    for (int t = 0; t < TT; ++t) {
+        float ss = 0.0f;
+#pragma unroll
+        for (int w = 0; w < NW; ++w) ss += red[t][w];
+        inv[t] = rsqrtf(ss / n + eps);
+    }
+    if (blockIdx.x == 0)
+        for (int t = 0; t < TT; ++t)
+            for (int i = threadIdx.x; i < n; i += blockDim.x) xn_out[(size_t(t) * hc + g) * n + i] = xs[size_t(t) * n + i] * inv[t];
+    if (r0 >= rows) return;
+    float acc[RPW][TT] = {};
+    if (down) {
+#pragma unroll
+        for (int k = 0; k < kHcDownMaxK; ++k)
+            if (k < nk) {
+                const int ch = lane + 32 * k;
+                float wf[RPW][8];
+#pragma unroll
+                for (int j = 0; j < RPW; ++j) WD::dec(raw[j][k], wf[j]);
+#pragma unroll
+                for (int t = 0; t < TT; ++t) {
+                    const float4 x0 = reinterpret_cast<const float4*>(xs + size_t(t) * n)[2 * ch];
+                    const float4 x1 = reinterpret_cast<const float4*>(xs + size_t(t) * n)[2 * ch + 1];
+                    const float xv[8] = {x0.x, x0.y, x0.z, x0.w, x1.x, x1.y, x1.z, x1.w};
+#pragma unroll
+                    for (int j = 0; j < RPW; ++j)
+#pragma unroll
+                        for (int q = 0; q < 8; ++q) acc[j][t] += wf[j][q] * xv[q];
+                }
+            }
+    } else {
+        const WBf16 wi{Wi};
+#pragma unroll
+        for (int j = 0; j < RPW; ++j) {
+            if (r0 + j >= rows) break;
+            const size_t e0 = size_t(r0 + j - rank) * hcn + size_t(g) * n;
+            for (int ch = lane; ch < n / 8; ch += 32) {
+                float wf[8];
+                wi.get8(e0 + 8 * size_t(ch), wf);
+#pragma unroll
+                for (int t = 0; t < TT; ++t) {
+                    const float4 x0 = reinterpret_cast<const float4*>(xs + size_t(t) * n)[2 * ch];
+                    const float4 x1 = reinterpret_cast<const float4*>(xs + size_t(t) * n)[2 * ch + 1];
+                    const float xv[8] = {x0.x, x0.y, x0.z, x0.w, x1.x, x1.y, x1.z, x1.w};
+#pragma unroll
+                    for (int q = 0; q < 8; ++q) acc[j][t] += wf[q] * xv[q];
+                }
+            }
+        }
+    }
+#pragma unroll
+    for (int j = 0; j < RPW; ++j)
+#pragma unroll
+        for (int t = 0; t < TT; ++t) {
+            float a = acc[j][t];
+#pragma unroll
+            for (int o = 16; o > 0; o >>= 1) a += __shfl_xor_sync(~0u, a, o);
+            if (lane == 0 && r0 + j < rows) part[(size_t(t) * hc + g) * rows + r0 + j] = a * inv[t];
+        }
+}
+
 // Decode (TT tokens), hc == 4: the hyper-connection up-projection fused with its neighbours.
 // gate = W_up (BF16, [hc * n rows][rank]) * silu(lo * scale); mixed[t][i] = mean_s xn[t][s][i] *
 // sigmoid(gate[t][s][i]). One block covers columns i0 .. i0+7 of all 4 streams (32 rows); 8 lanes
@@ -263,10 +390,19 @@ __global__ void k_hc_down(const float* x, const float* w_norm, WD Wd, const uint
 template <int TT, typename WU>
 __global__ void k_hc_up_mix(WU W, const float* part, int n_inject, float scale, const float* xn, float* mixed,
                             float* inject, int n, int rank) {
-    constexpr int HC = 4;
+    constexpr int HC = 4, MAXC = 8;   // rank <= 64 * MAXC
     __shared__ __align__(16) float xs[4096];   // [TT][rank]
     __shared__ float contrib[TT][HC][8];
     const int prow = rank + n_inject;
+    const int grp = threadIdx.x >> 3, l8 = threadIdx.x & 7;
+    const int st = grp >> 3, il = grp & 7, i = blockIdx.x * 8 + il;
+    // this lane's weights first (independent of the partials), then the preamble
+    typename WU::Raw raw[MAXC];
+    const size_t e0 = (size_t(st) * n + i) * rank;
+    if (i < n)
+#pragma unroll
+        for (int k = 0; k < MAXC; ++k)
+            if (l8 + 8 * k < rank / 8) raw[k] = W.load(e0 + 8 * size_t(l8 + 8 * k));
     for (int t = 0; t < TT; ++t)
         for (int j = threadIdx.x; j < rank; j += blockDim.x) {
             float lo = 0.0f;
@@ -283,16 +419,16 @@ __global__ void k_hc_up_mix(WU W, const float* part, int n_inject, float scale, 
         inject[t * n_inject + k] = a;
     }
     __syncthreads();
-    const int grp = threadIdx.x >> 3, l8 = threadIdx.x & 7;
-    const int st = grp >> 3, il = grp & 7, i = blockIdx.x * 8 + il;
     float acc[TT];
 #pragma unroll
     for (int t = 0; t < TT; ++t) acc[t] = 0.0f;
     if (i < n) {
-        const size_t e0 = (size_t(st) * n + i) * rank;
-        for (int ch = l8; ch < rank / 8; ch += 8) {
+#pragma unroll
+        for (int k = 0; k < MAXC; ++k) {
+            const int ch = l8 + 8 * k;
+            if (ch >= rank / 8) break;
             float wf[8];
-            W.get8(e0 + 8 * size_t(ch), wf);
+            WU::dec(raw[k], wf);
 #pragma unroll
             for (int t = 0; t < TT; ++t) {
                 const float4 x0 = reinterpret_cast<const float4*>(xs + t * rank)[2 * ch];
@@ -335,7 +471,20 @@ void hc_fused_launch(const float* x, const float* w_norm, WD Wd, const uint16_t*
         ck(cudaFuncSetAttribute(k_hc_down<TT, WD>, cudaFuncAttributeMaxDynamicSharedMemorySize, 96 * 1024), "hc_down smem");
         attr = true;
     }
-    k_hc_down<TT, WD><<<dim3((rows + 15) / 16, hc), 512, smem, st>>>(x, w_norm, Wd, Wi, xn, part, n, rank, n_inj, eps);
+    static const bool v2 = [] {   // FLASHRT_HC_DOWN2=0: the one-row-per-warp kernel
+        const char* e = std::getenv("FLASHRT_HC_DOWN2");
+        return !(e && e[0] == '0');
+    }();
+    if (v2 && n % 256 == 0 && n / 256 <= kHcDownMaxK && rank % kHcDownRpw == 0) {
+        static bool attr2 = false;
+        if (!attr2 && smem > 48 * 1024) {
+            ck(cudaFuncSetAttribute(k_hc_down2<TT, WD>, cudaFuncAttributeMaxDynamicSharedMemorySize, 96 * 1024), "hc_down2 smem");
+            attr2 = true;
+        }
+        constexpr int per = kHcDownWarps * kHcDownRpw;
+        k_hc_down2<TT, WD><<<dim3((rows + per - 1) / per, hc), 32 * kHcDownWarps, smem, st>>>(x, w_norm, Wd, Wi, xn, part, n, rank, n_inj, eps);
+    } else
+        k_hc_down<TT, WD><<<dim3((rows + 15) / 16, hc), 512, smem, st>>>(x, w_norm, Wd, Wi, xn, part, n, rank, n_inj, eps);
     k_hc_up_mix<TT, WU><<<(n + 7) / 8, 256, 0, st>>>(Wu, part, n_inj, 1.0f / hc, xn, mixed, inject, n, rank);
 }
 
