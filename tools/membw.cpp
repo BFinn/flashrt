@@ -37,7 +37,7 @@ std::uint64_t read_pass(const char* p, std::size_t bytes) {
     }
     acc0 = _mm512_xor_si512(_mm512_xor_si512(acc0, acc1), _mm512_xor_si512(acc2, acc3));
     return std::uint64_t(_mm512_reduce_add_epi64(acc0));
-#else
+#elif defined(__AVX2__)
     __m256i acc0 = _mm256_setzero_si256(), acc1 = acc0;
     for (std::size_t i = 0; i + 64 <= bytes; i += 64) {
         acc0 = _mm256_xor_si256(acc0, _mm256_load_si256(reinterpret_cast<const __m256i*>(p + i)));
@@ -47,6 +47,16 @@ std::uint64_t read_pass(const char* p, std::size_t bytes) {
     alignas(32) std::uint64_t v[4];
     _mm256_store_si256(reinterpret_cast<__m256i*>(v), acc0);
     return v[0] ^ v[1] ^ v[2] ^ v[3];
+#else   // portable (a build without -march=native): the compiler vectorises what it can
+    std::uint64_t a0 = 0, a1 = 0, a2 = 0, a3 = 0;
+    const std::uint64_t* q = reinterpret_cast<const std::uint64_t*>(p);
+    for (std::size_t i = 0; i + 32 <= bytes; i += 32, q += 4) {
+        a0 ^= q[0];
+        a1 ^= q[1];
+        a2 ^= q[2];
+        a3 ^= q[3];
+    }
+    return a0 ^ a1 ^ a2 ^ a3;
 #endif
 }
 
