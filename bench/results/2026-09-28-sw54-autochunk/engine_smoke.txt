@@ -1,0 +1,10 @@
+flashrt: expert cache filled from $BENCH/cache-prior-calib32k.bin (32768 tokens)
+flashrt: qwen4exp, 48 layers, expert cache 6736 slots (27.4%), MTP drafts 1 per round
+flashrt: prefill of 31999 tokens in chunks of 10752 (9905 MiB free)
+flashrt: prefill of 31999 tokens in chunks of 10752 (9609 MiB free)
+ready after 27.8 s: {'ev': 'ready', 'version': '0.1.0', 'arch': 'qwen4exp', 'max_context': 65536, 'features': ['stop', 'sampling', 'prefix_reuse', 'mtp']}
+r1: prompt 32000 (reused 0) in 10.2 s, 96 tokens in 0.87 s (110.6 tok/s), finish length, drafts {'proposed': 61, 'accepted': 35}, first tokens [852, 26880, 1116, 1599, 3571, 310, 279, 9599]
+r2: prompt 32128 (reused 32096) in 0.3 s, 96 tokens in 0.89 s (107.9 tok/s), finish length, drafts {'proposed': 60, 'accepted': 35}, first tokens [14095, 314, 279, 2859, 8379, 264, 23198, 3043]
+r3: prompt 32144 (reused 32127) in 0.3 s, 96 tokens in 0.98 s (98.3 tok/s), finish length, drafts {'proposed': 62, 'accepted': 33}, first tokens [28761, 1116, 781, 5312, 279, 4634, 67350, 303]
+r4: prompt 32000 (reused 0) in 10.1 s, 7 tokens in 0.06 s (110.7 tok/s), finish cancelled, drafts {'proposed': 4, 'accepted': 2}, first tokens [852, 26880, 1116, 1599, 3571, 310, 279]
+engine exited with 0

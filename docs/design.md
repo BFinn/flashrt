@@ -146,8 +146,12 @@ with the MTP head's KV, 6 windows of 128 tokens each:
 - **Scope done:** big chunks on the expert cache's VRAM (the engine lends it and rebuilds the
   cache after), the grouped int8 Q2_0 GEMM (ggml's MMQ, launched by flashrt), and the prefix cache
   (the engine reuses the previous sequence or its checkpoint).
-- **Not done:** the tensor-core indexer. The indexer scores take about 6% of prefill time at 64K.
-- **The reference path took 38 minutes for 245K;** chunked prefill takes about 2 minutes.
+- **The tensor-core indexer** came with the prefill kernels, later on 2026-09-28. That work also
+  added tensor-core attention, a GDN column kernel, BF16 hc activations and flashrt's own expert
+  grouping, and the chunk length chosen from free VRAM. Prefill now runs at 4,006 tok/s at 32K and
+  3,549-3,623 at 245K. KLD 0.0082-0.0087. Evidence: `sw46`-`sw54`.
+- **The reference path took 38 minutes for 245K;** chunked prefill took about 2 minutes at the
+  gate and now takes 68 s.
 
 **How the KLD gate is measured** (set 2026-09-27, `bench/results/2026-09-27-p1-kld`):
 - **Protocol:** llama-perplexity's KL-divergence protocol on wikitext-2 test, 8,192-token chunks,

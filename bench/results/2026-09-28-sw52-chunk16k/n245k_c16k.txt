@@ -1,0 +1,5 @@
+expert arena registered in 1.8 s
+KV cache: q8_0
+terminate called after throwing an instance of 'std::runtime_error'
+  what():  cudaMalloc expert stream: out of memory
+timeout: the monitored command dumped core

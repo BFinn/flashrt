@@ -18,7 +18,16 @@ per-experiment evidence is in `bench/results/2026-09-2*`, each folder with a REA
   reasoning, tool calls and stop strings over the engine (`bench/results/2026-09-28-sw35-server`).
 - **P3 is complete (2026-09-28):** prefill in chunks with the experts streamed to the GPU, 2,135-
   2,272 tok/s at 32K and 1,940-1,959 at 245K (was 109-123 on the CPU path).
-- **Next:** cheaper verify windows, and the prefill kernels the profile names (attention, GDN).
+- **Prefill kernels (2026-09-28):**
+  - tensor-core attention, a GDN column kernel, tensor-core indexer scores;
+  - BF16 activations written by the hyper-connection norm, flashrt's own expert grouping;
+  - the arena registered at load.
+
+  - the chunk length chosen from free VRAM.
+
+  Prefill runs **4,006 tok/s at 32K and 3,549-3,623 at 245K** (chunks of 16,384 and about
+  10-11K); KLD 0.0082-0.0087. Through the engine, a 32K prompt takes 10.2 s.
+- **Next:** cheaper verify windows; for prefill, the expert MMQ (a third of it).
 
 ## One decode token (fast path)
 
@@ -119,8 +128,10 @@ window's cost.
 
 ## Prefill in chunks (P3)
 
-A `forward()` of more tokens than the decode batch is a chunk (the engine uses 4,096; fr_bench
-`--prefill-chunk`):
+A `forward()` of more tokens than the decode batch is a chunk. The engine picks the length
+(`ForwardRef::pick_chunk`): the longest, up to 16,384, whose buffers fit the free VRAM, estimated
+from the allocation formulas (`chunk_bytes`). That is 16,384 at 32K and about 10-11K beside 245K
+of KV. `fr_bench --prefill-chunk auto` does the same.
 - **Dense layers** run as matrix-matrix products (`kernels/cuda/ggml_gemm.h`): ggml's MMQ int8
   tensor-core kernels for the quantized types, launched by flashrt (`mmq_launch.cuh`, one file per
   weight type), cuBLAS for BF16. Q3R matrices are unpacked back to Q3_K for it.
@@ -130,6 +141,23 @@ A `forward()` of more tokens than the decode batch is a chunk (the engine uses 4
   sized by the largest expert's token count). About 32 GB cross PCIe per chunk, at 41-50 GB/s.
 - **QSA** runs its scoring, selection and attention in sub-batches of 128 tokens. With host KV,
   the chunks attend from a VRAM mirror of the cache (sized to the prompt, freed after).
+  - **Attention** (`k_attn_tc`): one CTA per (kv head, token). The GQA group's 12 query heads are
+    the M = 16 rows of fp16 `mma.m16n8k16`, with fp32 accumulation. K and V go from the token's
+    cell list straight into fragments, with no shared staging: the dot product's k order and the
+    output's column order are permuted so each lane reads contiguous bytes (64 dims of one cell
+    for K, one Q8_0 block of four cells for V). The softmax is online in base 2, and there are no
+    split-K partials.
+  - **Scores** (`k_idx_scores_tc`): 32 tokens x 4 heads as M rows against tiles of 64 pooled keys
+    in fp16, with relu and the head sum fused.
+  - Decode and verify windows keep the FP32 split-K kernels.
+- **GDN** (`k_gdn_delta_col`, calls of 16+ tokens): four lanes share two state columns (32 rows
+  each), so the column sums are shuffles, with no block barrier per token. q, k, v and the gates
+  arrive in tiles of 8 through shared memory, three tiles in flight. Shared-memory reads bound
+  it, so each lane reads the token's k and q once for both of its columns.
+- **Hyper-connections:** the RMS norm writes `xn` in BF16 as well, for the down and inject
+  products. The combine after the mixer is fused into the FFN mix's norm (`k_hc_combine_norm4`).
+- **Expert grouping** (`moe_prepare`) is flashrt's own: per-block histograms, a scan and a stable
+  placement, O(T K). ggml's helper scanned every slot once per expert.
 - **The n-gram rows** of the next chunk are read from the SSD while a chunk computes.
 - **Routing counts** accumulate on the GPU and feed the expert cache after the prefill.
 
@@ -162,6 +190,12 @@ cache after, from the prefill's routing counts and the startup prior.
 | **Window graphs, one pair per length** | Eager windows paid about 1.4 ms of launches per round. | sw27 |
 | **Prefill: every layer's experts streamed, not only the misses** | A 4K-8K chunk touches all 512 experts of a layer; one 676 MB copy per layer overlaps the previous layer, and the cache's VRAM is free for the chunk's buffers. | sw36-sw39 (P3): 136 → 2,135 tok/s at 32K |
 | **A VRAM mirror of host KV during prefill** | Chunk attention reading the host store over PCIe ran 2.6× slower. | sw42, sw43: 245K 738 → 1,940 tok/s |
+| **Tensor-core prefill attention, K/V gathered into fragments** | The FP32 split-K kernel ran at about 7 TFLOPS and wrote 0.8 MB of partials per token-layer. | sw46: 32K 2,193 → 2,644 tok/s; 64K attention 6.1 → 0.95 s |
+| **GDN: lanes own columns, tokens tiled through shared memory** | The block kernel waited on 4 barriers per token. v1, which prefetched one token into registers, waited on DRAM (slower). v2 was bound by shared-memory reads (24 per lane-token, over 4 addresses). | sw47, sw50: 32K 3,216 → 3,531 tok/s |
+| **Tensor-core indexer scores** | FP32 scoring is linear in depth: 1.65 s at 64K, an estimated 20 s at 245K. | sw49: 64K 2,984 → 3,197 tok/s; 0.16 s |
+| **BF16 from the hc norm; own expert grouping; hc combine fused into the norm** | The conversions cost as much as the BF16 GEMMs (1.17 s at 64K); ggml's grouping took 0.67 s. | sw48, sw51 (bit-identical) |
+| **The arena registered at load** | `cudaHostRegister` takes 1.8 s and fell into the first long prompt. | sw50 |
+| **Chunk length from free VRAM** | Longer chunks fill the expert tiles better (+8.6% from 8K to 16K), but 16K does not fit beside 245K of KV. | sw52-sw54: 245K 3,362 → 3,623 tok/s |
 | **Sampling draws keyed by (seed, position)** | A position's sample is the same in a plain step and in a verify window, so speculative output can be checked against plain output token for token. | test_sample, sw31 |
 
 ## Tried and rejected, or parked
@@ -183,6 +217,11 @@ cache after, from the prefill's routing counts and the startup prior.
   2K (sw29). The probability over the trimmed vocabulary is not calibrated enough.
 - **Token-id prefix as the drafter's vocabulary:** the first 40K ids cover only 92.7% of wiki
   tokens. A frequency ranking is used instead.
+- **Narrower expert MMQ tiles** (J = 64 or 32 instead of 128, for fuller tiles at about 160 tokens
+  per expert): slower, 2,640 and 2,211 tok/s against 2,896 at 32K. Weight reuse matters more
+  than tile fill. (sw48)
+- **MMQ without stream-k for the expert calls:** not possible without patching ggml. The
+  kernel's tiling is chosen at compile time, and stream-k already spreads the experts evenly.
 
 ## Current numbers (all exact within the KLD gate)
 
@@ -199,8 +238,11 @@ cache after, from the prefill's routing counts and the startup prior.
 | **245K, temperature 1.0: plain / `--spec 1` / `--spec 2`, 6 windows, means** | 78.5 / 90.2 / 83.2 | same |
 | **245K greedy `--spec 2`, fresh prefill with the head, 3 windows** | 83.7 / 94.8 / 92.3 | `2026-09-28-sw30-spec-245k` |
 | Verify window KLD (windows of 3 with rewinds, hot set 512) | 0.009232 | `2026-09-28-sw33-p2-temp1-rerun` |
-| **Prefill, chunks of 4,096 / 8,192, 32K** | 2,135 / 2,272 tok/s | `2026-09-28-sw39-p3` |
-| **Prefill, chunks of 8,192, 245K (q8 KV / host KV + mirror)** | 1,959 / 1,940 tok/s | `sw42-p3`, `sw43-p3` |
+| **Prefill, chunks of 8,192, 32K / 64K (q8 KV)** | 3,689 / 3,655 tok/s | `2026-09-28-sw51-prefill` |
+| **Prefill, chunks of 16,384, 32K / 64K (q8 KV)** | 4,005 / 3,975 tok/s | `2026-09-28-sw52-chunk16k` |
+| **Prefill, automatic chunks, 245K (q8 KV / host KV + mirror)** | 3,623 / 3,549 tok/s | `2026-09-28-sw54-autochunk` |
+| **Engine: 32K prompt, MTP head, cache rebuild** | 10.2 s | `2026-09-28-sw54-autochunk` |
+| Prefill KLD (logits from chunks; fp16, q8; fast path after chunks) | 0.0082-0.0087 | sw47, sw49, sw50 |
 | Prefill, reference path (CPU experts, 64-token batches) | 109-123 tok/s | |
 
 **Where the time goes at 245K with the hot set** (nsys `--cuda-graph-trace=node`, sw20):
@@ -274,8 +316,9 @@ cache after, from the prefill's routing counts and the startup prior.
 - **Two unexplained aborts** ("unspecified launch failure", Xid 43, sw7 and sw11). They fit a
   false doorbell timeout from unsigned timer arithmetic, which is now fixed and reports instead
   of trapping. There has been none in the 30+ runs since. The root cause is not proven.
-- **Prefill** is the reference path (every expert on the CPU, batches of 64): 111-123 tok/s, 34
-  minutes for 245K. That is P3.
+- **The chunk path holds about 0.5 MiB per token** (sw53). The block scratch is sized about 30%
+  above the widest mixer's need, and the per-slot expert outputs take 100 KB per token. Trimming
+  both would let 245K run chunks of about 13K.
 - **Hot set:** `k_hot_select` is serial CLOCK in one thread (17 µs per layer), and the copy costs
   about 30 µs per layer at steady state. Both have room to improve.
 - **`k_idx_select`** still spends about 70 µs per layer at 245K in 4 single-CTA histogram passes.
@@ -298,7 +341,9 @@ cache after, from the prefill's routing counts and the startup prior.
    several window tokens share (the grouped hit kernels read each once), a draft length chosen
    per round from the window's expected misses, and more cache slots (the Q2_0 head frees about
    500).
-2. **Prefill kernels:** at 64K the attention partials (FP32 CUDA cores) take 20% of prefill and
-   the sequential GDN delta rule 10%; a tensor-core attention and a chunked delta rule are next.
-   The expert MMQ (per-expert batches of about 80-160 tokens) is another 20%.
+2. **Prefill:** at 64K the expert MMQ takes 5.4 s of 16.9 s of kernels, about 57 TOPS of int8. At
+   chunks of 8,192 each expert averages 160 tokens, which fills 62% of its two 128-wide tiles.
+   Chunks of 16,384 help (+8.6%) where they fit. Next: an expert kernel that reads the arena's
+   planar Q2_0 directly (saving the 0.65 s conversion too), and a leaner chunk footprint. Smaller
+   items: Q3_K MMQ 1.2 s, and the hc elementwise kernels, about 2 s together.
 3. **Tuning:** multi-CTA select, a parallel hot-set CLOCK, an adaptive swap budget.
