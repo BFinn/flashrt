@@ -108,7 +108,9 @@ int main() {
         std::snprintf(name, sizeof name, "ref == ggml dot, %dx%d (max abs diff)", rows, cols);
         check(maxd == 0.0, name, maxd);
 
-        // 2. AVX-512 vs reference for each token count
+        // 2. AVX-512 vs reference for each token count (skipped on CPUs without AVX-512 VNNI: the
+        // kernel is compiled with AVX-512 flags and would fault there)
+        if (!have_avx512()) continue;
         for (int nt = 1; nt <= 4; ++nt) {
             std::fill(ya.begin(), ya.end(), 0.0f);
             matvec_avx512(w, av.data(), nt, 0, rows, ya.data(), rows);
@@ -149,7 +151,7 @@ int main() {
         for (auto& x : acts) av.push_back(x.a);
         std::vector<float> o_ref(nt * d_model), o_avx(nt * d_model);
         expert_ffn(e, av.data(), nt, o_ref.data(), d_model, scratch.data(), false);
-        expert_ffn(e, av.data(), nt, o_avx.data(), d_model, scratch.data(), true);
+        expert_ffn(e, av.data(), nt, o_avx.data(), d_model, scratch.data(), have_avx512());
 
         double num = 0, den = 0, num32 = 0;
         for (int t = 0; t < nt; ++t) {

@@ -1,0 +1,30 @@
+# CI on GitHub's hosted runners (no GPU): the CPU build and its tests, and the server's unit
+# tests and lints. The CUDA kernels and their tests run on the target box (README: Tests).
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  cpu:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y ninja-build
+      - run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DFLASHRT_CUDA=OFF -DFLASHRT_NATIVE=OFF
+      - run: cmake --build build
+      - run: ctest --test-dir build --output-on-failure
+
+  server:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo test --release --locked
+      - run: cargo clippy --release --locked -- -D warnings
