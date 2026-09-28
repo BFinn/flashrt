@@ -10,6 +10,7 @@
 #include <cuda_bf16.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -150,6 +151,18 @@ void gemm(uint32_t t, const void* W, const float* x, float* y, int64_t ncols, in
     ck(cudaGetLastError(), "gemm");
 }
 
+void gemm_bf16(const void* W, const void* x_bf16, float* y, int64_t ncols, int64_t nrows, int64_t T, cudaStream_t stream) {
+    cublasHandle_t h = cublas();
+    cublasSetStream(h, stream);
+    const float one = 1.0f, zero = 0.0f;
+    const cublasStatus_t st = cublasGemmEx(h, CUBLAS_OP_T, CUBLAS_OP_N, int(nrows), int(T), int(ncols), &one, W, CUDA_R_16BF, int(ncols),
+                                           x_bf16, CUDA_R_16BF, int(ncols), &zero, y, CUDA_R_32F, int(nrows), CUBLAS_COMPUTE_32F,
+                                           CUBLAS_GEMM_DEFAULT);
+    if (st != CUBLAS_STATUS_SUCCESS) throw std::runtime_error("gemm_bf16: cuBLAS failed (" + std::to_string(int(st)) + ")");
+}
+
+void* bf16_staging(void* ws, size_t ws_bytes, int64_t ncols, int64_t T) { return carve(ws, ws_bytes, ncols, T).act; }
+
 MoePlan moe_prepare(uint32_t t, int E, const float* x, bool x_per_slot, const int32_t* ids, int64_t T, int K, int64_t ncols, void* ws,
                     size_t ws_bytes, cudaStream_t stream) {
     const TypeInfo ti = info(t);
@@ -178,6 +191,11 @@ MoePlan moe_prepare(uint32_t t, int E, const float* x, bool x_per_slot, const in
     int64_t mx = 1;
     for (int e = 0; e < E; ++e) mx = std::max<int64_t>(mx, hb[e + 1] - hb[e]);
     p.ncols_max = mx;
+    static const int force_j = [] {
+        const char* e = std::getenv("FLASHRT_MOE_J");
+        return e ? std::atoi(e) : 0;
+    }();
+    p.ncols_opt = force_j > 0 ? std::min<int64_t>(mx, force_j) : mx;
     p.act = reinterpret_cast<const int*>(w.act);
     p.ids_dst = w.ids_dst;
     p.bounds = w.bounds;
@@ -196,7 +214,7 @@ void moe_run(const MoePlan& p, const void* W, int64_t expert_stride_bytes, float
                            p.ncols, nrows, p.rows, s01, p.rows, nrows,
                            E, E, s02, s12, nrows * p.K,
                            1, 1, s02 * E, s12 * p.T, nrows * p.rows,
-                           p.ncols_max, p.ncols_max};
+                           p.ncols_max, p.ncols_opt};
     ti.run(args, p.fixup, stream);
     ck(cudaGetLastError(), "gemm::moe_run");
 }

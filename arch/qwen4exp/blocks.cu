@@ -8,6 +8,7 @@
 #include "kernels/cuda/q3r.h"
 #include "quant/q2_0/moe_cpu.hpp"
 
+#include <cuda_bf16.h>
 #include <cuda_fp16.h>
 
 #include <algorithm>
@@ -66,14 +67,20 @@ __global__ void k_scale_silu(float* x, int n, float scale) {
 
 // mixed[t][i] = mean over s of xn[t][s][i] * sigmoid(gate[t][s][i])
 // As k_grouped_rms_norm for n % 4 == 0 and blockDim.x == n / 4: one float4 per thread, kept in
-// registers between the reduction and the write.
-__global__ void k_grouped_rms_norm_v4(const float* x, const float* w, float* y, int n, int hc, float eps) {
+// registers between the reduction and the write. yb, if given, gets y rounded to BF16 as well
+// (the input of BF16 products, so they need no conversion pass).
+__global__ void k_grouped_rms_norm_v4(const float* x, const float* w, float* y, int n, int hc, float eps, __nv_bfloat16* yb) {
     const int row = blockIdx.x, s = row % hc, i = threadIdx.x;
     const float4 v = reinterpret_cast<const float4*>(x + size_t(row) * n)[i];
     const float ss = block_sum(v.x * v.x + v.y * v.y + v.z * v.z + v.w * v.w);
     const float inv = rsqrtf(ss / n + eps);
     const float4 wv = reinterpret_cast<const float4*>(w + size_t(s) * n)[i];
-    reinterpret_cast<float4*>(y + size_t(row) * n)[i] = make_float4(v.x * inv * wv.x, v.y * inv * wv.y, v.z * inv * wv.z, v.w * inv * wv.w);
+    const float4 r = make_float4(v.x * inv * wv.x, v.y * inv * wv.y, v.z * inv * wv.z, v.w * inv * wv.w);
+    reinterpret_cast<float4*>(y + size_t(row) * n)[i] = r;
+    if (yb) {
+        __nv_bfloat162 b[2] = {__floats2bfloat162_rn(r.x, r.y), __floats2bfloat162_rn(r.z, r.w)};
+        reinterpret_cast<uint2*>(yb + size_t(row) * n)[i] = *reinterpret_cast<uint2*>(b);
+    }
 }
 
 // Decode (TT tokens, a step or a verify window): the hyper-connection RMS norm, down-projection
@@ -633,8 +640,29 @@ void hc_mix(const BlockCtx& c, int il, int which, const float* x, int T, float* 
         ck(cudaGetLastError(), "hc_mix");
         return;
     }
-    if (n % 4 == 0 && n / 4 <= 1024 && (n / 4) % 32 == 0)
-        k_grouped_rms_norm_v4<<<T * hc, n / 4, 0, c.stream>>>(x, static_cast<const float*>(w_norm.dev), xn, n, hc, float(s.rms_eps));
+    const bool v4 = n % 4 == 0 && n / 4 <= 1024 && (n / 4) % 32 == 0;
+    if (v4 && T >= kGemmMinTokens && w_down.type == kBF16 && (!w_inj || w_inj->type == kBF16)) {
+        // prefill: the norm writes xn in BF16 too, into the GEMM workspace, and the down and inject
+        // products read it there (before the up product, which reuses that space)
+        BlockScratch& bs = c.scratch;
+        const size_t ws = gemm::workspace_bytes(hcd, T);
+        if (bs.gemm_ws_bytes < ws) {
+            if (bs.gemm_ws) cudaFree(bs.gemm_ws);
+            ck(cudaMalloc(&bs.gemm_ws, ws), "cudaMalloc gemm workspace");
+            bs.gemm_ws_bytes = ws;
+        }
+        auto* xb = static_cast<__nv_bfloat16*>(gemm::bf16_staging(bs.gemm_ws, bs.gemm_ws_bytes, hcd, T));
+        k_grouped_rms_norm_v4<<<T * hc, n / 4, 0, c.stream>>>(x, static_cast<const float*>(w_norm.dev), xn, n, hc, float(s.rms_eps), xb);
+        gemm::gemm_bf16(w_down.dev, xb, lo, hcd, s.hc_rank, T, c.stream);
+        if (w_inj) gemm::gemm_bf16(w_inj->dev, xb, inject, hcd, w_inj->rows(), T, c.stream);
+        k_scale_silu<<<(T * s.hc_rank + 255) / 256, 256, 0, c.stream>>>(lo, T * s.hc_rank, 1.0f / hc);
+        linear(c, w_up, lo, gate, T);
+        k_gated_mean<<<dim3((n + 255) / 256, T), 256, 0, c.stream>>>(xn, gate, mixed, n, hc, T);
+        ck(cudaGetLastError(), "hc_mix");
+        return;
+    }
+    if (v4)
+        k_grouped_rms_norm_v4<<<T * hc, n / 4, 0, c.stream>>>(x, static_cast<const float*>(w_norm.dev), xn, n, hc, float(s.rms_eps), nullptr);
     else
         k_grouped_rms_norm<<<T * hc, 256, 0, c.stream>>>(x, static_cast<const float*>(w_norm.dev), xn, n, hc, float(s.rms_eps));
     linear(c, w_down, xn, lo, T);
