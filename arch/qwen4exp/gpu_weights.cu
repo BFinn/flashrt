@@ -39,13 +39,13 @@ bool q3r_eligible(const GgufTensor& t) {
 bool host_resident(const GgufTensor& t) { return t.name == "token_embd.weight"; }
 
 // The layers' hyper-connection down and up matrices (BF16, 1.26 GB in all) are read in full every
-// decode token; as Q8P they take half the bytes and half the VRAM. FLASHRT_HC_Q8: 1 both, down or
-// up one kind, 0 (or unset) neither.
+// decode token; as Q8P they take half the bytes and half the VRAM. The down matrices convert at no
+// measurable KLD cost, the up ones cost +0.0011 (sw67), so the default is down only.
+// FLASHRT_HC_Q8: down (default), 1 both, up, 0 neither.
 int hc_q8_mode() {   // bit 0: down, bit 1: up
     static const int m = [] {
         const char* e = std::getenv("FLASHRT_HC_Q8");
-        if (!e) return 0;
-        const std::string v(e);
+        const std::string v = e ? e : "down";
         return v == "1" ? 3 : v == "down" ? 1 : v == "up" ? 2 : 0;
     }();
     return m;
