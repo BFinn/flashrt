@@ -1,0 +1,12 @@
+T 1: mixed 8.9e-08, inject 2.7e-07 relative ok; 17.25 us per mix, 586 GB/s of weights
+T 2: mixed 9.1e-08, inject 2.6e-07 relative ok; 20.47 us per mix, 494 GB/s of weights
+T 3: mixed 9.3e-08, inject 2.6e-07 relative ok; 22.37 us per mix, 452 GB/s of weights
+T 4: mixed 9.2e-08, inject 2.5e-07 relative ok; 24.53 us per mix, 412 GB/s of weights
+weights 10.12 MB per mix
+all passed
+T 1: mixed 9.6e-08, inject 1.5e-07 relative ok; 20.16 us per mix, 502 GB/s of weights
+T 2: mixed 1.1e-07, inject 2.4e-07 relative ok; 23.22 us per mix, 436 GB/s of weights
+T 3: mixed 1.0e-07, inject 2.2e-07 relative ok; 26.31 us per mix, 385 GB/s of weights
+T 4: mixed 1.0e-07, inject 2.1e-07 relative ok; 28.73 us per mix, 352 GB/s of weights
+weights 10.12 MB per mix
+all passed
