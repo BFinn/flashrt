@@ -7,6 +7,7 @@
 
 #include <cuda_fp16.h>
 
+#include <algorithm>
 #include <stdexcept>
 #include <string>
 
@@ -22,54 +23,53 @@ void ck(cudaError_t e, const char* what) {
 
 constexpr uint32_t kQ2_0 = 42;   // GGML_TYPE_Q2_0
 
-// One 64-value block per thread: the arena's planar Q2_0 (codes [rows][nb][16], element j in byte
-// j % 16 at bits 2 * (j / 16); fp16 scales [rows][nb] after all codes) to ggml's Q2_0 blocks
-// (fp16 d, then element j in byte j / 4 at bits 2 * (j % 4)), for every expert of a layer:
-// gate and up [E][ff][n/64] and down [E][n][ff/64], each tensor back to back.
-__global__ void k_planar_to_ggml(const uint8_t* planar, size_t stride, uint8_t* gate, uint8_t* up, uint8_t* down, int E, int n, int ff) {
-    const int nb = n / 64, nbd = ff / 64;
-    const int64_t per_gu = int64_t(ff) * nb, per_d = int64_t(n) * nbd, per_e = 2 * per_gu + per_d;
-    const int64_t g = int64_t(blockIdx.x) * blockDim.x + threadIdx.x;
-    if (g >= per_e * E) return;
-    const int e = int(g / per_e);
-    int64_t i = g % per_e;
-    const uint8_t* blob = planar + size_t(e) * stride;
-    const size_t mb = size_t(ff) * nb * 18;   // one gate/up matrix, planar
-    const uint8_t* mat;
-    int64_t rows_nb;   // rows * blocks of this matrix
-    uint8_t* dst;
-    if (i < per_gu) {
-        mat = blob;
-        rows_nb = per_gu;
-        dst = gate + (size_t(e) * per_gu + i) * 18;
-    } else if (i < 2 * per_gu) {
-        i -= per_gu;
-        mat = blob + mb;
-        rows_nb = per_gu;
-        dst = up + (size_t(e) * per_gu + i) * 18;
-    } else {
-        i -= 2 * per_gu;
-        mat = blob + 2 * mb;
-        rows_nb = per_d;
-        dst = down + (size_t(e) * per_d + i) * 18;
-    }
-    const uint4 c = reinterpret_cast<const uint4*>(mat)[i];   // (row, block) i: 16 code bytes
-    const uint16_t d = reinterpret_cast<const uint16_t*>(mat + size_t(rows_nb) * 16)[i];
-    const uint32_t cw[4] = {c.x, c.y, c.z, c.w};
-    uint32_t out[4] = {0, 0, 0, 0};
+// The arena's planar Q2_0 (codes [rows][nb][16], element j in byte j % 16 at bits 2 * (j / 16);
+// fp16 scales [rows][nb] after all codes) to ggml's Q2_0 blocks (fp16 d, then element j in byte
+// j / 4 at bits 2 * (j % 4)), for every expert of a layer: gate and up [E][ff][n/64] and down
+// [E][n][ff/64], each tensor back to back. Grid: (items / 256, E * 3 matrices); each thread
+// converts one 64-value block into shared memory, and the CTA writes its 256 blocks out as words.
+constexpr int kConvItems = 256;
+__global__ void __launch_bounds__(kConvItems) k_planar_to_ggml(const uint8_t* planar, size_t stride, uint8_t* gate, uint8_t* up,
+                                                                uint8_t* down, int n, int ff) {
+    __shared__ uint32_t sm[kConvItems * 18 / 4];
+    const int e = blockIdx.y / 3, m = blockIdx.y % 3;
+    const int64_t items = int64_t(m < 2 ? ff : n) * ((m < 2 ? n : ff) / 64);   // (row, block) pairs of the matrix
+    const int64_t i0 = int64_t(blockIdx.x) * kConvItems;
+    if (i0 >= items) return;
+    const size_t mb = size_t(ff) * (n / 64) * 18;   // one gate/up matrix
+    const uint8_t* mat = planar + size_t(e) * stride + size_t(m) * mb;
+    uint8_t* dst = (m == 0 ? gate : m == 1 ? up : down) + (size_t(e) * items + i0) * 18;
+    const int64_t i = i0 + threadIdx.x;
+    const int nitem = int(min(int64_t(kConvItems), items - i0));
+    if (threadIdx.x < nitem) {
+        const uint4 c = reinterpret_cast<const uint4*>(mat)[i];
+        const uint16_t d = reinterpret_cast<const uint16_t*>(mat + size_t(items) * 16)[i];
+        const uint32_t cw[4] = {c.x, c.y, c.z, c.w};
+        uint32_t out[4];
 #pragma unroll
-    for (int j = 0; j < 64; ++j) {
-        const int src = j % 16;
-        const uint32_t code = (cw[src / 4] >> (8 * (src % 4) + 2 * (j / 16))) & 3u;
-        out[j / 16] |= code << (2 * (j % 16));   // byte j / 4 at bits 2 * (j % 4): word j / 16, bit 2 * (j % 16)
-    }
-    uint16_t* d16 = reinterpret_cast<uint16_t*>(dst);   // 18-byte blocks: 2-byte aligned
-    d16[0] = d;
+        for (int v = 0; v < 4; ++v) {   // ggml word v: elements 16v .. 16v + 15 = field v of every planar byte
+            uint32_t o = 0;
 #pragma unroll
-    for (int w = 0; w < 4; ++w) {
-        d16[1 + 2 * w] = uint16_t(out[w] & 0xffff);
-        d16[2 + 2 * w] = uint16_t(out[w] >> 16);
+            for (int w = 0; w < 4; ++w) {
+                uint32_t x = (cw[w] >> (2 * v)) & 0x03030303u;   // byte b: element 4w + b
+                x = (x | (x >> 6)) & 0x000F000Fu;
+                x = (x | (x >> 12)) & 0xFFu;
+                o |= x << (8 * w);
+            }
+            out[v] = o;
+        }
+        uint16_t* s16 = reinterpret_cast<uint16_t*>(sm) + size_t(threadIdx.x) * 9;
+        s16[0] = d;
+#pragma unroll
+        for (int w = 0; w < 4; ++w) {
+            s16[1 + 2 * w] = uint16_t(out[w] & 0xffff);
+            s16[2 + 2 * w] = uint16_t(out[w] >> 16);
+        }
     }
+    __syncthreads();
+    const int words = nitem * 18 / 4;   // nitem is even, so whole words
+    uint32_t* d32 = reinterpret_cast<uint32_t*>(dst);
+    for (int k = threadIdx.x; k < words; k += blockDim.x) d32[k] = sm[k];
 }
 
 __global__ void k_swiglu_rows(float* g, const float* u, size_t n) {
@@ -190,9 +190,9 @@ void moe_block_stream(const BlockCtx& c, int il, const float* x, int T, ExpertSt
     const int b = il % 2;
     expert_stream_prefetch(&es, il);
     ck(cudaStreamWaitEvent(c.stream, es.uploaded[b], 0), "wait experts");
-    const int64_t blocks = int64_t(E) * (2 * int64_t(ff) * (n / 64) + int64_t(n) * (ff / 64));
-    k_planar_to_ggml<<<unsigned((blocks + 255) / 256), 256, 0, c.stream>>>(es.planar[b], es.arena->stride, es.g_gate, es.g_up, es.g_down,
-                                                                          E, n, ff);
+    const int64_t items = std::max(int64_t(ff) * (n / 64), int64_t(n) * (ff / 64));
+    k_planar_to_ggml<<<dim3(unsigned((items + kConvItems - 1) / kConvItems), 3 * E), kConvItems, 0, c.stream>>>(
+        es.planar[b], es.arena->stride, es.g_gate, es.g_up, es.g_down, n, ff);
     ck(cudaGetLastError(), "planar to ggml");
     ck(cudaEventRecord(es.released[b], c.stream), "cudaEventRecord");
     if (il + 1 < s.n_layer) expert_stream_prefetch(&es, il + 1);
@@ -201,11 +201,13 @@ void moe_block_stream(const BlockCtx& c, int il, const float* x, int T, ExpertSt
     moe_route_topk(c.stream, es.logits, T, E, K, es.ids, es.wts, counts ? counts + size_t(il) * E : nullptr);
     // 3. routed experts: gate and up, SwiGLU, down
     const int64_t gu_stride = int64_t(ff) * (n / 64) * 18, d_stride = int64_t(n) * (ff / 64) * 18;
-    gemm::moe(kQ2_0, es.g_gate, gu_stride, E, x, false, es.ids, T, K, es.hg, n, ff, es.ws, es.ws_bytes, c.stream);
-    gemm::moe(kQ2_0, es.g_up, gu_stride, E, x, false, es.ids, T, K, es.hu, n, ff, es.ws, es.ws_bytes, c.stream);
+    const gemm::MoePlan pgu = gemm::moe_prepare(kQ2_0, E, x, false, es.ids, T, K, n, es.ws, es.ws_bytes, c.stream);
+    gemm::moe_run(pgu, es.g_gate, gu_stride, es.hg, ff, c.stream);
+    gemm::moe_run(pgu, es.g_up, gu_stride, es.hu, ff, c.stream);
     const size_t nh = size_t(T) * K * ff;
     k_swiglu_rows<<<unsigned((nh + 255) / 256), 256, 0, c.stream>>>(es.hg, es.hu, nh);
-    gemm::moe(kQ2_0, es.g_down, d_stride, E, es.hg, true, es.ids, T, K, es.yd, ff, n, es.ws, es.ws_bytes, c.stream);
+    const gemm::MoePlan pd = gemm::moe_prepare(kQ2_0, E, es.hg, true, es.ids, T, K, ff, es.ws, es.ws_bytes, c.stream);
+    gemm::moe_run(pd, es.g_down, d_stride, es.yd, n, c.stream);
     // 4. shared expert, and the sum
     linear(c, c.w.layer(il, "ffn_gate_shexp.weight"), x, es.sg, T);
     linear(c, c.w.layer(il, "ffn_up_shexp.weight"), x, es.su, T);

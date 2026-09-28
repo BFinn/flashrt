@@ -262,6 +262,30 @@ __global__ void k_gdn_conv(const float* qkv, float* hist, const float* w, float*
     for (int k = 0; k < K - 1; ++k) hist[size_t(k) * channels + c] = win[k];
 }
 
+// The same conv for many tokens, parallel over (channel, token): input t' < 0 comes from the
+// history. k_gdn_conv_hist then advances the history (after every token has read it).
+__global__ void k_gdn_conv_par(const float* qkv, const float* hist, const float* w, float* y, int channels, int T, int K) {
+    const int c = blockIdx.x * blockDim.x + threadIdx.x, t = blockIdx.y;
+    if (c >= channels) return;
+    float acc = 0.0f;
+    for (int k = 0; k < K; ++k) {
+        const int tt = t - (K - 1) + k;
+        const float v = tt >= 0 ? qkv[size_t(tt) * channels + c] : hist[size_t(K - 1 + tt) * channels + c];
+        acc += v * w[size_t(c) * K + k];
+    }
+    y[size_t(t) * channels + c] = acc / (1.0f + __expf(-acc));
+}
+__global__ void k_gdn_conv_hist(const float* qkv, float* hist, int channels, int T, int K) {
+    const int c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= channels) return;
+    float win[8];
+    for (int k = 0; k < K - 1; ++k) {   // new history row k is input T - (K-1) + k
+        const int tt = T - (K - 1) + k;
+        win[k] = tt >= 0 ? qkv[size_t(tt) * channels + c] : hist[size_t(K - 1 + tt) * channels + c];
+    }
+    for (int k = 0; k < K - 1; ++k) hist[size_t(k) * channels + c] = win[k];
+}
+
 // one block per (token, head) of `dim` values: x /= sqrt(sum x^2 + eps), in place
 __global__ void k_l2_norm(float* x, int dim, int stride_tok, int heads, float eps) {
     const int t = blockIdx.x / heads, h = blockIdx.x % heads;
@@ -665,8 +689,15 @@ void gdn_mixer(const BlockCtx& c, int il, const float* x, int T, GdnState& st, f
     linear(c, c.w.layer(il, "attn_gate.weight"), x, z, T);
     linear(c, c.w.layer(il, "ssm_beta.weight"), x, beta, T);
     linear(c, c.w.layer(il, "ssm_alpha.weight"), x, alpha, T);
-    k_gdn_conv<<<(ch + 127) / 128, 128, 0, c.stream>>>(qkv, st.conv, static_cast<const float*>(c.w.layer(il, "ssm_conv1d.weight").dev),
-                                                      conv, ch, T, s.ssm_conv);
+    if (T > 8) {
+        k_gdn_conv_par<<<dim3((ch + 255) / 256, T), 256, 0, c.stream>>>(qkv, st.conv,
+                                                                       static_cast<const float*>(c.w.layer(il, "ssm_conv1d.weight").dev), conv,
+                                                                       ch, T, s.ssm_conv);
+        k_gdn_conv_hist<<<(ch + 255) / 256, 256, 0, c.stream>>>(qkv, st.conv, ch, T, s.ssm_conv);
+    } else {
+        k_gdn_conv<<<(ch + 127) / 128, 128, 0, c.stream>>>(qkv, st.conv, static_cast<const float*>(c.w.layer(il, "ssm_conv1d.weight").dev),
+                                                          conv, ch, T, s.ssm_conv);
+    }
     // L2-normalise the q and k heads (the first 2 * groups heads of each token's channels)
     k_l2_norm<<<T * 2 * s.ssm_groups, 128, 0, c.stream>>>(conv, dk, ch, 2 * s.ssm_groups, float(s.rms_eps));
     k_gdn_gates<<<(T * H + 127) / 128, 128, 0, c.stream>>>(alpha, beta, static_cast<const float*>(c.w.layer(il, "ssm_dt.bias").dev),

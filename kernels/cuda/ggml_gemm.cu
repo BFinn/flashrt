@@ -150,30 +150,61 @@ void gemm(uint32_t t, const void* W, const float* x, float* y, int64_t ncols, in
     ck(cudaGetLastError(), "gemm");
 }
 
+MoePlan moe_prepare(uint32_t t, int E, const float* x, bool x_per_slot, const int32_t* ids, int64_t T, int K, int64_t ncols, void* ws,
+                    size_t ws_bytes, cudaStream_t stream) {
+    const TypeInfo ti = info(t);
+    if (!ti.blck || ncols % ti.blck || E > 4095) throw std::runtime_error("gemm::moe_prepare: unsupported type or shape");
+    MoePlan p;
+    p.type = t;
+    p.n_experts = E;
+    p.K = K;
+    p.T = T;
+    p.ncols = ncols;
+    p.rows = T * K;
+    p.ne11 = x_per_slot ? K : 1;
+    Ws w = carve(ws, ws_bytes, ncols, p.rows);
+    const int64_t padded = GGML_PAD(ncols, MATRIX_ROW_PADDING);
+    const bool dedup = p.ne11 == 1 && K > 1;
+    ggml_cuda_launch_mm_ids_helper(ids, w.ids_src1, w.ids_dst, w.bounds, E, int(T), K, int(p.ne11), K, int(p.ne11), dedup, stream);
+    if (dedup)
+        quantize_scatter_mmq_q8_1_cuda(x, w.ids_src1, w.act, ggml_type(t), ncols, ncols, padded, T, p.rows, K, stream);
+    else
+        quantize_mmq_q8_1_cuda(x, w.ids_src1, w.act, ggml_type(t), ncols, ncols, ncols * K, ncols * p.rows, padded, p.rows, 1, 1, stream);
+    // the launch grid covers the largest expert's tokens, not all T (most tiles would be empty)
+    static thread_local int32_t* hb = nullptr;
+    if (!hb) ck(cudaHostAlloc(&hb, 4096 * 4, cudaHostAllocDefault), "cudaHostAlloc bounds");
+    ck(cudaMemcpyAsync(hb, w.bounds, size_t(E + 1) * 4, cudaMemcpyDeviceToHost, stream), "bounds to host");
+    ck(cudaStreamSynchronize(stream), "moe_prepare");
+    int64_t mx = 1;
+    for (int e = 0; e < E; ++e) mx = std::max<int64_t>(mx, hb[e + 1] - hb[e]);
+    p.ncols_max = mx;
+    p.act = reinterpret_cast<const int*>(w.act);
+    p.ids_dst = w.ids_dst;
+    p.bounds = w.bounds;
+    p.fixup = w.fixup;
+    return p;
+}
+
+void moe_run(const MoePlan& p, const void* W, int64_t expert_stride_bytes, float* y, int64_t nrows, cudaStream_t stream) {
+    const TypeInfo ti = info(p.type);
+    if (expert_stride_bytes % ti.bytes) throw std::runtime_error("gemm::moe_run: bad expert stride");
+    const int64_t padded = GGML_PAD(p.ncols, MATRIX_ROW_PADDING);
+    const int64_t s01 = p.ncols / ti.blck, s02 = expert_stride_bytes / ti.bytes;
+    const int64_t s12 = p.ne11 * padded * int64_t(sizeof(block_q8_1)) / (QK8_1 * int64_t(sizeof(int)));
+    const int E = p.n_experts;
+    const mmq_args args = {static_cast<const char*>(W), ggml_type(p.type), p.act, p.ids_dst, p.bounds, y, nullptr,
+                           p.ncols, nrows, p.rows, s01, p.rows, nrows,
+                           E, E, s02, s12, nrows * p.K,
+                           1, 1, s02 * E, s12 * p.T, nrows * p.rows,
+                           p.ncols_max, p.ncols_max};
+    ti.run(args, p.fixup, stream);
+    ck(cudaGetLastError(), "gemm::moe_run");
+}
+
 void moe(uint32_t t, const void* W, int64_t expert_stride_bytes, int E, const float* x, bool x_per_slot, const int32_t* ids, int64_t T,
          int K, float* y, int64_t ncols, int64_t nrows, void* ws, size_t ws_bytes, cudaStream_t stream) {
-    const TypeInfo ti = info(t);
-    if (!ti.blck || ncols % ti.blck || expert_stride_bytes % ti.bytes || E > 4095)
-        throw std::runtime_error("gemm::moe: unsupported type or shape");
-    const int64_t rows = T * K;
-    Ws w = carve(ws, ws_bytes, ncols, rows);
-    const int64_t padded = GGML_PAD(ncols, MATRIX_ROW_PADDING);
-    const int64_t ne11 = x_per_slot ? K : 1;
-    const bool dedup = ne11 == 1 && K > 1;
-    ggml_cuda_launch_mm_ids_helper(ids, w.ids_src1, w.ids_dst, w.bounds, E, int(T), K, int(ne11), K, int(ne11), dedup, stream);
-    if (dedup)
-        quantize_scatter_mmq_q8_1_cuda(x, w.ids_src1, w.act, ggml_type(t), ncols, ncols, padded, T, rows, K, stream);
-    else
-        quantize_mmq_q8_1_cuda(x, w.ids_src1, w.act, ggml_type(t), ncols, ncols, ncols * K, ncols * rows, padded, rows, 1, 1, stream);
-    const int64_t s01 = ncols / ti.blck, s02 = expert_stride_bytes / ti.bytes;
-    const int64_t s12 = ne11 * padded * int64_t(sizeof(block_q8_1)) / (QK8_1 * int64_t(sizeof(int)));
-    const mmq_args args = {static_cast<const char*>(W), ggml_type(t), reinterpret_cast<const int*>(w.act), w.ids_dst, w.bounds, y, nullptr,
-                           ncols, nrows, rows, s01, rows, nrows,
-                           E, E, s02, s12, nrows * K,
-                           1, 1, s02 * E, s12 * T, nrows * rows,
-                           T, T};
-    ti.run(args, w.fixup, stream);
-    ck(cudaGetLastError(), "gemm::moe");
+    const MoePlan p = moe_prepare(t, E, x, x_per_slot, ids, T, K, ncols, ws, ws_bytes, stream);
+    moe_run(p, W, expert_stride_bytes, y, nrows, stream);
 }
 
 }  // namespace flashrt::gemm

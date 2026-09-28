@@ -29,6 +29,22 @@ size_t workspace_bytes(int64_t ncols, int64_t T);
 void gemm(uint32_t ggml_type, const void* W, const float* x, float* y, int64_t ncols, int64_t nrows, int64_t T, void* ws,
           size_t ws_bytes, cudaStream_t stream);
 
+// Grouped expert products in two steps, so several weight tensors share one routing: prepare()
+// groups the tokens by expert and quantizes the activations (it waits for the stream once, to
+// size the launch grid by the largest expert's token count), run() multiplies one tensor. The
+// plan lives in ws, which must stay untouched between them.
+struct MoePlan {
+    uint32_t type = 0;
+    int n_experts = 0, K = 0;
+    int64_t T = 0, ncols = 0, rows = 0, ne11 = 0, ncols_max = 0;
+    const int* act = nullptr;
+    const int32_t *ids_dst = nullptr, *bounds = nullptr;
+    float* fixup = nullptr;
+};
+MoePlan moe_prepare(uint32_t ggml_type, int n_experts, const float* x, bool x_per_slot, const int32_t* ids, int64_t T, int K,
+                    int64_t ncols, void* ws, size_t ws_bytes, cudaStream_t stream);
+void moe_run(const MoePlan& plan, const void* W, int64_t expert_stride_bytes, float* y, int64_t nrows, cudaStream_t stream);
+
 // Grouped expert product (MoE prefill): experts back to back, W_e at W + e * expert_stride_bytes,
 // each [nrows][ncols]. ids [T][K] (device) are each token's experts. y [T][K][nrows] gets
 // W_{ids[t][k]} x_{t,k}, where x_{t,k} is row t of x ([T][ncols]) or, with x_per_slot, row t * K + k
