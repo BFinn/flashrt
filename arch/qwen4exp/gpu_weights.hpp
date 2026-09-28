@@ -18,8 +18,10 @@ struct Gguf;
 
 namespace flashrt::qwen4exp {
 
-// A GpuTensor type outside ggml's ids: Q3_K converted to Q3R (kernels/cuda/q3r.h)
+// GpuTensor types outside ggml's ids: Q3_K converted to Q3R (kernels/cuda/q3r.h); BF16 converted
+// to Q8P: int8 [rows][cols], then fp16 scales [rows][cols / 32] (Q8_0's values, planar)
 constexpr uint32_t kTypeQ3R = 1000;
+constexpr uint32_t kTypeQ8P = 1001;
 
 struct GpuTensor {
     void* dev = nullptr;
@@ -43,7 +45,9 @@ public:
     GpuWeights& operator=(const GpuWeights&) = delete;
 
     // Uploads all VramDense tensors of the plan. Throws on CUDA or I/O errors. With q3r, Q3_K
-    // matrices (not the token embedding) are converted in place to Q3R (type kTypeQ3R).
+    // matrices (not the token embedding) are converted in place to Q3R (type kTypeQ3R). The layers'
+    // hyper-connection down and up matrices (BF16) become Q8P (kTypeQ8P): half the bytes the
+    // decode reads each token and the VRAM they take (FLASHRT_HC_Q8=0 keeps BF16).
     void load(const Gguf& g, const WeightPlan& plan, bool q3r = true);
 
     const GpuTensor& get(const std::string& name) const;         // throws if absent

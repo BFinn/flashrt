@@ -44,6 +44,10 @@ struct BlockScratch {
     size_t gemm_ws_bytes = 0;
     void* q3k_tmp = nullptr;
     size_t q3k_tmp_bytes = 0;
+    // Q8P hc down and up of one mix, dequantized to BF16 for hc_mix outside the fused decode
+    // kernels (allocated with the scratch: a window may take that path inside a graph)
+    void* hc_bf16 = nullptr;
+    size_t hc_bf16_bytes = 0;
     int32_t* tok_dev = nullptr;   // token ids of a many-token embed()
     size_t tok_cap = 0;
 };
