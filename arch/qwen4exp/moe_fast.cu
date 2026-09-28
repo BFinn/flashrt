@@ -186,6 +186,114 @@ __global__ void k_moe_down(const uint8_t* const* hit_ptr, const int32_t* hit_n, 
     if (l4 == 0) yh[size_t(k) * n + r] = acc;
 }
 
+// v2 of the one-token pair (sw79), same arithmetic. k_moe_gate_up2 loads its weights before it
+// quantizes x (their addresses come from k_route, already complete) and lets k_moe_down2 start
+// early; k_moe_down2, a programmatic dependent, loads its weight rows, then waits for the hidden
+// rows (cudaGridDependencySynchronize; a no-op without the launch attribute).
+constexpr int kGuMaxIt = 8;   // n / 64 / 8 iterations per lane (n <= 4096)
+__global__ void __launch_bounds__(512) k_moe_gate_up2(const uint8_t* const* hit_ptr, const int32_t* hit_n, const float* x, int n, int ff,
+                                                      uint32_t* hq, float* hscale, int32_t* hsum, int K) {
+#if __CUDA_ARCH__ >= 900
+    cudaTriggerProgrammaticLaunchCompletion();
+#endif
+    const int k = blockIdx.y, tok = k / K;
+    if (k % K >= hit_n[tok]) return;
+    x += size_t(tok) * n;
+    extern __shared__ __align__(16) uint32_t xw[];   // [16][nb] words, then scale [nb], sum [nb]
+    __shared__ float hrow[kQB];
+    const int nb = n / kQB, warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+    const int rsub = lane >> 3, l8 = lane & 7, rl = warp * 4 + rsub, r = blockIdx.x * kQB + rl;
+    const uint8_t* base = hit_ptr[k];
+    const size_t mb = size_t(ff) * nb * 18;   // one gate/up matrix
+    const uint4* cg = reinterpret_cast<const uint4*>(base) + size_t(r) * nb;
+    const __half* sg = reinterpret_cast<const __half*>(base + size_t(ff) * nb * 16) + size_t(r) * nb;
+    const uint4* cu = reinterpret_cast<const uint4*>(base + mb) + size_t(r) * nb;
+    const __half* su = reinterpret_cast<const __half*>(base + mb + size_t(ff) * nb * 16) + size_t(r) * nb;
+    uint4 wg[kGuMaxIt], wu[kGuMaxIt];
+    __half hg[kGuMaxIt], hu[kGuMaxIt];
+#pragma unroll
+    for (int i = 0; i < kGuMaxIt; ++i) {
+        const int b = l8 + 8 * i;
+        if (b < nb) {
+            wg[i] = cg[b];
+            wu[i] = cu[b];
+            hg[i] = sg[b];
+            hu[i] = su[b];
+        }
+    }
+    float* xscale = reinterpret_cast<float*>(xw + 16 * nb);
+    int* xsum = reinterpret_cast<int*>(xscale + nb);
+    for (int b = warp; b < nb; b += blockDim.x >> 5)
+        quant_block64(x[b * kQB + lane], x[b * kQB + 32 + lane], reinterpret_cast<int8_t*>(xw), nb, b, xscale + b, xsum + b);
+    __syncthreads();
+    float ag = 0.0f, au = 0.0f;
+#pragma unroll
+    for (int i = 0; i < kGuMaxIt; ++i) {
+        const int b = l8 + 8 * i;
+        if (b < nb) {
+            const float xs = xscale[b];
+            const int xm = xsum[b];
+            ag += __half2float(hg[i]) * xs * float(dot_block64(wg[i], xw, nb, b) - xm);
+            au += __half2float(hu[i]) * xs * float(dot_block64(wu[i], xw, nb, b) - xm);
+        }
+    }
+    for (int o = 4; o > 0; o >>= 1) {
+        ag += __shfl_xor_sync(0xffffffff, ag, o);
+        au += __shfl_xor_sync(0xffffffff, au, o);
+    }
+    if (l8 == 0) hrow[rl] = ag / (1.0f + __expf(-ag)) * au;
+    __syncthreads();
+    if (warp == 0) {
+        const int nbh = ff / kQB;
+        quant_block64(hrow[lane], hrow[lane + 32], reinterpret_cast<int8_t*>(hq + size_t(k) * 16 * nbh), nbh, blockIdx.x,
+                      hscale + k * nbh + blockIdx.x, hsum + k * nbh + blockIdx.x);
+    }
+}
+
+constexpr int kDownMaxIt = 4;   // ff / 64 / 4 iterations per lane (ff <= 1024)
+__global__ void __launch_bounds__(512) k_moe_down2(const uint8_t* const* hit_ptr, const int32_t* hit_n, const uint32_t* hq, const float* hscale,
+                                                   const int32_t* hsum, float* yh, int n, int ff, int K) {
+    const int k = blockIdx.y;
+    if (k % K >= hit_n[k / K]) return;   // written by k_route, complete before k_moe_gate_up2 began
+    __shared__ uint32_t hw[16 * 64];
+    __shared__ float hs[64];
+    __shared__ int hm[64];
+    const int nbh = ff / kQB;
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, l4 = lane & 3;
+    const int r = blockIdx.x * 128 + warp * 8 + (lane >> 2);
+    const uint8_t* base = hit_ptr[k] + 2 * size_t(ff) * (n / kQB) * 18;
+    const uint4* cd = reinterpret_cast<const uint4*>(base) + size_t(r) * nbh;
+    const __half* sd = reinterpret_cast<const __half*>(base + size_t(n) * nbh * 16) + size_t(r) * nbh;
+    uint4 wd[kDownMaxIt];
+    __half hd[kDownMaxIt];
+#pragma unroll
+    for (int i = 0; i < kDownMaxIt; ++i) {
+        const int b = l4 + 4 * i;
+        if (b < nbh) {
+            wd[i] = cd[b];
+            hd[i] = sd[b];
+        }
+    }
+#if __CUDA_ARCH__ >= 900
+    cudaGridDependencySynchronize();
+#endif
+    for (int i = threadIdx.x; i < 16 * nbh; i += blockDim.x) hw[i] = hq[size_t(k) * 16 * nbh + i];
+    for (int i = threadIdx.x; i < nbh; i += blockDim.x) {
+        hs[i] = hscale[k * nbh + i];
+        hm[i] = hsum[k * nbh + i];
+    }
+    __syncthreads();
+    float acc = 0.0f;
+#pragma unroll
+    for (int i = 0; i < kDownMaxIt; ++i) {
+        const int b = l4 + 4 * i;
+        if (b < nbh) acc += __half2float(hd[i]) * hs[b] * float(dot_block64(wd[i], hw, nbh, b) - hm[b]);
+    }
+    acc += __shfl_xor_sync(0xffffffff, acc, 2);
+    acc += __shfl_xor_sync(0xffffffff, acc, 1);
+    if (l4 == 0) yh[size_t(k) * n + r] = acc;
+}
+
 // ---- windows: the hits grouped by expert, so an expert several tokens hit is read once
 constexpr int kGroupTok = 4;   // tokens per window the grouped kernels take
 
@@ -574,8 +682,28 @@ void moe_hits(const uint8_t* const* hit_ptr, const int32_t* hit_n, int K, const 
         ck(cudaGetLastError(), "moe_hits (grouped)");
         return;
     }
-    k_moe_gate_up<<<dim3(ff / kQB, TK), 512, smem_gu, stream>>>(hit_ptr, hit_n, x, n, ff, hq, hscale, hsum, K);
-    k_moe_down<<<dim3(n / 128, TK), 512, 0, stream>>>(hit_ptr, hit_n, hq, hscale, hsum, yh, n, ff, K);
+    static const bool v2 = [] {   // FLASHRT_MOE_HITS2=0: the first pair
+        const char* e = std::getenv("FLASHRT_MOE_HITS2");
+        return !(e && e[0] == '0');
+    }();
+    if (v2 && n / kQB <= 8 * kGuMaxIt && nbh <= 4 * kDownMaxIt) {
+        k_moe_gate_up2<<<dim3(ff / kQB, TK), 512, smem_gu, stream>>>(hit_ptr, hit_n, x, n, ff, hq, hscale, hsum, K);
+        cudaLaunchConfig_t cfg{};
+        cfg.gridDim = dim3(n / 128, TK);
+        cfg.blockDim = dim3(512);
+        cfg.stream = stream;
+        cudaLaunchAttribute at[1];
+        at[0].id = cudaLaunchAttributeProgrammaticStreamSerialization;
+        at[0].val.programmaticStreamSerializationAllowed = 1;
+        cfg.attrs = at;
+        cfg.numAttrs = 1;
+        ck(cudaLaunchKernelEx(&cfg, k_moe_down2, hit_ptr, hit_n, static_cast<const uint32_t*>(hq), static_cast<const float*>(hscale),
+                              static_cast<const int32_t*>(hsum), yh, n, ff, K),
+           "moe_down2");
+    } else {
+        k_moe_gate_up<<<dim3(ff / kQB, TK), 512, smem_gu, stream>>>(hit_ptr, hit_n, x, n, ff, hq, hscale, hsum, K);
+        k_moe_down<<<dim3(n / 128, TK), 512, 0, stream>>>(hit_ptr, hit_n, hq, hscale, hsum, yh, n, ff, K);
+    }
     ck(cudaGetLastError(), "moe_hits");
 }
 
