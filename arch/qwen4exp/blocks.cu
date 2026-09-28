@@ -422,7 +422,8 @@ __global__ void k_gdn_delta_reg(const float* S_in, float* S_out, float* S_bak, c
 // token's two column sums are two shuffles each and no block barrier. The tokens' q, k, v, gate
 // and beta come in tiles of 16 through shared memory (cp.async, the next tile loading while this
 // one computes), as the recurrence can not wait for DRAM once per token. One warp per 8 columns,
-// 4 warps (32 columns) per block.
+// 8 warps (64 columns) per block: the 96 blocks of 48 heads all fit at once (2 per SM).
+constexpr int kGdnColWarps = 8;
 constexpr int kGdnTile = 16;
 __device__ __forceinline__ void cp_async16(void* dst, const void* src) {
     asm volatile("cp.async.cg.shared.global [%0], [%1], 16;\n" ::"r"(uint32_t(__cvta_generic_to_shared(dst))), "l"(src));
@@ -431,14 +432,15 @@ __device__ __forceinline__ void cp_async4(void* dst, const void* src) {
     asm volatile("cp.async.ca.shared.global [%0], [%1], 4;\n" ::"r"(uint32_t(__cvta_generic_to_shared(dst))), "l"(src));
 }
 template <int DK>
-__global__ void __launch_bounds__(128) k_gdn_delta_col(const float* S_in, float* S_out, float* S_bak, const float* conv_out, const float* g,
+__global__ void __launch_bounds__(32 * kGdnColWarps) k_gdn_delta_col(const float* S_in, float* S_out, float* S_bak, const float* conv_out, const float* g,
                                                         const float* beta, float* o, int T, int k_heads, int v_heads, int channels) {
     constexpr int R = DK / 4, RP = R + 4;   // rows per lane; a quarter's stride in shared (padded: no bank conflicts)
-    __shared__ __align__(16) float qs[2][kGdnTile][4 * RP], ks[2][kGdnTile][4 * RP], vs[2][kGdnTile][32];
+    constexpr int NC = 8 * kGdnColWarps;   // columns per block
+    __shared__ __align__(16) float qs[2][kGdnTile][4 * RP], ks[2][kGdnTile][4 * RP], vs[2][kGdnTile][NC];
     __shared__ float gs[2][kGdnTile], bs[2][kGdnTile];
     const int h = blockIdx.x, lane = threadIdx.x & 31, warp = threadIdx.x >> 5, hk = h % k_heads;
-    const int qd = lane & 3, ic = warp * 8 + (lane >> 2), i = blockIdx.y * 32 + ic, j0 = qd * R;
-    const size_t q_off = size_t(hk) * DK, k_off = size_t(k_heads) * DK + size_t(hk) * DK, v_off = size_t(2 * k_heads) * DK + size_t(h) * DK + blockIdx.y * 32;
+    const int qd = lane & 3, ic = warp * 8 + (lane >> 2), i = blockIdx.y * NC + ic, j0 = qd * R;
+    const size_t q_off = size_t(hk) * DK, k_off = size_t(k_heads) * DK + size_t(hk) * DK, v_off = size_t(2 * k_heads) * DK + size_t(h) * DK + blockIdx.y * NC;
     auto load = [&](int tile, int buf) {
         const int t0 = tile * kGdnTile, n = min(kGdnTile, T - t0);
         for (int e = threadIdx.x; e < n * (DK / 4); e += blockDim.x) {   // 16-byte pieces of q and k
@@ -449,8 +451,8 @@ __global__ void __launch_bounds__(128) k_gdn_delta_col(const float* S_in, float*
             cp_async16(qd_, row + q_off + d);
             cp_async16(kd_, row + k_off + d);
         }
-        for (int e = threadIdx.x; e < n * 8; e += blockDim.x) {
-            const int tt = e / 8, p = e % 8;
+        for (int e = threadIdx.x; e < n * (NC / 4); e += blockDim.x) {
+            const int tt = e / (NC / 4), p = e % (NC / 4);
             cp_async16(&vs[buf][tt][p * 4], conv_out + size_t(t0 + tt) * channels + v_off + p * 4);
         }
         if (threadIdx.x < n) {
@@ -839,7 +841,7 @@ void gdn_mixer(const BlockCtx& c, int il, const float* x, int T, GdnState& st, f
         return !(e && e[0] == '0');
     }();
     if (dk == 128 && T >= 16 && col_on)   // prefill; decode keeps the block kernel
-        k_gdn_delta_col<128><<<dim3(H, 128 / 32), 128, 0, c.stream>>>(st.S, st.S, win ? win->S_bak : nullptr, conv, alpha, beta, o, T,
+        k_gdn_delta_col<128><<<dim3(H, 128 / (8 * kGdnColWarps)), 32 * kGdnColWarps, 0, c.stream>>>(st.S, st.S, win ? win->S_bak : nullptr, conv, alpha, beta, o, T,
                                                                      s.ssm_groups, H, ch);
     else if (dk == 128)
         k_gdn_delta_reg<128><<<dim3(H, 128 / 32), dim3(32, 8), 0, c.stream>>>(st.S, st.S, win ? win->S_bak : nullptr, conv, alpha, beta, o, T,
@@ -1535,6 +1537,89 @@ __global__ void k_idx_scores128(const float* qi, const float* pooled, float* sco
     }
 }
 
+// Indexer scores for prefill sub-batches (4 heads, dim 128) on tensor cores: a CTA takes 32
+// tokens, whose 128 (token, head) query rows are the M side of mma.m16n8k16 (fp16 in, fp32
+// accumulate; each warp holds 8 tokens' fragments in registers). It walks tiles of 64 pooled
+// keys (converted to fp16 in shared memory), and fuses relu and the sum over the heads (two
+// shuffles) into the epilogue. Tiles past the tile's last token are skipped. Scores of blocks a
+// token can not see yet are written too, as k_idx_select reads only (pos + 1) / r of each row.
+constexpr int kIdxTcTokens = 32, kIdxTcKeys = 64;
+__global__ void __launch_bounds__(128) k_idx_scores_tc(const float* qi, const float* pooled, float* scores, int ld, int pos0, int r, int Ts) {
+    constexpr int D = 128, KP = D + 8;   // key row stride in shared (halves): conflict-free fragment loads
+    __shared__ __align__(16) __half ks[kIdxTcKeys][KP];
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, g = lane >> 2, c = lane & 3;
+    const int t0 = blockIdx.y * kIdxTcTokens;
+    const int t_last = min(t0 + kIdxTcTokens, Ts) - 1;
+    const int nb_last = (pos0 + t_last + 1) / r;   // the tile's largest block count
+    // A fragments: m-tile mt, step s; rows g, g + 8 -> token 8 * warp + 4 * mt + row / 4, head row % 4
+    uint32_t qa[2][8][4];
+#pragma unroll
+    for (int mt = 0; mt < 2; ++mt)
+#pragma unroll
+        for (int hr = 0; hr < 2; ++hr) {
+            const int row = g + 8 * hr, t = t0 + 8 * warp + 4 * mt + row / 4;
+            const float* qr = qi + (size_t(t) * 4 + row % 4) * D;
+#pragma unroll
+            for (int s = 0; s < 8; ++s) {
+                float2 lo = make_float2(0.0f, 0.0f), hi = make_float2(0.0f, 0.0f);
+                if (t < Ts) {
+                    lo = *reinterpret_cast<const float2*>(qr + 16 * s + 2 * c);
+                    hi = *reinterpret_cast<const float2*>(qr + 16 * s + 2 * c + 8);
+                }
+                qa[mt][s][hr] = h2u(__floats2half2_rn(lo.x, lo.y));
+                qa[mt][s][2 + hr] = h2u(__floats2half2_rn(hi.x, hi.y));
+            }
+        }
+    const int n_tiles = (nb_last + kIdxTcKeys - 1) / kIdxTcKeys;
+    for (int tile = blockIdx.x; tile < n_tiles; tile += gridDim.x) {
+        const int b0 = tile * kIdxTcKeys;
+        __syncthreads();   // the previous tile's keys are no longer read
+        for (int i = threadIdx.x; i < kIdxTcKeys * D / 4; i += blockDim.x) {
+            const int kb = i / (D / 4), d = (i % (D / 4)) * 4;
+            float4 v = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+            if (b0 + kb < nb_last) v = *reinterpret_cast<const float4*>(pooled + size_t(b0 + kb) * D + d);
+            const uint2 u = make_uint2(h2u(__floats2half2_rn(v.x, v.y)), h2u(__floats2half2_rn(v.z, v.w)));
+            *reinterpret_cast<uint2*>(&ks[kb][d]) = u;
+        }
+        __syncthreads();
+        float acc[2][8][4];
+#pragma unroll
+        for (int mt = 0; mt < 2; ++mt)
+#pragma unroll
+            for (int nt = 0; nt < 8; ++nt) acc[mt][nt][0] = acc[mt][nt][1] = acc[mt][nt][2] = acc[mt][nt][3] = 0.0f;
+#pragma unroll
+        for (int s = 0; s < 8; ++s)
+#pragma unroll
+            for (int nt = 0; nt < 8; ++nt) {
+                const uint32_t b0f = *reinterpret_cast<const uint32_t*>(&ks[8 * nt + g][16 * s + 2 * c]);
+                const uint32_t b1f = *reinterpret_cast<const uint32_t*>(&ks[8 * nt + g][16 * s + 2 * c + 8]);
+                mma16816(acc[0][nt], qa[0][s], b0f, b1f);
+                mma16816(acc[1][nt], qa[1][s], b0f, b1f);
+            }
+        // relu, sum over the 4 heads (lanes 4 and 8 apart), write: row g -> token 4 * mt + g / 4,
+        // row g + 8 -> + 2; columns 2c, 2c + 1 -> blocks b0 + 8 nt + 2c + {0, 1}
+#pragma unroll
+        for (int mt = 0; mt < 2; ++mt)
+#pragma unroll
+            for (int nt = 0; nt < 8; ++nt) {
+                float v[4];
+#pragma unroll
+                for (int e = 0; e < 4; ++e) {
+                    v[e] = fmaxf(acc[mt][nt][e], 0.0f);
+                    v[e] += __shfl_xor_sync(~0u, v[e], 4);
+                    v[e] += __shfl_xor_sync(~0u, v[e], 8);
+                }
+                if ((g & 3) == 0) {
+#pragma unroll
+                    for (int e = 0; e < 4; ++e) {
+                        const int t = t0 + 8 * warp + 4 * mt + g / 4 + 2 * (e >> 1), b = b0 + 8 * nt + 2 * c + (e & 1);
+                        if (t < Ts && b < ld) scores[size_t(t) * ld + b] = v[e];
+                    }
+                }
+            }
+    }
+}
+
 __device__ __forceinline__ unsigned ordered_key(float f) {
     const unsigned u = __float_as_uint(f);
     return (u & 0x80000000u) ? ~u : (u | 0x80000000u);
@@ -1969,7 +2054,16 @@ void qsa_mixer(const BlockCtx& c, int il, const float* x, int T, int pos0, QsaCa
             const int max_nb = graph ? kv.capacity / r : (p0 + Ts) / r;
             BlockScratch& bs = c.scratch;
             qsa_scratch_reserve(c.s, bs, Ts, max_nb, tc ? -1 : 0);
-            if (ID == 128) {
+            static const bool idx_tc_on = [] {
+                const char* e = std::getenv("FLASHRT_IDX_TC");
+                return !(e && e[0] == '0');
+            }();
+            if (ID == 128 && IH == 4 && !graph && Ts >= kAttnTcMinTokens && idx_tc_on) {
+                const int ty = (Ts + kIdxTcTokens - 1) / kIdxTcTokens;
+                const int tiles = (max_nb + kIdxTcKeys - 1) / kIdxTcKeys;
+                const int tx = std::max(1, std::min((tiles + 3) / 4, 2048 / ty));   // about 4 key tiles per CTA
+                k_idx_scores_tc<<<dim3(tx, ty), 128, 0, c.stream>>>(qi_s, kv.idx_pooled, bs.idx_scores, max_nb, p0, r, Ts);
+            } else if (ID == 128) {
                 const int per_block = 8 * kIdxKeysPerWarp;
                 k_idx_scores128<<<dim3((max_nb + per_block - 1) / per_block, Ts), 256, size_t(IH) * 128 * 4, c.stream>>>(
                     qi_s, kv.idx_pooled, bs.idx_scores, max_nb, p0, r, IH, c.dparams);
