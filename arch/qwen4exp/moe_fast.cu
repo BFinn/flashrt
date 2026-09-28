@@ -987,10 +987,19 @@ void moe_block_fast(const BlockCtx& c, int il, const float* x, const ExpertCache
 
     // 2. GPU: cache hits (fused gate+up, then down) and the shared expert
     moe_hits(hit_ptr, hit_n, K, x, n, ff, hits_scratch, yh, c.stream, T);
-    linear(c, c.w.layer(il, "ffn_gate_shexp.weight"), x, sg, T);
-    linear(c, c.w.layer(il, "ffn_up_shexp.weight"), x, su, T);
-    k_swiglu_1<<<(T * ffs + 255) / 256, 256, 0, c.stream>>>(sg, su, T * ffs);
-    linear(c, c.w.layer(il, "ffn_down_shexp.weight"), sg, sh, T);
+    {
+        const GpuTensor* ws[2] = {&c.w.layer(il, "ffn_gate_shexp.weight"), &c.w.layer(il, "ffn_up_shexp.weight")};
+        float* ys[2] = {sg, su};
+        linear_shared(c, ws, ys, 2, x, T);
+    }
+    const GpuTensor& w_down = c.w.layer(il, "ffn_down_shexp.weight");
+    if (fuse_epi() && q8_act(w_down, T)) {   // SwiGLU writes the down projection's activations
+        gemv::swiglu_q8_1(sg, su, ffs, T, c.scratch.q8, c.stream);
+        gemv::matvec_q(w_down.type, w_down.dev, c.scratch.q8, sh, ffs, n, T, c.stream);
+    } else {
+        k_swiglu_1<<<(T * ffs + 255) / 256, 256, 0, c.stream>>>(sg, su, T * ffs);
+        linear(c, w_down, sg, sh, T);
+    }
     if (!rg_fused) linear(c, *rg[1].W, x, gate, T);
 
     if (h.doorbell) {   // 3'. the miss server fills the mailbox; the combine waits for it on the GPU

@@ -390,8 +390,11 @@ __global__ void k_hc_combine(float* x, const float* out, const float* inject, in
 
 // one thread per channel: causal conv over the (conv-1)-token history and T new tokens, silu;
 // the history is advanced to the last (conv-1) inputs
-__global__ void k_gdn_conv(const float* qkv, float* hist, const float* w, float* y, int channels, int T, int K) {
+// norm_heads > 0: the first norm_heads blocks are each one q or k head (blockDim = head dim) and
+// L2-normalise it per token (as k_l2_norm)
+__global__ void k_gdn_conv(const float* qkv, float* hist, const float* w, float* y, int channels, int T, int K, int norm_heads, float eps) {
     const int c = blockIdx.x * blockDim.x + threadIdx.x;
+    const bool norm = int(blockIdx.x) < norm_heads;   // block-uniform; such blocks are full
     if (c >= channels) return;
     float win[8];
     for (int k = 0; k < K - 1; ++k) win[k] = hist[size_t(k) * channels + c];
@@ -399,7 +402,9 @@ __global__ void k_gdn_conv(const float* qkv, float* hist, const float* w, float*
         win[K - 1] = qkv[size_t(t) * channels + c];
         float acc = 0.0f;
         for (int k = 0; k < K; ++k) acc += win[k] * w[size_t(c) * K + k];
-        y[size_t(t) * channels + c] = acc / (1.0f + __expf(-acc));
+        float v = acc / (1.0f + __expf(-acc));
+        if (norm) v *= rsqrtf(block_sum(v * v) + eps);
+        y[size_t(t) * channels + c] = v;
         for (int k = 0; k < K - 1; ++k) win[k] = win[k + 1];
     }
     for (int k = 0; k < K - 1; ++k) hist[size_t(k) * channels + c] = win[k];
@@ -1165,6 +1170,31 @@ __global__ void __launch_bounds__(256) k_bf16_multi(Bf16Segs segs, const float* 
 }
 }  // namespace
 
+bool fuse_epi() {
+    static const bool on = [] {
+        const char* e = std::getenv("FLASHRT_FUSE_EPI");
+        return !(e && e[0] == '0');
+    }();
+    return on;
+}
+
+bool q8_act(const GpuTensor& W, int T) {
+    return T >= 1 && T <= gemv::kMaxTokens && W.type < kTypeQ3R && gemv::supported(W.type) && !gemv::is_float(W.type);
+}
+
+void linear_shared(const BlockCtx& c, const GpuTensor* const* Ws, float* const* ys, int n, const float* x, int T) {
+    int nq = 0;
+    for (int i = 0; i < n; ++i) nq += q8_act(*Ws[i], T);
+    const bool share = fuse_epi() && nq >= 2 && Ws[0]->cols() > 0;
+    if (share) gemv::quantize_q8_1(x, Ws[0]->cols(), T, c.scratch.q8, c.stream);
+    for (int i = 0; i < n; ++i) {
+        if (share && q8_act(*Ws[i], T)) {
+            if (Ws[i]->cols() != Ws[0]->cols()) throw std::runtime_error("linear_shared: row lengths differ");
+            gemv::matvec_q(Ws[i]->type, Ws[i]->dev, c.scratch.q8, ys[i], Ws[i]->cols(), Ws[i]->rows(), T, c.stream);
+        } else linear(c, *Ws[i], x, ys[i], T);
+    }
+}
+
 bool linear_multi_ok(const LinearOut* outs, int n, int T) {
     constexpr uint32_t kBF16 = 30;   // GGML_TYPE_BF16
     static const bool on = [] {       // FLASHRT_LINEAR_MULTI=0: separate launches
@@ -1543,8 +1573,11 @@ void gdn_mixer(const BlockCtx& c, int il, const float* x, int T, GdnState& st, f
         ck(cudaMemcpyAsync(win->conv_old, st.conv, size_t(s.ssm_conv - 1) * ch * 4, cudaMemcpyDeviceToDevice, c.stream), "gdn conv backup");
     }
 
-    linear(c, c.w.layer(il, "attn_qkv.weight"), x, qkv, T);
-    linear(c, c.w.layer(il, "attn_gate.weight"), x, z, T);
+    {
+        const GpuTensor* ws[2] = {&c.w.layer(il, "attn_qkv.weight"), &c.w.layer(il, "attn_gate.weight")};
+        float* ys[2] = {qkv, z};
+        linear_shared(c, ws, ys, 2, x, T);
+    }
     const float* dt_bias = static_cast<const float*>(c.w.layer(il, "ssm_dt.bias").dev);
     const float* ssm_a = static_cast<const float*>(c.w.layer(il, "ssm_a").dev);
     const LinearOut ab[2] = {{&c.w.layer(il, "ssm_alpha.weight"), alpha, 1, dt_bias, ssm_a}, {&c.w.layer(il, "ssm_beta.weight"), beta, 2}};
@@ -1554,6 +1587,7 @@ void gdn_mixer(const BlockCtx& c, int il, const float* x, int T, GdnState& st, f
         linear(c, *ab[1].W, x, beta, T);
         linear(c, *ab[0].W, x, alpha, T);
     }
+    const bool conv_l2 = T <= 8 && dk == 128 && fuse_epi();   // decode: the conv kernel normalises q and k
     if (T > 8) {
         k_gdn_conv_par<<<dim3((ch + 255) / 256, T), 256, 0, c.stream>>>(qkv, st.conv,
                                                                        static_cast<const float*>(c.w.layer(il, "ssm_conv1d.weight").dev), conv,
@@ -1561,10 +1595,10 @@ void gdn_mixer(const BlockCtx& c, int il, const float* x, int T, GdnState& st, f
         k_gdn_conv_hist<<<(ch + 255) / 256, 256, 0, c.stream>>>(qkv, st.conv, ch, T, s.ssm_conv);
     } else {
         k_gdn_conv<<<(ch + 127) / 128, 128, 0, c.stream>>>(qkv, st.conv, static_cast<const float*>(c.w.layer(il, "ssm_conv1d.weight").dev),
-                                                          conv, ch, T, s.ssm_conv);
+                                                          conv, ch, T, s.ssm_conv, conv_l2 ? 2 * s.ssm_groups : 0, float(s.rms_eps));
     }
     // L2-normalise the q and k heads (the first 2 * groups heads of each token's channels)
-    k_l2_norm<<<T * 2 * s.ssm_groups, 128, 0, c.stream>>>(conv, dk, ch, 2 * s.ssm_groups, float(s.rms_eps));
+    if (!conv_l2) k_l2_norm<<<T * 2 * s.ssm_groups, 128, 0, c.stream>>>(conv, dk, ch, 2 * s.ssm_groups, float(s.rms_eps));
     if (!ab_fused) k_gdn_gates<<<(T * H + 127) / 128, 128, 0, c.stream>>>(alpha, beta, dt_bias, ssm_a, H, T);
     static const bool col_on = [] {
         const char* e = std::getenv("FLASHRT_GDN_COL");
@@ -1591,9 +1625,15 @@ void gdn_mixer(const BlockCtx& c, int il, const float* x, int T, GdnState& st, f
                                                                           s.ssm_groups, H, ch);
     else k_gdn_delta<<<H, dk, size_t(2) * dk * 4, c.stream>>>(st.S, conv, alpha, beta, o, T, s.ssm_groups, H, dk, ch);
     if (o_inner) ck(cudaMemcpyAsync(o_inner, o, size_t(T) * inner * 4, cudaMemcpyDeviceToDevice, c.stream), "copy o");
-    k_gated_rms_norm<<<T * H, 128, 0, c.stream>>>(o, static_cast<const float*>(c.w.layer(il, "ssm_norm.weight").dev), z, fin, dk,
-                                                 float(s.rms_eps));
-    linear(c, c.w.layer(il, "ssm_out.weight"), fin, out, T);
+    const GpuTensor& w_out = c.w.layer(il, "ssm_out.weight");
+    const float* w_norm = static_cast<const float*>(c.w.layer(il, "ssm_norm.weight").dev);
+    if (fuse_epi() && q8_act(w_out, T) && gemv::gated_rms_norm_q8_1_ok(dk, H)) {   // decode: the norm writes ssm_out's activations
+        gemv::gated_rms_norm_q8_1(o, w_norm, z, dk, H, float(s.rms_eps), T, c.scratch.q8, c.stream);
+        gemv::matvec_q(w_out.type, w_out.dev, c.scratch.q8, out, inner, w_out.rows(), T, c.stream);
+    } else {
+        k_gated_rms_norm<<<T * H, 128, 0, c.stream>>>(o, w_norm, z, fin, dk, float(s.rms_eps));
+        linear(c, w_out, fin, out, T);
+    }
     ck(cudaGetLastError(), "gdn_mixer");
 }
 
@@ -2791,9 +2831,11 @@ void qsa_mixer(const BlockCtx& c, int il, const float* x, int T, int pos0, QsaCa
     float* ki = qi + size_t(T) * IH * ID;           // [T][ID] indexer raw keys
     if (size_t(ki + size_t(T) * ID - c.scratch.f32) > c.scratch.f32_elems) throw std::runtime_error("qsa_mixer: scratch too small");
 
-    linear(c, c.w.layer(il, "attn_q.weight"), x, qfull, T);
-    linear(c, c.w.layer(il, "attn_k.weight"), x, kraw, T);
-    linear(c, c.w.layer(il, "attn_v.weight"), x, vraw, T);
+    {
+        const GpuTensor* ws[3] = {&c.w.layer(il, "attn_q.weight"), &c.w.layer(il, "attn_k.weight"), &c.w.layer(il, "attn_v.weight")};
+        float* ys[3] = {qfull, kraw, vraw};
+        linear_shared(c, ws, ys, 3, x, T);
+    }
     const float theta_scale = powf(float(s.rope_base), -2.0f / float(s.rope_dims));
     const float eps = float(s.rms_eps);
     k_norm_rope<float><<<T * H, 128, 0, c.stream>>>(qfull, H * 2 * D, 2 * D, static_cast<const float*>(c.w.layer(il, "attn_q_norm.weight").dev),

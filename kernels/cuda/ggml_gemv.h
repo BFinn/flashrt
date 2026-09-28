@@ -35,6 +35,14 @@ void matvec(uint32_t ggml_type, const void* W, const float* x, float* y, int64_t
 
 // The two halves separately, to quantize one activation once for several matrices.
 void quantize_q8_1(const float* x, int64_t ncols, int n_tok, void* xq, cudaStream_t stream);
+// quantize_q8_1 with the producer fused in front (decode's small epilogues), same layout:
+// silu(g) * u, [n_tok][ncols] each;
+void swiglu_q8_1(const float* g, const float* u, int64_t ncols, int n_tok, void* xq, cudaStream_t stream);
+// per (token, head of dim): o * rsqrt(mean(o^2) + eps) * w * sigmoid(z) (dim 128; heads * dim a
+// multiple of the row padding, 512).
+bool gated_rms_norm_q8_1_ok(int dim, int heads);
+void gated_rms_norm_q8_1(const float* o, const float* w, const float* z, int dim, int heads, float eps, int n_tok, void* xq,
+                         cudaStream_t stream);
 void matvec_q(uint32_t ggml_type, const void* W, const void* xq, float* y, int64_t ncols, int64_t nrows, int n_tok,
               cudaStream_t stream);
 

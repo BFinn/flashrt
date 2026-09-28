@@ -83,6 +83,56 @@ void quantize_q8_1(const float* x, int64_t ncols, int n_tok, void* xq, cudaStrea
                            stream);
 }
 
+namespace {
+// one q8_1 block per warp (as ggml's quantize_q8_1): the 32 lanes' values -> d = amax / 127, sum
+__device__ __forceinline__ void store_q8_1(block_q8_1* y, int64_t i_cont, float xi) {
+    float amax = fabsf(xi), sum = xi;
+    amax = warp_reduce_max<QK8_1>(amax);
+    sum = warp_reduce_sum<QK8_1>(sum);
+    const float d = amax / 127.0f;
+    const int64_t ib = i_cont / QK8_1, iqs = i_cont % QK8_1;
+    y[ib].qs[iqs] = amax == 0.0f ? 0 : int8_t(roundf(xi / d));
+    if (iqs == 0) y[ib].ds = make_half2(d, sum);
+}
+__global__ void k_swiglu_q8_1(const float* g, const float* u, block_q8_1* y, int64_t ncols, int64_t padded) {
+    const int64_t i0 = int64_t(blockDim.x) * blockIdx.x + threadIdx.x, t = blockIdx.y;
+    if (i0 >= padded) return;   // padded is a multiple of the block
+    float xi = 0.0f;
+    if (i0 < ncols) {
+        const float gv = g[t * ncols + i0];
+        xi = gv / (1.0f + __expf(-gv)) * u[t * ncols + i0];
+    }
+    store_q8_1(y, t * padded + i0, xi);
+}
+// block = (token, head), dim threads
+__global__ void k_gated_rms_norm_q8_1(const float* o, const float* w, const float* z, block_q8_1* y, int dim, int heads, float eps) {
+    __shared__ float red[32];
+    const int t = blockIdx.x / heads, h = blockIdx.x % heads, i = threadIdx.x;
+    const size_t at = (size_t(t) * heads + h) * dim + i;
+    const float v = o[at];
+    float ss = warp_reduce_sum(v * v);
+    if ((i & 31) == 0) red[i >> 5] = ss;
+    __syncthreads();
+    ss = 0.0f;
+    for (int k = 0; k < (dim >> 5); ++k) ss += red[k];
+    const float inv = rsqrtf(ss / dim + eps);
+    store_q8_1(y, int64_t(at), v * inv * w[i] / (1.0f + __expf(-z[at])));
+}
+}  // namespace
+
+void swiglu_q8_1(const float* g, const float* u, int64_t ncols, int n_tok, void* xq, cudaStream_t stream) {
+    const int64_t padded = GGML_PAD(ncols, MATRIX_ROW_PADDING);
+    k_swiglu_q8_1<<<dim3(unsigned(padded / 256), unsigned(n_tok)), 256, 0, stream>>>(g, u, static_cast<block_q8_1*>(xq), ncols, padded);
+}
+
+bool gated_rms_norm_q8_1_ok(int dim, int heads) { return dim == 128 && (int64_t(dim) * heads) % MATRIX_ROW_PADDING == 0; }
+
+void gated_rms_norm_q8_1(const float* o, const float* w, const float* z, int dim, int heads, float eps, int n_tok, void* xq,
+                         cudaStream_t stream) {
+    if (!gated_rms_norm_q8_1_ok(dim, heads)) throw std::runtime_error("gemv::gated_rms_norm_q8_1: unsupported shape");
+    k_gated_rms_norm_q8_1<<<unsigned(n_tok * heads), unsigned(dim), 0, stream>>>(o, w, z, static_cast<block_q8_1*>(xq), dim, heads, eps);
+}
+
 void matvec_q(uint32_t t, const void* W, const void* xq, float* y, int64_t ncols, int64_t nrows, int n_tok,
               cudaStream_t stream) {
     check_args(t, ncols, n_tok);
