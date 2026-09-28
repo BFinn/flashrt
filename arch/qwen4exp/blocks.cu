@@ -682,6 +682,10 @@ __global__ void __launch_bounds__(32 * kGdnColWarps) k_gdn_delta_col(const float
 // k_gdn_chunk_prep does the S0-free part for every (chunk, head) in parallel; k_gdn_chunk_state
 // carries S0 through the chunks, one block per (head, 32 value columns): the columns of S evolve
 // independently. All fp32, same math as the recurrence (a different summation order).
+// It is correct (test_gdn: 6e-7 against the column kernel) but 5x slower: it does 2.4x the
+// recurrence's FLOPs, and on this GPU the tensor cores with fp32 accumulation (TF32 61, BF16 122
+// TFLOPS) barely outrun the CUDA cores (about 56), so only a BF16 tensor-core version could win,
+// by an estimated 3% of prefill (bench/results/2026-09-28-sw70-gdn-chunk). Opt-in, a baseline.
 constexpr int kGdnChunk = 64, kGdnSlab = 16;   // tokens per chunk; chunks per prep/state pass
 
 template <int DK>
@@ -1264,9 +1268,9 @@ void gdn_mixer(const BlockCtx& c, int il, const float* x, int T, GdnState& st, f
         const char* e = std::getenv("FLASHRT_GDN_COL");
         return !(e && e[0] == '0');
     }();
-    static const bool chunk_on = [] {   // FLASHRT_GDN_CHUNK=0: the column kernel for prefill too
+    static const bool chunk_on = [] {   // FLASHRT_GDN_CHUNK=1: the chunked form (exact, but 5x slower in fp32: sw70)
         const char* e = std::getenv("FLASHRT_GDN_CHUNK");
-        return !(e && e[0] == '0');
+        return e && e[0] == '1';
     }();
     if (dk == 128 && T >= kGdnChunk && !win && chunk_on) {   // prefill: the chunked form
         BlockScratch& bs = c.scratch;

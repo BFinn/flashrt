@@ -1,0 +1,30 @@
+mma only                                      4 warps/CTA, 1 CTA(s)/SM:  455.9 TOPS
+mma only                                      4 warps/CTA, 4 CTA(s)/SM:  486.6 TOPS
+mma only                                      8 warps/CTA, 1 CTA(s)/SM:  486.6 TOPS
+mma only                                      8 warps/CTA, 4 CTA(s)/SM:  488.7 TOPS
+mma only                                     16 warps/CTA, 1 CTA(s)/SM:  488.0 TOPS
+mma only                                     16 warps/CTA, 4 CTA(s)/SM:  490.4 TOPS
+mma + per-32 scale arithmetic                 4 warps/CTA, 1 CTA(s)/SM:  194.1 TOPS
+mma + per-32 scale arithmetic                 4 warps/CTA, 4 CTA(s)/SM:  303.5 TOPS
+mma + per-32 scale arithmetic                 8 warps/CTA, 1 CTA(s)/SM:  283.3 TOPS
+mma + per-32 scale arithmetic                 8 warps/CTA, 4 CTA(s)/SM:  323.3 TOPS
+mma + per-32 scale arithmetic                16 warps/CTA, 1 CTA(s)/SM:  331.8 TOPS
+mma + per-32 scale arithmetic                16 warps/CTA, 4 CTA(s)/SM:  337.2 TOPS
+mma + per-64 scale arithmetic                 4 warps/CTA, 1 CTA(s)/SM:  255.3 TOPS
+mma + per-64 scale arithmetic                 4 warps/CTA, 4 CTA(s)/SM:  359.5 TOPS
+mma + per-64 scale arithmetic                 8 warps/CTA, 1 CTA(s)/SM:  364.7 TOPS
+mma + per-64 scale arithmetic                 8 warps/CTA, 4 CTA(s)/SM:  370.4 TOPS
+mma + per-64 scale arithmetic                16 warps/CTA, 1 CTA(s)/SM:  380.5 TOPS
+mma + per-64 scale arithmetic                16 warps/CTA, 4 CTA(s)/SM:  382.4 TOPS
+bf16 m16n8k16, fp32 accumulate (TFLOPS)       4 warps/CTA, 1 CTA(s)/SM:  121.0 TOPS
+bf16 m16n8k16, fp32 accumulate (TFLOPS)       4 warps/CTA, 4 CTA(s)/SM:  122.2 TOPS
+bf16 m16n8k16, fp32 accumulate (TFLOPS)       8 warps/CTA, 1 CTA(s)/SM:  122.0 TOPS
+bf16 m16n8k16, fp32 accumulate (TFLOPS)       8 warps/CTA, 4 CTA(s)/SM:  122.3 TOPS
+bf16 m16n8k16, fp32 accumulate (TFLOPS)      16 warps/CTA, 1 CTA(s)/SM:  122.2 TOPS
+bf16 m16n8k16, fp32 accumulate (TFLOPS)      16 warps/CTA, 4 CTA(s)/SM:  122.4 TOPS
+tf32 m16n8k8, fp32 accumulate (TFLOPS)        4 warps/CTA, 1 CTA(s)/SM:   60.2 TOPS
+tf32 m16n8k8, fp32 accumulate (TFLOPS)        4 warps/CTA, 4 CTA(s)/SM:   61.0 TOPS
+tf32 m16n8k8, fp32 accumulate (TFLOPS)        8 warps/CTA, 1 CTA(s)/SM:   61.1 TOPS
+tf32 m16n8k8, fp32 accumulate (TFLOPS)        8 warps/CTA, 4 CTA(s)/SM:   61.2 TOPS
+tf32 m16n8k8, fp32 accumulate (TFLOPS)       16 warps/CTA, 1 CTA(s)/SM:   61.1 TOPS
+tf32 m16n8k8, fp32 accumulate (TFLOPS)       16 warps/CTA, 4 CTA(s)/SM:   61.2 TOPS
