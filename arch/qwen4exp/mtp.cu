@@ -1,13 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "arch/qwen4exp/mtp.hpp"
 
+#include "core/fp16.hpp"
 #include "core/gguf.hpp"
 #include "kernels/cuda/ggml_gemv.h"
 
+#include <fcntl.h>
+#include <unistd.h>
+
 #include <algorithm>
+#include <cmath>
 #include <regex>
 #include <stdexcept>
 #include <string>
+#include <thread>
 
 namespace flashrt::qwen4exp {
 
@@ -90,10 +96,44 @@ __global__ void k_mtp_moe_combine(float* out, const float* yd, const float* wts,
     out[size_t(t) * n + i] = acc + sh[size_t(t) * n + i] / (1.0f + __expf(-gate[t]));
 }
 
+// Q8_0 blocks -> Q4_0 blocks (ggml's quantize_row_q4_0_ref on the dequantized values)
+void q8_0_to_q4_0(const uint8_t* src, uint8_t* dst, size_t nblocks) {
+    for (size_t b = 0; b < nblocks; ++b, src += 34, dst += 18) {
+        const float d8 = fp16_to_fp32(uint16_t(src[0] | (src[1] << 8)));
+        float x[32], amax = 0.0f, mx = 0.0f;
+        for (int j = 0; j < 32; ++j) {
+            x[j] = d8 * float(int8_t(src[2 + j]));
+            if (std::fabs(x[j]) > amax) {
+                amax = std::fabs(x[j]);
+                mx = x[j];
+            }
+        }
+        const float d = mx / -8.0f, id = d != 0.0f ? 1.0f / d : 0.0f;
+        const uint16_t dh = fp32_to_fp16(d);
+        dst[0] = uint8_t(dh & 0xff);
+        dst[1] = uint8_t(dh >> 8);
+        for (int j = 0; j < 16; ++j) {
+            const int q0 = std::min(15, int(int8_t(x[j] * id + 8.5f)));
+            const int q1 = std::min(15, int(int8_t(x[j + 16] * id + 8.5f)));
+            dst[2 + j] = uint8_t(q0 | (q1 << 4));
+        }
+    }
+}
+
+// ids_dev[idx] for the argmax index (device)
+__global__ void k_map_id(const int32_t* ids, int32_t* v) { v[0] = ids[v[0]]; }
+
+// rows[i] = src row ids[i], row_bytes each; one block per row
+__global__ void k_gather_rows(const uint8_t* src, const int32_t* ids, uint8_t* dst, size_t row_bytes) {
+    const uint8_t* s = src + size_t(ids[blockIdx.x]) * row_bytes;
+    uint8_t* d = dst + size_t(blockIdx.x) * row_bytes;
+    for (size_t i = threadIdx.x; i < row_bytes; i += blockDim.x) d[i] = s[i];
+}
+
 }  // namespace
 
 MtpHead::MtpHead(const Gguf& g, const Spec& target, const GpuWeights& target_w, cudaStream_t stream, int max_ctx, int max_batch,
-                 bool kv_q8, int kv_hot_blocks)
+                 bool kv_q8, int kv_hot_blocks, bool expert_q8)
     : s_(target), ts_(target), tw_(target_w), max_batch_(max_batch), stream_(stream) {
     if (g.get_string("general.architecture") != "qwen4exp") throw std::runtime_error("MTP: the draft GGUF is not qwen4exp");
     // the draft block is the one with nextn tensors; the borrowed embedding and head are skipped
@@ -105,6 +145,7 @@ MtpHead::MtpHead(const Gguf& g, const Spec& target, const GpuWeights& target_w, 
         if (!std::regex_match(t.name, m, blk)) continue;
         const std::string rest = m[2];
         if (rest == "nextn.embed_tokens.weight" || rest == "nextn.shared_head_head.weight") continue;
+        if (!expert_q8 && (rest == "ffn_gate_exps.weight" || rest == "ffn_up_exps.weight" || rest == "ffn_down_exps.weight")) continue;
         const int l = std::stoi(m[1]);
         if (rest == "nextn.eh_proj.weight") {
             if (il_ >= 0 && il_ != l) throw std::runtime_error("MTP: more than one draft block");
@@ -118,9 +159,17 @@ MtpHead::MtpHead(const Gguf& g, const Spec& target, const GpuWeights& target_w, 
     s_.n_layer = il_ + 1;
     s_.mixer.push_back(Mixer::QSA);
     s_.qsa_layers.push_back(il_);
-    const GpuTensor& gexp = w_.layer(il_, "ffn_gate_exps.weight");
-    if (gexp.dims != std::vector<int64_t>{s_.d_model, s_.d_ff_expert, s_.n_expert} || s_.n_expert > 1024 || s_.top_k > 32)
+    if (expert_q8) {
+        exps_[0] = w_.layer(il_, "ffn_gate_exps.weight");
+        exps_[1] = w_.layer(il_, "ffn_up_exps.weight");
+        exps_[2] = w_.layer(il_, "ffn_down_exps.weight");
+    } else {
+        load_experts_q4(g);
+    }
+    if (exps_[0].dims != std::vector<int64_t>{s_.d_model, s_.d_ff_expert, s_.n_expert} || s_.n_expert > 1024 || s_.top_k > 32)
         throw std::runtime_error("MTP: unexpected expert shape");
+    ck(cudaMalloc(&amax_dev_, 4), "cudaMalloc MTP argmax");
+    ck(cudaHostAlloc(&amax_host_, 4, cudaHostAllocDefault), "cudaHostAlloc MTP argmax");
 
     scratch_ = alloc_block_scratch(s_, max_batch);
     kv_ = alloc_qsa_cache(s_, max_ctx, kv_q8, kv_hot_blocks);
@@ -147,7 +196,91 @@ MtpHead::MtpHead(const Gguf& g, const Spec& target, const GpuWeights& target_w, 
     gate_ = dalloc<float>(B);
 }
 
+void MtpHead::load_experts_q4(const Gguf& g) {
+    constexpr uint32_t kQ8_0 = 8, kQ4_0 = 2;
+    const char* names[3] = {"ffn_gate_exps.weight", "ffn_up_exps.weight", "ffn_down_exps.weight"};
+    const GgufTensor* src[3];
+    size_t off[4] = {0, 0, 0, 0};
+    for (int i = 0; i < 3; ++i) {
+        src[i] = g.tensor("blk." + std::to_string(il_) + "." + names[i]);
+        if (!src[i] || src[i]->type != kQ8_0) throw std::runtime_error(std::string("MTP: expert tensor missing or not Q8_0: ") + names[i]);
+        const size_t q4 = size_t(src[i]->n_elements()) / 32 * 18;
+        off[i + 1] = off[i] + ((q4 + gemv::kWeightTailPad + 255) & ~size_t(255));
+    }
+    exp_bytes_ = off[3];
+    ck(cudaMalloc(&exp_dev_, exp_bytes_), "cudaMalloc MTP experts");
+    ck(cudaMemset(exp_dev_, 0, exp_bytes_), "memset MTP experts");
+    // per tensor: read in chunks of whole blocks, convert on a few threads, upload
+    constexpr size_t kChunkBlocks = size_t(1) << 20;   // 34 MB of Q8_0
+    std::vector<uint8_t> in(kChunkBlocks * 34), out(kChunkBlocks * 18);
+    for (int i = 0; i < 3; ++i) {
+        const GgufTensor& t = *src[i];
+        const int fd = open(g.shards[t.shard].c_str(), O_RDONLY);
+        if (fd < 0) throw std::runtime_error("open " + g.shards[t.shard]);
+        const size_t nb = size_t(t.n_elements()) / 32;
+        for (size_t b0 = 0; b0 < nb; b0 += kChunkBlocks) {
+            const size_t n = std::min(kChunkBlocks, nb - b0);
+            for (size_t r = 0; r < n * 34;) {
+                const ssize_t got = pread(fd, in.data() + r, n * 34 - r, off_t(t.file_offset + b0 * 34 + r));
+                if (got <= 0) throw std::runtime_error("short read of " + t.name);
+                r += size_t(got);
+            }
+            const int nt = 8;
+            std::vector<std::thread> th;
+            for (int k = 0; k < nt; ++k)
+                th.emplace_back([&, k] {
+                    const size_t a = n * k / nt, e = n * (k + 1) / nt;
+                    q8_0_to_q4_0(in.data() + a * 34, out.data() + a * 18, e - a);
+                });
+            for (auto& x : th) x.join();
+            ck(cudaMemcpy(static_cast<uint8_t*>(exp_dev_) + off[i] + b0 * 18, out.data(), n * 18, cudaMemcpyHostToDevice), "upload MTP experts");
+        }
+        close(fd);
+        exps_[i].dev = static_cast<uint8_t*>(exp_dev_) + off[i];
+        exps_[i].type = kQ4_0;
+        exps_[i].dims = t.dims;
+        exps_[i].bytes = nb * 18;
+    }
+}
+
+void MtpHead::set_vocab(const std::vector<int32_t>& ids) {
+    if (head_.dev) cudaFree(head_.dev);
+    head_ = GpuTensor{};
+    head_bytes_ = 0;
+    vocab_ids_ = ids;
+    if (ids.empty()) return;
+    const GpuTensor& full = tw_.get("output.weight");
+    const size_t rb = size_t(gemv::row_bytes(full.type, full.cols()));
+    head_bytes_ = rb * ids.size() + gemv::kWeightTailPad + ids.size() * 4;
+    uint8_t* dev = nullptr;
+    ck(cudaMalloc(&dev, head_bytes_), "cudaMalloc MTP head");
+    ck(cudaMemset(dev, 0, head_bytes_), "memset MTP head");
+    int32_t* ids_dev = reinterpret_cast<int32_t*>(dev + rb * ids.size() + gemv::kWeightTailPad);
+    ck(cudaMemcpy(ids_dev, ids.data(), ids.size() * 4, cudaMemcpyHostToDevice), "MTP head ids");
+    k_gather_rows<<<unsigned(ids.size()), 256, 0, stream_>>>(static_cast<const uint8_t*>(full.dev), ids_dev, dev, rb);
+    ck(cudaStreamSynchronize(stream_), "MTP head gather");
+    head_.dev = dev;
+    head_.type = full.type;
+    head_.dims = {full.cols(), int64_t(ids.size())};
+    head_.bytes = rb * ids.size();
+}
+
+int32_t MtpHead::argmax(const float* logits_row_dev) {
+    argmax_dev(stream_, logits_row_dev, vocab(), amax_dev_);
+    if (!vocab_ids_.empty()) {
+        const int32_t* ids_dev = reinterpret_cast<const int32_t*>(static_cast<const uint8_t*>(head_.dev) + head_.bytes + gemv::kWeightTailPad);
+        k_map_id<<<1, 1, 0, stream_>>>(ids_dev, amax_dev_);
+    }
+    ck(cudaMemcpyAsync(amax_host_, amax_dev_, 4, cudaMemcpyDeviceToHost, stream_), "MTP argmax to host");
+    ck(cudaStreamSynchronize(stream_), "MTP argmax");
+    return *amax_host_;
+}
+
 MtpHead::~MtpHead() {
+    if (exp_dev_) cudaFree(exp_dev_);
+    if (head_.dev) cudaFree(head_.dev);
+    if (amax_dev_) cudaFree(amax_dev_);
+    if (amax_host_) cudaFreeHost(amax_host_);
     free_block_scratch(scratch_);
     free_qsa_cache(kv_);
     for (void* p : {static_cast<void*>(x_), static_cast<void*>(emb_), static_cast<void*>(en_), static_cast<void*>(hn_),
@@ -168,9 +301,7 @@ void MtpHead::reset() {
 // of up to 8 tokens.
 void MtpHead::moe(const BlockCtx& c, const float* x, int T, float* out) {
     const int n = s_.d_model, E = s_.n_expert, K = s_.top_k, ff = s_.d_ff_expert, ffs = s_.d_ff_shared;
-    const GpuTensor& wg = w_.layer(il_, "ffn_gate_exps.weight");
-    const GpuTensor& wu = w_.layer(il_, "ffn_up_exps.weight");
-    const GpuTensor& wd = w_.layer(il_, "ffn_down_exps.weight");
+    const GpuTensor &wg = exps_[0], &wu = exps_[1], &wd = exps_[2];
     const int64_t gu_stride = gemv::row_bytes(wu.type, n) * ff, d_stride = gemv::row_bytes(wd.type, ff) * n;
     linear(c, w_.layer(il_, "ffn_gate_inp.weight"), x, logits_e_, T);
     k_mtp_route<<<T, ((E + 31) / 32) * 32, 0, c.stream>>>(logits_e_, E, K, ids_, wts_);
@@ -214,7 +345,8 @@ void MtpHead::forward(const float* h_prev, const int32_t* tokens, int T, int pos
     if (out_from < T && logits_dev) {
         const int R = T - out_from;
         hc_mix(c, il, 3, x_ + size_t(out_from) * hc * n, R, norm_, nullptr);
-        head_logits(ct, norm_, R, logits_dev);
+        if (head_.dev) linear(ct, head_, norm_, logits_dev, R);
+        else head_logits(ct, norm_, R, logits_dev);
     }
     ck(cudaGetLastError(), "MtpHead::forward");
 }

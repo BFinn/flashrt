@@ -12,7 +12,10 @@
 // same below the selection width.
 //
 // The weights come from the draft GGUF (the "-noembd" export: token embedding and LM head are
-// the target's). Everything lives in VRAM, the experts in their GGUF type, routed on the GPU.
+// the target's). Everything lives in VRAM, routed on the GPU. The experts are requantized from
+// the GGUF's Q8_0 to Q4_0 at load (half the VRAM; only draft acceptance depends on it) unless
+// expert_q8. With set_vocab, the head covers a subset of the vocabulary (the drafter's argmax
+// can only pick those tokens), a gathered copy of those rows of the target's LM head.
 #pragma once
 
 #include "arch/qwen4exp/blocks.hpp"
@@ -22,6 +25,7 @@
 #include <cuda_runtime.h>
 
 #include <cstdint>
+#include <vector>
 
 namespace flashrt {
 struct Gguf;
@@ -34,7 +38,7 @@ public:
     // g: the draft GGUF; target, target_w: the target model (embedding, LM head, shapes). The KV
     // cache is sized and formatted like the target's (kv_q8, kv_hot_blocks: see ForwardRef).
     MtpHead(const Gguf& g, const Spec& target, const GpuWeights& target_w, cudaStream_t stream, int max_ctx, int max_batch,
-            bool kv_q8 = false, int kv_hot_blocks = 0);
+            bool kv_q8 = false, int kv_hot_blocks = 0, bool expert_q8 = false);
     ~MtpHead();
     MtpHead(const MtpHead&) = delete;
     MtpHead& operator=(const MtpHead&) = delete;
@@ -43,16 +47,23 @@ public:
     // position before each (the target's, or this head's h_out() for a chained draft; h_out()
     // itself may be passed); tokens (host) the tokens at the positions. Writes the KV cache at
     // those positions (re-running a position overwrites it), h_out() [T][hc][n], and the logits
-    // of rows [out_from, T) to logits_dev [T - out_from][n_vocab].
+    // of rows [out_from, T) to logits_dev [T - out_from][vocab()].
     void forward(const float* h_prev, const int32_t* tokens, int T, int pos0, int out_from, float* logits_dev);
     const float* h_out() const { return x_; }
 
+    // Restricts the head to these token ids (empty: the full vocabulary again).
+    void set_vocab(const std::vector<int32_t>& ids);
+    int vocab() const { return vocab_ids_.empty() ? ts_.n_vocab : int(vocab_ids_.size()); }
+    // The drafted token of one logits row (GPU argmax, mapped back to a token id).
+    int32_t argmax(const float* logits_row_dev);
+
     void reset();   // a new sequence
-    size_t weight_bytes() const { return w_.device_bytes(); }
+    size_t weight_bytes() const { return w_.device_bytes() + exp_bytes_ + head_bytes_; }
     int layer() const { return il_; }
 
 private:
     void moe(const BlockCtx& c, const float* x, int T, float* out);
+    void load_experts_q4(const Gguf& g);
 
     Spec s_;                 // the target's spec with the draft layer appended
     const Spec& ts_;
@@ -71,6 +82,15 @@ private:
     void* xq_ = nullptr;
     void* hq_ = nullptr;
     float *hid_ = nullptr, *yd_ = nullptr, *sg_ = nullptr, *su_ = nullptr, *sh_ = nullptr, *gate_ = nullptr, *logits_e_ = nullptr;
+    // experts requantized at load (gate, up, down), outside w_
+    GpuTensor exps_[3];
+    void* exp_dev_ = nullptr;
+    size_t exp_bytes_ = 0;
+    // trimmed head
+    std::vector<int32_t> vocab_ids_;
+    GpuTensor head_;
+    size_t head_bytes_ = 0;
+    int32_t *amax_dev_ = nullptr, *amax_host_ = nullptr;
 };
 
 }  // namespace flashrt::qwen4exp

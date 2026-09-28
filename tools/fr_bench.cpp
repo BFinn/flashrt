@@ -24,7 +24,10 @@
 // acceptance a greedy verifier would see (the drafts' matching prefix against the tokens the
 // target then decodes). The decode tok/s includes the drafting. --spec K decodes speculatively
 // instead (greedy): each round the head drafts K tokens, the target verifies the window of K + 1
-// in one step, and the matching prefix plus the target's next token are kept.
+// in one step, and the matching prefix plus the target's next token are kept. The head's experts
+// are Q4_0 (requantized at load) unless --mtp-q8. --draft-vocab RANKS (bench/mtp_vocab.py) trims
+// the drafter's LM head to the top --draft-vocab-n ranked tokens (default 32768) plus the
+// prompt's distinct tokens, at most 65536 rows.
 #include "arch/qwen4exp/experts.hpp"
 #include "arch/qwen4exp/forward_ref.hpp"
 #include "arch/qwen4exp/gpu_weights.hpp"
@@ -58,8 +61,9 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "usage: fr_bench MODEL.gguf --ids PROMPT.txt --n-prompt N --gen G [--slots S] [--reserve-mib R] [--reference]\n");
         return 2;
     }
-    std::string ids_path, trace_path, save_state, load_state, mtp_path;
-    int draft_k = 4, spec_k = 0;
+    std::string ids_path, trace_path, save_state, load_state, mtp_path, vocab_path;
+    int draft_k = 4, spec_k = 0, vocab_n = 32768;
+    bool mtp_q8 = false;
     int n_prompt = 1024, gen = 128, slots = 0, reserve_mib = 1024, workers = 8, windows = 1;
     bool reference = false, doorbell = true, adaptive = true;
     int swap_budget = 8;
@@ -94,6 +98,9 @@ int main(int argc, char** argv) {
         else if (a == "--mtp") mtp_path = next();
         else if (a == "--draft") draft_k = std::max(1, std::atoi(next()));
         else if (a == "--spec") spec_k = std::max(1, std::atoi(next()));
+        else if (a == "--mtp-q8") mtp_q8 = true;
+        else if (a == "--draft-vocab") vocab_path = next();
+        else if (a == "--draft-vocab-n") vocab_n = std::atoi(next());
         else { std::fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
     }
     std::vector<int32_t> seq;
@@ -134,7 +141,8 @@ int main(int argc, char** argv) {
     float *h_carry = nullptr, *h_buf = nullptr, *mtp_logits = nullptr;
     if (!mtp_path.empty()) {
         g_mtp = std::make_unique<Gguf>(Gguf::open(mtp_path));
-        mtp = std::make_unique<MtpHead>(*g_mtp, s, w, fwd.stream(), n_prompt + windows * gen + 16 + draft_k, 64, kv_q8 || kv_hot > 0, kv_hot);
+        mtp = std::make_unique<MtpHead>(*g_mtp, s, w, fwd.stream(), n_prompt + windows * gen + 16 + draft_k, 64, kv_q8 || kv_hot > 0, kv_hot,
+                                        mtp_q8);
         cudaMalloc(&h_carry, hrow * 4);
         cudaMemset(h_carry, 0, hrow * 4);
         cudaMalloc(&h_buf, 64 * hrow * 4);
@@ -180,6 +188,27 @@ int main(int argc, char** argv) {
         }
         const double prefill_s = std::chrono::duration<double>(Clock::now() - tp).count();
         std::printf("prefill: %d tokens in %.1f s (%.1f tok/s, reference path)\n", n_prompt, prefill_s, n_prompt / prefill_s);
+    }
+    if (mtp && !vocab_path.empty()) {   // the drafter's vocabulary: top ranked tokens plus the prompt's, at most 65536
+        std::vector<int32_t> ids;
+        std::vector<char> in(s.n_vocab, 0);
+        std::ifstream f(vocab_path);
+        long v;
+        while (int(ids.size()) < vocab_n && f >> v)
+            if (v >= 0 && v < s.n_vocab && !in[v]) { in[v] = 1; ids.push_back(int32_t(v)); }
+        std::vector<int> cnt(s.n_vocab, 0);
+        for (int p = 0; p < n_prompt; ++p) ++cnt[seq[p]];
+        std::vector<int32_t> extra;
+        for (int t = 0; t < s.n_vocab; ++t)
+            if (cnt[t] && !in[t]) extra.push_back(t);
+        std::stable_sort(extra.begin(), extra.end(), [&](int a, int b) { return cnt[a] > cnt[b]; });
+        const int n_static = int(ids.size());
+        for (int32_t t : extra) {
+            if (ids.size() >= 65536) break;
+            ids.push_back(t);
+        }
+        mtp->set_vocab(ids);
+        std::printf("MTP draft vocabulary: %zu tokens (%d ranked, %zu from the prompt)\n", ids.size(), n_static, ids.size() - n_static);
     }
 
     // expert cache from the prompt's routing counts
@@ -254,11 +283,11 @@ int main(int argc, char** argv) {
             const int p = int(seq.size()) - 1;
             std::vector<int32_t> win(seq.end() - 1, seq.end());   // x_p, d1 .. dK
             mtp->forward(h_buf, seq.data() + p - pend + 1, pend, p - pend + 1, pend - 1, mtp_logits);
-            int32_t d = fwd.argmax(mtp_logits);
+            int32_t d = mtp->argmax(mtp_logits);
             win.push_back(d);
             for (int j = 1; j < spec_k; ++j) {
                 mtp->forward(mtp->h_out() + size_t(j == 1 ? pend - 1 : 0) * hrow, &d, 1, p + j, 0, mtp_logits);
-                d = fwd.argmax(mtp_logits);
+                d = mtp->argmax(mtp_logits);
                 win.push_back(d);
             }
             // 2. verify the window x_p, d1 .. dK
@@ -297,7 +326,7 @@ int main(int argc, char** argv) {
                 draft_pos.push_back(p);
                 for (int j = 0; j < draft_k; ++j) {
                     mtp->forward(j == 0 ? h_carry : mtp->h_out(), &d, 1, p + j, 0, mtp_logits);
-                    d = fwd.argmax(mtp_logits);
+                    d = mtp->argmax(mtp_logits);
                     drafts.push_back(d);
                 }
                 mtp_s += std::chrono::duration<double>(Clock::now() - tm).count();
