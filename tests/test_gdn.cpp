@@ -2,8 +2,9 @@
 // The chunked (WY) delta rule against the column kernel (the recurrence token by token), on
 // synthetic GDN inputs of the model's shape: 48 heads, 16 key groups, state 128; q and k
 // L2-normed, log decays g in about -3..0, beta in 0..1, a nonzero start state. T = 1,000 (a
-// partial last chunk) and 3,000 (several slabs). Both are fp32 with a different summation order:
-// outputs and final states agree to about 1e-5 relative (tolerance 1e-4).
+// partial last chunk) and 3,000 (several slabs). The column kernel is fp32;
+// the chunked form runs its products in fp16 (fp32 accumulation, fp32 state): outputs and final
+// states agree to about 1e-3 relative (tolerance 1e-2).
 //
 //   test_gdn
 #include "arch/qwen4exp/blocks.hpp"
@@ -83,7 +84,7 @@ int main() {
         cudaMemcpy(s1.data(), dS1, s1.size() * 4, cudaMemcpyDeviceToHost);
         cudaMemcpy(s2.data(), dS2, s2.size() * 4, cudaMemcpyDeviceToHost);
         const double eo = rel(o2, o1), es = rel(s2, s1);
-        const bool ok = std::isfinite(eo) && std::isfinite(es) && eo < 1e-4 && es < 1e-4;
+        const bool ok = std::isfinite(eo) && std::isfinite(es) && eo < 1e-2 && es < 1e-2;
         fail += !ok;
         // timing at this T
         cudaEvent_t e0, e1;
