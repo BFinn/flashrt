@@ -164,6 +164,9 @@ if(FLASHRT_CUDA)
   add_executable(test_sample tests/test_sample.cpp)
   target_link_libraries(test_sample PRIVATE flashrt_qwen4exp_gpu flashrt_gemv flashrt_ggml_stubs)   # stubs last
   add_test(NAME sample COMMAND test_sample)
+  add_executable(test_spec_sample tests/test_spec_sample.cpp)
+  target_link_libraries(test_spec_sample PRIVATE flashrt_qwen4exp_gpu flashrt_gemv flashrt_ggml_stubs)
+  add_test(NAME spec_sample COMMAND test_spec_sample)
 endif()
 
 # ---- tests

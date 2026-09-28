@@ -45,15 +45,14 @@ __device__ void block_best(float& v, int& i) {
     __syncthreads();
 }
 
-__global__ void __launch_bounds__(kThreads) k_sample(const float* logits, int V, Params p, int K, uint64_t seed, int64_t pos0, int32_t* out) {
-    const int row = blockIdx.x, tid = threadIdx.x;
-    const float* x = logits + size_t(row) * V;
+// The top K (value, index) of row x [V] into top_v / top_i (shared, valid for every thread after
+// the call), sorted descending, ties to the lower index.
+__device__ void row_topk(const float* x, int V, int K, float* top_v, int* top_i) {
+    const int tid = threadIdx.x;
     __shared__ float tmax[kThreads];
     __shared__ float cv[kCand];
     __shared__ int ci[kCand];
     __shared__ int n_cand;
-    __shared__ float top_v[kMaxTopK];
-    __shared__ int top_i[kMaxTopK];
     __shared__ float bound;
     // 1. per-thread maxima
     float m = -INFINITY;
@@ -98,7 +97,95 @@ __global__ void __launch_bounds__(kThreads) k_sample(const float* logits, int V,
         pi = bi;
     }
     __syncthreads();
-    if (tid == 0) out[row] = choose(top_v, top_i, K, p, draw(seed, pos0 + row));
+}
+
+__global__ void __launch_bounds__(kThreads) k_sample(const float* logits, int V, Params p, int K, uint64_t seed, int64_t pos0, int32_t* out) {
+    const int row = blockIdx.x;
+    __shared__ float top_v[kMaxTopK];
+    __shared__ int top_i[kMaxTopK];
+    row_topk(logits + size_t(row) * V, V, K, top_v, top_i);
+    if (threadIdx.x == 0) out[row] = choose(top_v, top_i, K, p, draw(seed, pos0 + row));
+}
+
+__global__ void __launch_bounds__(kThreads) k_draft_row(const float* x, int V, const DraftCfg* cfg, const int32_t* dp, const int32_t* ids,
+                                                        int32_t* v, int32_t* q_ids, float* q_p, int32_t* q_n) {
+    const Params p = cfg->p;
+    const int K = p.temperature > 0.0f ? min(max(p.top_k, 1), kMaxTopK) : 1;
+    __shared__ float top_v[kMaxTopK];
+    __shared__ int top_i[kMaxTopK];
+    row_topk(x, V, K, top_v, top_i);
+    if (threadIdx.x == 0) {
+        float prob[kMaxTopK];
+        const int n = chain_probs(top_v, K, p, prob);
+        const int64_t pos = int64_t(dp[1]) + 1;
+        const int step = dp[3];
+        const float u = draw(cfg->seed ^ kDraftSalt, pos);
+        float cum = 0.0f;
+        int c = n - 1;
+        for (int i = 0; i < n; ++i) {
+            cum += prob[i];
+            if (u < cum) {
+                c = i;
+                break;
+            }
+        }
+        for (int i = 0; i < n; ++i) {
+            q_ids[step * kMaxTopK + i] = ids ? ids[top_i[i]] : top_i[i];
+            q_p[step * kMaxTopK + i] = prob[i];
+        }
+        q_n[step] = n;
+        v[1] = ids ? ids[top_i[c]] : top_i[c];
+    }
+}
+
+__global__ void __launch_bounds__(kThreads) k_spec_verify(const float* logits, int V, Params p, int K, uint64_t seed, int64_t pos0, int rows,
+                                                          const int32_t* drafts, const int32_t* q_ids, const float* q_p, const int32_t* q_n,
+                                                          int32_t* out) {
+    const int row = blockIdx.x;
+    __shared__ float top_v[kMaxTopK];
+    __shared__ int top_i[kMaxTopK];
+    row_topk(logits + size_t(row) * V, V, K, top_v, top_i);
+    if (threadIdx.x != 0) return;
+    const int64_t pos = pos0 + row;
+    if (row == rows - 1) {   // the last row: a plain sample
+        out[row] = choose(top_v, top_i, K, p, draw(seed, pos));
+        return;
+    }
+    float pp[kMaxTopK];
+    const int n = chain_probs(top_v, K, p, pp);
+    const int32_t d = drafts[row];
+    const int qn = q_n[row];
+    auto q_of = [&](int32_t t) {
+        for (int i = 0; i < qn; ++i)
+            if (q_ids[row * kMaxTopK + i] == t) return q_p[row * kMaxTopK + i];
+        return 0.0f;
+    };
+    float pd = 0.0f;
+    for (int i = 0; i < n; ++i)
+        if (top_i[i] == d) pd = pp[i];
+    const float qd = q_of(d);
+    if (draw(seed ^ kAccSalt, pos) * qd < pd) {   // accept with min(1, p / q)
+        out[row] = d;
+        out[rows + row] = 1;
+        return;
+    }
+    float r[kMaxTopK], rs = 0.0f;   // the residual max(0, p - q) over p's support
+    for (int i = 0; i < n; ++i) rs += r[i] = fmaxf(0.0f, pp[i] - q_of(top_i[i]));
+    int c = 0;
+    if (rs > 0.0f) {
+        const float target = draw(seed, pos) * rs;
+        float cum = 0.0f;
+        c = n - 1;
+        for (int i = 0; i < n; ++i) {
+            cum += r[i];
+            if (target < cum) {
+                c = i;
+                break;
+            }
+        }
+    }
+    out[row] = top_i[c];
+    out[rows + row] = 0;
 }
 
 }  // namespace
@@ -112,6 +199,23 @@ void sample_rows(const float* logits, int rows, int n_vocab, const Params& p, ui
     k_sample<<<rows, kThreads, 0, stream>>>(logits, n_vocab, p, K, seed, pos0, out_dev);
     const cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) throw std::runtime_error(std::string("sample_rows: ") + cudaGetErrorString(e));
+}
+
+void draft_row(const float* logits, int V, const DraftCfg* cfg_dev, const int32_t* dp, const int32_t* ids, int32_t* v, int32_t* q_ids,
+               float* q_p, int32_t* q_n, cudaStream_t stream) {
+    if (V < kThreads) throw std::runtime_error("draft_row: bad shape");
+    k_draft_row<<<1, kThreads, 0, stream>>>(logits, V, cfg_dev, dp, ids, v, q_ids, q_p, q_n);
+    const cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) throw std::runtime_error(std::string("draft_row: ") + cudaGetErrorString(e));
+}
+
+void spec_verify(const float* logits, int rows, int n_vocab, const Params& p, uint64_t seed, int64_t pos0, const int32_t* drafts,
+                 const int32_t* q_ids, const float* q_p, const int32_t* q_n, int32_t* out_dev, cudaStream_t stream) {
+    if (p.temperature <= 0.0f || p.top_k < 1 || p.top_k > kMaxTopK) throw std::runtime_error("spec_verify: needs temperature > 0, top_k 1..64");
+    if (rows < 1 || n_vocab < kThreads) throw std::runtime_error("spec_verify: bad shape");
+    k_spec_verify<<<rows, kThreads, 0, stream>>>(logits, n_vocab, p, p.top_k, seed, pos0, rows, drafts, q_ids, q_p, q_n, out_dev);
+    const cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) throw std::runtime_error(std::string("spec_verify: ") + cudaGetErrorString(e));
 }
 
 }  // namespace flashrt::sample
