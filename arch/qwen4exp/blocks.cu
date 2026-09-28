@@ -554,11 +554,13 @@ void hc_fused_launch(const float* x, const float* w_norm, WD Wd, const uint16_t*
         k_hc_down2<TT, WD><<<dim3((rows + per - 1) / per, hc), 32 * kHcDownWarps, smem, st>>>(x, w_norm, Wd, Wi, xn, part, n, rank, n_inj, eps);
     } else
         k_hc_down<TT, WD><<<dim3((rows + 15) / 16, hc), 512, smem, st>>>(x, w_norm, Wd, Wi, xn, part, n, rank, n_inj, eps);
-    static const int up_mode = [] {   // FLASHRT_HC_UP2: 0 old kernel, 1 new kernel, 2 new kernel as a PDL dependent (default)
+    static const bool up2 = [] {   // FLASHRT_HC_UP2=0: the old up kernel, no PDL
         const char* e = std::getenv("FLASHRT_HC_UP2");
-        return e ? std::atoi(e) : 2;
+        return !(e && e[0] == '0');
     }();
-    if (up_mode > 0 && rank == 320 && hc == 4) {   // 3: loads after the preamble (experiment)
+    if (up2 && rank == 320 && hc == 4) {
+        // a programmatic dependent of k_hc_down2. One token: weights loaded before the wait; windows:
+        // after the preamble (earlier loads were slower there; test_hc_decode, sw75)
         cudaLaunchConfig_t cfg{};
         cfg.gridDim = dim3((n + 7) / 8);
         cfg.blockDim = dim3(256);
@@ -568,9 +570,9 @@ void hc_fused_launch(const float* x, const float* w_norm, WD Wd, const uint16_t*
         attr[0].id = cudaLaunchAttributeProgrammaticStreamSerialization;
         attr[0].val.programmaticStreamSerializationAllowed = 1;
         cfg.attrs = attr;
-        cfg.numAttrs = up_mode >= 2 ? 1 : 0;
-        ck(cudaLaunchKernelEx(&cfg, up_mode == 3 ? k_hc_up_mix2<TT, WU, 5, true> : k_hc_up_mix2<TT, WU, 5>, Wu, static_cast<const float*>(part), n_inj, 1.0f / hc,
-                              static_cast<const float*>(xn), mixed, inject, n),
+        cfg.numAttrs = 1;
+        ck(cudaLaunchKernelEx(&cfg, TT == 1 ? k_hc_up_mix2<TT, WU, 5> : k_hc_up_mix2<TT, WU, 5, true>, Wu, static_cast<const float*>(part), n_inj,
+                              1.0f / hc, static_cast<const float*>(xn), mixed, inject, n),
            "hc_up_mix2");
     } else
         k_hc_up_mix<TT, WU><<<(n + 7) / 8, 256, 0, st>>>(Wu, part, n_inj, 1.0f / hc, xn, mixed, inject, n, rank);
