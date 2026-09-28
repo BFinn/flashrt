@@ -367,3 +367,71 @@ pub async fn start(st: Arc<AppState>, req: ChatRequest) -> Result<(mpsc::Receive
     });
     Ok((out, n_prompt))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn types() -> std::collections::HashMap<String, Map<String, Value>> {
+        let tools = json!([{"type": "function", "function": {"name": "get_weather", "parameters": {"type": "object",
+            "properties": {"city": {"type": "string"}, "days": {"type": "integer"}, "opts": {"type": "object"}}}}}]);
+        tool_param_types(Some(&tools))
+    }
+
+    #[test]
+    fn tool_call_typed_arguments() {
+        let body = "<function=get_weather>\n<parameter=city>\nParis\n</parameter>\n<parameter=days>\n3\n</parameter>\n\
+                    <parameter=opts>\n{\"unit\": \"C\"}\n</parameter>\n</function>";
+        let (name, args) = parse_tool_call(body, &types()).unwrap();
+        assert_eq!(name, "get_weather");
+        assert_eq!(args, json!({"city": "Paris", "days": 3, "opts": {"unit": "C"}}));
+    }
+
+    #[test]
+    fn tool_call_untyped_and_unparsable_stay_strings() {
+        let t = types();
+        let (_, a) = parse_tool_call("<function=other>\n<parameter=n>\n3\n</parameter>\n</function>", &t).unwrap();
+        assert_eq!(a, json!({"n": "3"}));   // no schema: a string
+        let (_, a) = parse_tool_call("<function=get_weather>\n<parameter=days>\nthree\n</parameter>\n</function>", &t).unwrap();
+        assert_eq!(a, json!({"days": "three"}));   // not JSON: kept as text
+        assert!(parse_tool_call("no call here", &t).is_none());
+    }
+
+    #[test]
+    fn tool_call_multiline_value_and_missing_close() {
+        let (_, a) = parse_tool_call("<function=f>\n<parameter=code>\nline 1\nline 2\n</function>", &Default::default()).unwrap();
+        assert_eq!(a, json!({"code": "line 1\nline 2"}));
+    }
+
+    #[test]
+    fn section_trims_and_holds_back() {
+        let mut s = Section::new();
+        s.push("   ");
+        assert_eq!(s.take(&[]), "");   // leading whitespace dropped
+        s.push("hello ");
+        assert_eq!(s.take(&[]), "hello");   // trailing whitespace held back
+        s.push("world");
+        assert_eq!(s.take(&[]), " world");
+    }
+
+    #[test]
+    fn section_stop_strings() {
+        let stops = vec!["STOP".to_string()];
+        let mut s = Section::new();
+        s.push("abc ST");
+        assert_eq!(s.take(&stops), "abc ");   // a possible stop prefix is held back
+        s.push("OP tail");
+        let (stop, piece) = s.stop_hit(&stops).unwrap();
+        assert_eq!(stop, "STOP");
+        assert_eq!(piece, "");
+        assert_eq!(s.take(&stops), "");   // nothing after the stop is sent
+    }
+
+    #[test]
+    fn raw_section_keeps_whitespace() {
+        let mut s = Section::raw();
+        s.push("  x  ");
+        assert_eq!(s.take(&[]), "  x  ");
+    }
+}

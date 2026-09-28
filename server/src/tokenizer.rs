@@ -239,3 +239,46 @@ impl Decoder {
         s
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decoder_holds_incomplete_utf8() {
+        let mut d = Decoder::default();
+        let e = "é".as_bytes();
+        assert_eq!(d.push(&e[..1]), "");
+        assert_eq!(d.push(&e[1..]), "é");
+        assert_eq!(d.push(b"ok \xF0\x9F"), "ok ");   // half an emoji held back
+        assert_eq!(d.push(b"\x98\x80!"), "\u{1F600}!");
+        assert_eq!(d.push(b"\xFFx"), "\u{FFFD}x");   // an invalid byte becomes U+FFFD
+        d.push(b"\xE2\x82");
+        assert_eq!(d.finish(), "\u{FFFD}");   // an unfinished sequence at the end
+    }
+
+    // With FLASHRT_TEST_MODEL set to the model's first GGUF shard: encoding then decoding
+    // round-trips text, and special tokens map to single ids.
+    #[test]
+    fn model_round_trip() {
+        let Ok(path) = std::env::var("FLASHRT_TEST_MODEL") else {
+            eprintln!("FLASHRT_TEST_MODEL not set; skipped");
+            return;
+        };
+        let kv = crate::gguf::read_metadata(&path).unwrap();
+        let tok = Tokenizer::from_gguf(&kv).unwrap();
+        for text in ["Hello, world! 1234 5678", "ünïcödé, 日本語, emoji 😀 and\ttabs\n\nnewlines", "  leading and trailing  "] {
+            let ids = tok.encode(text, false);
+            let mut d = Decoder::default();
+            let mut back = String::new();
+            for id in &ids {
+                back.push_str(&d.push(tok.token_bytes(*id)));
+            }
+            back.push_str(&d.finish());
+            assert_eq!(back, text);
+        }
+        let im = tok.token_id("<|im_start|>").expect("<|im_start|> is a special token");
+        assert_eq!(tok.encode("<|im_start|>user", true)[0], im);
+        assert!(tok.is_special(im));
+    }
+}

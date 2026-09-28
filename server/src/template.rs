@@ -91,3 +91,38 @@ impl ChatTemplate {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn py_json_matches_python_dumps() {
+        // separators ", " and ": ", insertion order, non-ASCII kept (ensure_ascii=False)
+        let v = json!({"b": [true, null, "x"], "a": 1, "c": {"d": "é\"q"}});
+        let mut s = String::new();
+        py_json(&v, &mut s);
+        assert_eq!(s, r#"{"b": [true, null, "x"], "a": 1, "c": {"d": "é\"q"}}"#);
+    }
+
+    #[test]
+    fn renders_messages_tools_and_python_methods() {
+        let t = ChatTemplate::new(
+            "{% for m in messages %}<{{ m.role }}>{{ m.content }}{% if m.content.startswith('hi') %}!{% endif %}\n{% endfor %}\
+             {% if tools %}T={{ tools | tojson }}\n{% endif %}{% if add_generation_prompt %}<assistant>{% endif %}",
+        )
+        .unwrap();
+        let msgs = json!([{"role": "system", "content": "be brief"}, {"role": "user", "content": "hi there"}]);
+        let tools = json!([{"name": "f", "parameters": {"x": 1}}]);
+        let out = t.render(&msgs, Some(&tools), &serde_json::Map::new()).unwrap();
+        assert_eq!(out, "<system>be brief\n<user>hi there!\nT=[{\"name\": \"f\", \"parameters\": {\"x\": 1}}]\n<assistant>");
+    }
+
+    #[test]
+    fn raise_exception_is_an_error() {
+        let t = ChatTemplate::new("{{ raise_exception('bad role') }}").unwrap();
+        let e = t.render(&json!([]), None, &serde_json::Map::new()).unwrap_err().to_string();
+        assert!(e.contains("bad role"), "{e}");
+    }
+}
