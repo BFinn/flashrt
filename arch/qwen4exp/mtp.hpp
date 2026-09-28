@@ -65,6 +65,7 @@ public:
     // server sets a vocabulary per request and must not reallocate VRAM the expert cache took).
     void reserve_vocab(int n);
     int vocab() const { return vocab_ids_.empty() ? ts_.n_vocab : int(vocab_ids_.size()); }
+    const std::vector<int32_t>& vocab_ids() const { return vocab_ids_; }   // empty: the full vocabulary
     // The drafted token of one logits row (GPU argmax, mapped back to a token id); with p_top, also
     // its probability under the head's softmax (over vocab()).
     int32_t argmax(const float* logits_row_dev, float* p_top = nullptr);

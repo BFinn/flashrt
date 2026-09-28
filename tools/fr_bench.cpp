@@ -83,6 +83,7 @@ int main(int argc, char** argv) {
     std::string ids_path, trace_path, save_state, load_state, mtp_path, vocab_path, save_counts;
     int draft_k = 4, spec_k = 0, vocab_n = 32768, chunk = 64;
     float draft_pmin = 0.0f;
+    bool accept_probe = false;
     sample::Params sp;
     sp.temperature = 0.0f;
     uint64_t seed = 1;
@@ -127,6 +128,7 @@ int main(int argc, char** argv) {
         else if (a == "--draft-vocab") vocab_path = next();
         else if (a == "--draft-vocab-n") vocab_n = std::atoi(next());
         else if (a == "--draft-pmin") draft_pmin = float(std::atof(next()));
+        else if (a == "--accept-probe") accept_probe = true;
         else if (a == "--temp") sp.temperature = float(std::atof(next()));
         else if (a == "--top-k") sp.top_k = std::atoi(next());
         else if (a == "--top-p") sp.top_p = float(std::atof(next()));
@@ -441,6 +443,39 @@ int main(int argc, char** argv) {
                     "second token emitted in %ld, equal in %ld of %ld\n",
                     dist_test, p + 1, win.size() - 1, eq0, 100.0 * eq0 / dist_test, tv / (2.0 * dist_test), acc1, eq1, n1);
     }
+    // --accept-probe: for each round's first draft, the target's sampling distribution p (the
+    // sampler's chain on the verify row) and the head's q, from which: the acceptance of the argmax
+    // draft used now, p(argmax q), against speculative sampling's sum_x min(p(x), q(x)) with q the
+    // head's softmax, or the head's logits through the same chain
+    double pr_greedy = 0, pr_raw = 0, pr_chain = 0, pr_ptop = 0;
+    long pr_n = 0;
+    std::vector<float> pr_q, pr_t(size_t(s.n_vocab));
+    auto chain_dist = [&](const float* lg, int n, std::vector<std::pair<int, double>>& out) {   // index, prob
+        const int k = std::min(sp.top_k > 0 ? sp.top_k : n, n);
+        std::vector<int> ix(n);
+        std::iota(ix.begin(), ix.end(), 0);
+        std::partial_sort(ix.begin(), ix.begin() + k, ix.end(), [&](int a, int b) { return lg[a] > lg[b] || (lg[a] == lg[b] && a < b); });
+        std::vector<double> e(k);
+        double z = 0;
+        for (int i = 0; i < k; ++i) z += e[i] = std::exp(double(lg[ix[i]]) - lg[ix[0]]);
+        int keep = k;
+        if (sp.top_p < 1.0f) {
+            double c = 0;
+            for (int i = 0; i < k; ++i) {
+                c += e[i] / z;
+                if (c >= sp.top_p) {
+                    keep = i + 1;
+                    break;
+                }
+            }
+        }
+        const double t = sp.temperature > 0 ? sp.temperature : 1.0;
+        double z2 = 0;
+        std::vector<double> e2(keep);
+        for (int i = 0; i < keep; ++i) z2 += e2[i] = std::exp((double(lg[ix[i]]) - lg[ix[0]]) / t);
+        out.clear();
+        for (int i = 0; i < keep; ++i) out.push_back({ix[i], e2[i] / z2});
+    };
     cudaProfilerStart();   // nsys --capture-range=cudaProfilerApi profiles the decode loop only
     for (int wi = 0; wi < windows; ++wi) {
         const long hits0 = host.hits, misses0 = host.misses, gmiss0 = host.gpu_misses;
@@ -464,6 +499,10 @@ int main(int argc, char** argv) {
                 }
             } else {   // the catch-up rows, then the chain in one sync
                 mtp->forward(h_buf, seq.data() + p - pend + 1, pend, p - pend + 1, pend - 1, mtp->chain_logits());
+                if (accept_probe) {
+                    pr_q.resize(size_t(mtp->vocab()));
+                    cudaMemcpy(pr_q.data(), mtp->chain_logits(), pr_q.size() * 4, cudaMemcpyDefault);
+                }
                 const std::vector<int32_t> dr = mtp->draft_chain(pend - 1, p + 1, spec_k);
                 win.insert(win.end(), dr.begin(), dr.end());
             }
@@ -473,6 +512,38 @@ int main(int argc, char** argv) {
             std::vector<int32_t> seqw(seq.begin(), seq.end() - 1);
             seqw.insert(seqw.end(), win.begin(), win.end());
             fwd.forward_window(seqw.data(), kd + 1, logits_win);
+            if (accept_probe && draft_pmin <= 0) {
+                cudaMemcpy(pr_t.data(), logits_win, pr_t.size() * 4, cudaMemcpyDefault);
+                const std::vector<int32_t>& vid = mtp->vocab_ids();
+                auto tok = [&](int i) { return vid.empty() ? i : vid[size_t(i)]; };
+                std::vector<std::pair<int, double>> pd, qc;
+                chain_dist(pr_t.data(), s.n_vocab, pd);   // p over token ids
+                chain_dist(pr_q.data(), int(pr_q.size()), qc);   // q over head rows
+                std::map<int, double> P, QC;
+                for (auto& [i, v] : pd) P[i] = v;
+                for (auto& [i, v] : qc) QC[tok(i)] = v;
+                // the head's full softmax at the same temperature
+                const double tq = sp.temperature > 0 ? sp.temperature : 1.0;
+                double mq = -1e30, zq = 0;
+                for (float v : pr_q) mq = std::max(mq, double(v));
+                for (float v : pr_q) zq += std::exp((double(v) - mq) / tq);
+                int am = 0;
+                for (int i = 1; i < int(pr_q.size()); ++i)
+                    if (pr_q[size_t(i)] > pr_q[size_t(am)]) am = i;
+                std::map<int, double> QR;   // only p's support matters for sum min(p, q)
+                for (int i = 0; i < int(pr_q.size()); ++i)
+                    if (P.count(tok(i))) QR[tok(i)] = std::exp((double(pr_q[size_t(i)]) - mq) / tq) / zq;
+                double sr = 0, sc = 0;
+                for (auto& [t, v] : P) {
+                    sr += std::min(v, QR.count(t) ? QR[t] : 0.0);
+                    sc += std::min(v, QC.count(t) ? QC[t] : 0.0);
+                }
+                pr_greedy += P.count(tok(am)) ? P[tok(am)] : 0.0;
+                pr_raw += sr;
+                pr_chain += sc;
+                pr_ptop += pd.empty() ? 0.0 : pd[0].second;
+                ++pr_n;
+            }
             const std::vector<int32_t> y = pick(logits_win, kd + 1, p + 1);   // y_j for position p + 1 + j
             int a = 0;
             while (a < kd && y[a] == win[a + 1]) ++a;
@@ -552,6 +623,10 @@ int main(int argc, char** argv) {
     if (spec_k > 0 && rounds > 0) {
         long toks = 0;
         for (int a = 0; a <= spec_k; ++a) toks += acc_hist[a] * (a + 1);
+        if (pr_n)
+            std::printf("accept probe (%ld rounds, first draft): argmax draft p(argmax q) %.4f; speculative sampling sum min(p, q): "
+                        "head softmax %.4f, head through the sampler chain %.4f; target's top token p %.4f\n",
+                        pr_n, pr_greedy / pr_n, pr_raw / pr_n, pr_chain / pr_n, pr_ptop / pr_n);
         std::printf("speculative: %ld rounds, %.3f tokens per round, %.2f drafts verified per round; accepted drafts:", rounds,
                     double(toks) / rounds, double(drafted) / rounds);
         for (int a = 0; a <= spec_k; ++a) std::printf(" %d:%.1f%%", a, 100.0 * acc_hist[a] / rounds);
