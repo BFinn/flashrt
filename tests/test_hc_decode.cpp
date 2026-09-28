@@ -133,6 +133,86 @@ int main() {
         std::printf("T %d: mixed %.1e, inject %.1e relative %s; %.2f us per mix, %.0f GB/s of weights\n", T, em, ei, ok ? "ok" : "FAIL", us,
                     set_bytes / (us * 1e3));
     }
+    // with the combine folded in: x += out * 2 sigmoid(inject / 4) first (the residual is updated in
+    // place); checked against the same reference on the combined x
+    {
+        float *dco, *dci;
+        cudaMalloc(&dco, size_t(4) * n * 4);
+        cudaMalloc(&dci, size_t(4) * HC * 4);
+        std::vector<float> co(size_t(4) * n), ci(size_t(4) * HC);
+        for (auto& v : co) v = nd(rng);
+        for (auto& v : ci) v = nd(rng);
+        cudaMemcpy(dco, co.data(), co.size() * 4, cudaMemcpyHostToDevice);
+        cudaMemcpy(dci, ci.data(), ci.size() * 4, cudaMemcpyHostToDevice);
+        for (int T = 1; T <= 4; ++T) {
+            cudaMemcpy(dx, x.data(), x.size() * 4, cudaMemcpyHostToDevice);
+            char* p = sets[0];
+            hc_decode_raw(T, dx, dwn, p, p + down_bytes, p + down_bytes + inj_bytes, xn, part, mixed, inject, n, rank, eps, st, dco, dci);
+            cudaStreamSynchronize(st);
+            std::vector<float> gx(size_t(T) * W4), gm(size_t(T) * n), gi(size_t(T) * NI);
+            cudaMemcpy(gx.data(), dx, gx.size() * 4, cudaMemcpyDeviceToHost);
+            cudaMemcpy(gm.data(), mixed, gm.size() * 4, cudaMemcpyDeviceToHost);
+            cudaMemcpy(gi.data(), inject, gi.size() * 4, cudaMemcpyDeviceToHost);
+            double xnum = 0, xden = 0, num = 0, den = 0, inum = 0, iden = 0;
+            for (int t = 0; t < T; ++t) {
+                std::vector<double> xc(W4), xnr(W4), xs(rank);
+                for (int g = 0; g < HC; ++g) {
+                    const double wv = 2.0 / (1.0 + std::exp(-double(ci[t * HC + g]) / HC));
+                    for (int i = 0; i < n; ++i) xc[g * n + i] = x[size_t(t) * W4 + g * n + i] + co[size_t(t) * n + i] * wv;
+                }
+                for (int e = 0; e < W4; ++e) {
+                    xnum += (gx[size_t(t) * W4 + e] - xc[e]) * (gx[size_t(t) * W4 + e] - xc[e]);
+                    xden += xc[e] * xc[e];
+                }
+                for (int g = 0; g < HC; ++g) {
+                    double ss = 0;
+                    for (int i = 0; i < n; ++i) ss += xc[g * n + i] * xc[g * n + i];
+                    const double inv = 1.0 / std::sqrt(ss / n + eps);
+                    for (int i = 0; i < n; ++i) xnr[g * n + i] = xc[g * n + i] * inv * wn[g * n + i];
+                }
+                for (int j = 0; j < rank; ++j) {
+                    double a = 0;
+                    for (int e = 0; e < W4; ++e) a += double(dq[size_t(j) * W4 + e]) * __half2float(ds[(size_t(j) * W4 + e) / 32]) * xnr[e];
+                    const double v = a / HC;
+                    xs[j] = v / (1.0 + std::exp(-v));
+                }
+                for (int k = 0; k < NI; ++k) {
+                    double a = 0;
+                    for (int e = 0; e < W4; ++e) a += bf2f(wi[size_t(k) * W4 + e]) * xnr[e];
+                    inum += (gi[t * NI + k] - a) * (gi[t * NI + k] - a);
+                    iden += a * a;
+                }
+                for (int i = 0; i < n; ++i) {
+                    double m = 0;
+                    for (int s2 = 0; s2 < HC; ++s2) {
+                        double gt = 0;
+                        for (int j = 0; j < rank; ++j) gt += bf2f(wu[(size_t(s2) * n + i) * rank + j]) * xs[j];
+                        m += xnr[s2 * n + i] / (1.0 + std::exp(-gt));
+                    }
+                    m /= HC;
+                    num += (gm[size_t(t) * n + i] - m) * (gm[size_t(t) * n + i] - m);
+                    den += m * m;
+                }
+            }
+            const double ex = std::sqrt(xnum / xden), em = std::sqrt(num / den), ei = std::sqrt(inum / iden);
+            const bool ok = ex < 1e-6 && em < 1e-4 && ei < 1e-4;
+            fail += !ok;
+            const int iters = 300;
+            float ms = 0;
+            cudaEventRecord(e0, st);
+            for (int it = 0; it < iters; ++it) {
+                char* q = sets[it % copies];
+                hc_decode_raw(T, dx, dwn, q, q + down_bytes, q + down_bytes + inj_bytes, xn, part, mixed, inject, n, rank, eps, st, dco, dci);
+            }
+            cudaEventRecord(e1, st);
+            cudaEventSynchronize(e1);
+            cudaEventElapsedTime(&ms, e0, e1);
+            std::printf("T %d with the combine: x %.1e, mixed %.1e, inject %.1e relative %s; %.2f us per combine + mix\n", T, ex, em, ei,
+                        ok ? "ok" : "FAIL", 1e3 * ms / iters);
+        }
+        cudaFree(dco);
+        cudaFree(dci);
+    }
     std::printf("weights %.2f MB per mix\n%s\n", set_bytes / 1e6, fail ? "FAILED" : "all passed");
     return fail ? 1 : 0;
 }

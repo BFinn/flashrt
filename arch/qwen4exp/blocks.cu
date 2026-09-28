@@ -287,7 +287,8 @@ __global__ void k_hc_down(const float* x, const float* w_norm, WD Wd, const uint
 constexpr int kHcDownMaxK = 12, kHcDownWarps = 8, kHcDownRpw = 2;
 template <int TT, typename WD>
 __global__ void __launch_bounds__(32 * kHcDownWarps) k_hc_down2(const float* x, const float* w_norm, WD Wd, const uint16_t* Wi,
-                                                                float* xn_out, float* part, int n, int rank, int n_inject, float eps) {
+                                                                float* xn_out, float* part, int n, int rank, int n_inject, float eps,
+                                                                const float* cout, const float* cinj, float* wv_out) {
     constexpr int RPW = kHcDownRpw, NW = kHcDownWarps;
     extern __shared__ __align__(16) float xs[];   // [TT][n]: x * w_norm
     __shared__ float red[TT][NW];
@@ -306,13 +307,24 @@ __global__ void __launch_bounds__(32 * kHcDownWarps) k_hc_down2(const float* x, 
 #pragma unroll
             for (int k = 0; k < kHcDownMaxK; ++k)
                 if (k < nk) raw[j][k] = Wd.load(size_t(r0 + j) * hcn + size_t(g) * n + 8 * size_t(lane + 32 * k));
-    // x * w_norm into shared memory, and the sum of squares
+    // x * w_norm into shared memory, and the sum of squares. With cout, x is first combined with
+    // the previous mixer's output (as k_hc_combine: x + out * 2 sigmoid(inject / hc), as an fma);
+    // k_hc_up_mix2 stores that x, and block (0, 0) leaves the weights in wv_out for it.
+    if (cout && blockIdx.x == 0 && g == 0 && threadIdx.x < TT * hc)
+        wv_out[threadIdx.x] = 2.0f / (1.0f + __expf(-cinj[threadIdx.x] / hc));
     for (int t = 0; t < TT; ++t) {
         const float4* xg = reinterpret_cast<const float4*>(x + (size_t(t) * hc + g) * n);
         const float4* wg = reinterpret_cast<const float4*>(w_norm + size_t(g) * n);
+        const float4* og = cout ? reinterpret_cast<const float4*>(cout + size_t(t) * n) : nullptr;
+        const float wv = cout ? 2.0f / (1.0f + __expf(-cinj[t * hc + g] / hc)) : 0.0f;
         float ss = 0.0f;
         for (int i = threadIdx.x; i < n / 4; i += blockDim.x) {
-            const float4 v = xg[i], w = wg[i];
+            float4 v = xg[i];
+            const float4 w = wg[i];
+            if (og) {
+                const float4 o = og[i];
+                v = make_float4(__fmaf_rn(o.x, wv, v.x), __fmaf_rn(o.y, wv, v.y), __fmaf_rn(o.z, wv, v.z), __fmaf_rn(o.w, wv, v.w));
+            }
             ss += v.x * v.x + v.y * v.y + v.z * v.z + v.w * v.w;
             reinterpret_cast<float4*>(xs + size_t(t) * n)[i] = make_float4(v.x * w.x, v.y * w.y, v.z * w.z, v.w * w.w);
         }
@@ -462,7 +474,7 @@ __global__ void k_hc_up_mix(WU W, const float* part, int n_inject, float scale, 
 // blocks run in one wave (at 80 registers they took two; sw75).
 template <int TT, typename WU, int NCH, bool LATE = false>
 __global__ void __launch_bounds__(256, 4) k_hc_up_mix2(WU W, const float* part, int n_inject, float scale, const float* xn, float* mixed,
-                                                    float* inject, int n) {
+                                                    float* inject, int n, float* xres, const float* cout, const float* wvb) {
     constexpr int HC = 4, rank = 64 * NCH;
     __shared__ __align__(16) float xs[TT * rank];
     __shared__ float contrib[TT][HC][8];
@@ -519,6 +531,11 @@ __global__ void __launch_bounds__(256, 4) k_hc_up_mix2(WU W, const float* part, 
         a += __shfl_xor_sync(0xffffffff, a, 1);
         if (l8 == 0) contrib[t][st][il] = xn[(size_t(t) * HC + st) * n + i] / (1.0f + __expf(-a));
     }
+    if (xres && l8 == 0 && blockIdx.x * 8 + il < n)   // the combined residual (k_hc_down2 has read x)
+        for (int t = 0; t < TT; ++t) {
+            const size_t k = (size_t(t) * HC + st) * n + i;
+            xres[k] = __fmaf_rn(cout[size_t(t) * n + i], wvb[t * HC + st], xres[k]);
+        }
     __syncthreads();
     if (threadIdx.x < 8 * TT) {
         const int t = threadIdx.x / 8, c8 = threadIdx.x % 8, ii = blockIdx.x * 8 + c8;
@@ -530,9 +547,19 @@ __global__ void __launch_bounds__(256, 4) k_hc_up_mix2(WU W, const float* part, 
     }
 }
 
+__global__ void k_hc_combine(float* x, const float* out, const float* inject, int n, int hc, int T);
+
+// comb: the previous mixer's output and inject to combine into x first (x += out * 2 sigmoid(inject /
+// hc)): folded into the v2 kernels, else a k_hc_combine launch
+struct HcComb {
+    float* x = nullptr;
+    const float* out = nullptr;
+    const float* inj = nullptr;
+};
+
 template <int TT, typename WD, typename WU>
 void hc_fused_launch(const float* x, const float* w_norm, WD Wd, const uint16_t* Wi, WU Wu, float* xn, float* part, float* mixed,
-                     float* inject, int n, int hc, int rank, int n_inj, float eps, cudaStream_t st) {
+                     float* inject, int n, int hc, int rank, int n_inj, float eps, cudaStream_t st, HcComb comb = {}) {
     const int rows = rank + n_inj;
     const size_t smem = size_t(TT) * n * 4;
     static bool attr = false;
@@ -544,21 +571,34 @@ void hc_fused_launch(const float* x, const float* w_norm, WD Wd, const uint16_t*
         const char* e = std::getenv("FLASHRT_HC_DOWN2");
         return !(e && e[0] == '0');
     }();
-    if (v2 && n % 256 == 0 && n / 256 <= kHcDownMaxK && rank % kHcDownRpw == 0) {
+    static const bool up2 = [] {   // FLASHRT_HC_UP2=0: the old up kernel, no PDL
+        const char* e = std::getenv("FLASHRT_HC_UP2");
+        return !(e && e[0] == '0');
+    }();
+    static const bool comb2 = [] {   // FLASHRT_HC_COMB2=0: the combine as its own kernel
+        const char* e = std::getenv("FLASHRT_HC_COMB2");
+        return !(e && e[0] == '0');
+    }();
+    const bool down2 = v2 && n % 256 == 0 && n / 256 <= kHcDownMaxK && rank % kHcDownRpw == 0;
+    const bool upv2 = up2 && rank == 320 && hc == 4;
+    const bool fold = comb.out && comb2 && down2 && upv2 && n % 4 == 0;
+    if (comb.out && !fold) {
+        k_hc_combine<<<dim3((n + 255) / 256, TT), 256, 0, st>>>(comb.x, comb.out, comb.inj, n, hc, TT);
+        comb = HcComb{};
+    }
+    float* wv = part + size_t(TT) * hc * rows;   // [TT][hc] combine weights, after the partials
+    if (down2) {
         static bool attr2 = false;
         if (!attr2 && smem > 48 * 1024) {
             ck(cudaFuncSetAttribute(k_hc_down2<TT, WD>, cudaFuncAttributeMaxDynamicSharedMemorySize, 96 * 1024), "hc_down2 smem");
             attr2 = true;
         }
         constexpr int per = kHcDownWarps * kHcDownRpw;
-        k_hc_down2<TT, WD><<<dim3((rows + per - 1) / per, hc), 32 * kHcDownWarps, smem, st>>>(x, w_norm, Wd, Wi, xn, part, n, rank, n_inj, eps);
+        k_hc_down2<TT, WD><<<dim3((rows + per - 1) / per, hc), 32 * kHcDownWarps, smem, st>>>(x, w_norm, Wd, Wi, xn, part, n, rank, n_inj, eps,
+                                                                                        comb.out, comb.inj, wv);
     } else
         k_hc_down<TT, WD><<<dim3((rows + 15) / 16, hc), 512, smem, st>>>(x, w_norm, Wd, Wi, xn, part, n, rank, n_inj, eps);
-    static const bool up2 = [] {   // FLASHRT_HC_UP2=0: the old up kernel, no PDL
-        const char* e = std::getenv("FLASHRT_HC_UP2");
-        return !(e && e[0] == '0');
-    }();
-    if (up2 && rank == 320 && hc == 4) {
+    if (upv2) {
         // a programmatic dependent of k_hc_down2. One token: weights loaded before the wait; windows:
         // after the preamble (earlier loads were slower there; test_hc_decode, sw75)
         cudaLaunchConfig_t cfg{};
@@ -572,7 +612,7 @@ void hc_fused_launch(const float* x, const float* w_norm, WD Wd, const uint16_t*
         cfg.attrs = attr;
         cfg.numAttrs = 1;
         ck(cudaLaunchKernelEx(&cfg, TT == 1 ? k_hc_up_mix2<TT, WU, 5> : k_hc_up_mix2<TT, WU, 5, true>, Wu, static_cast<const float*>(part), n_inj,
-                              1.0f / hc, static_cast<const float*>(xn), mixed, inject, n),
+                              1.0f / hc, static_cast<const float*>(xn), mixed, inject, n, comb.x, comb.out, static_cast<const float*>(wv)),
            "hc_up_mix2");
     } else
         k_hc_up_mix<TT, WU><<<(n + 7) / 8, 256, 0, st>>>(Wu, part, n_inj, 1.0f / hc, xn, mixed, inject, n, rank);
@@ -1526,17 +1566,19 @@ void hc_mix_impl(const BlockCtx& c, int il, int which, float* x, const float* co
                  float* inject, float* xn_out);
 }  // namespace
 
-void hc_decode_raw(int T, const float* x, const float* w_norm, const void* down_q8p, const void* inject_bf16, const void* up_bf16, float* xn,
-                   float* part, float* mixed, float* inject, int n, int rank, float eps, cudaStream_t st) {
+void hc_decode_raw(int T, float* x, const float* w_norm, const void* down_q8p, const void* inject_bf16, const void* up_bf16, float* xn,
+                   float* part, float* mixed, float* inject, int n, int rank, float eps, cudaStream_t st, const float* comb_out,
+                   const float* comb_inject) {
+    const HcComb cb{comb_out ? x : nullptr, comb_out, comb_inject};
     const int8_t* q = static_cast<const int8_t*>(down_q8p);
     const WQ8P wd{q, reinterpret_cast<const __half*>(q + size_t(rank) * 4 * n)};
     const WBf16 wu{static_cast<const uint16_t*>(up_bf16)};
     const uint16_t* wi = static_cast<const uint16_t*>(inject_bf16);
     switch (T) {
-        case 1: hc_fused_launch<1>(x, w_norm, wd, wi, wu, xn, part, mixed, inject, n, 4, rank, 4, eps, st); break;
-        case 2: hc_fused_launch<2>(x, w_norm, wd, wi, wu, xn, part, mixed, inject, n, 4, rank, 4, eps, st); break;
-        case 3: hc_fused_launch<3>(x, w_norm, wd, wi, wu, xn, part, mixed, inject, n, 4, rank, 4, eps, st); break;
-        default: hc_fused_launch<4>(x, w_norm, wd, wi, wu, xn, part, mixed, inject, n, 4, rank, 4, eps, st); break;
+        case 1: hc_fused_launch<1>(x, w_norm, wd, wi, wu, xn, part, mixed, inject, n, 4, rank, 4, eps, st, cb); break;
+        case 2: hc_fused_launch<2>(x, w_norm, wd, wi, wu, xn, part, mixed, inject, n, 4, rank, 4, eps, st, cb); break;
+        case 3: hc_fused_launch<3>(x, w_norm, wd, wi, wu, xn, part, mixed, inject, n, 4, rank, 4, eps, st, cb); break;
+        default: hc_fused_launch<4>(x, w_norm, wd, wi, wu, xn, part, mixed, inject, n, 4, rank, 4, eps, st, cb); break;
     }
     ck(cudaGetLastError(), "hc_decode_raw");
 }
@@ -1574,12 +1616,13 @@ void hc_mix_impl(const BlockCtx& c, int il, int which, float* x, const float* co
     const bool bf_or_q8 = (w_down.type == kBF16 || q8d) && (w_up.type == kBF16 || q8u);
     const bool v4 = n % 4 == 0 && n / 4 <= 1024 && (n / 4) % 32 == 0;
     const bool prefill_bf16 = v4 && T >= kGemmMinTokens && bf_or_q8 && (!w_inj || w_inj->type == kBF16);
-    if (comb_out && !(prefill_bf16 && hc == 4)) {   // not fused: the combine first
+    const bool decode_fused = T <= 4 && hc == 4 && s.hc_rank % 64 == 0 && T * s.hc_rank <= 4096 && n % 8 == 0 &&
+                              size_t(T) * n * 4 <= 96 * 1024 && bf_or_q8 && (!w_inj || w_inj->type == kBF16);
+    if (comb_out && !(prefill_bf16 && hc == 4) && !decode_fused) {   // not fused: the combine first
         hc_combine(c, x, comb_out, comb_inject, T);
         comb_out = nullptr;
     }
-    if (T <= 4 && hc == 4 && s.hc_rank % 64 == 0 && T * s.hc_rank <= 4096 && n % 8 == 0 && size_t(T) * n * 4 <= 96 * 1024 &&
-        bf_or_q8 && (!w_inj || w_inj->type == kBF16)) {
+    if (decode_fused) {   // (the combine, if any, goes into hc_fused_launch)
         // decode steps and verify windows: norm + down + inject in one kernel, then up + silu +
         // gated mean in another, each weight read once for the T tokens
         const int n_inj = w_inj ? hc : 0;
@@ -1594,10 +1637,11 @@ void hc_mix_impl(const BlockCtx& c, int il, int which, float* x, const float* co
             constexpr int TT = decltype(tt)::value;
             const float* wn = static_cast<const float*>(w_norm.dev);
             const float eps = float(s.rms_eps);
-            if (q8d && q8u) hc_fused_launch<TT>(x, wn, q8p(w_down), wi, q8p(w_up), xn, part, mixed, inject, n, hc, s.hc_rank, n_inj, eps, c.stream);
-            else if (q8d) hc_fused_launch<TT>(x, wn, q8p(w_down), wi, bf(w_up), xn, part, mixed, inject, n, hc, s.hc_rank, n_inj, eps, c.stream);
-            else if (q8u) hc_fused_launch<TT>(x, wn, bf(w_down), wi, q8p(w_up), xn, part, mixed, inject, n, hc, s.hc_rank, n_inj, eps, c.stream);
-            else hc_fused_launch<TT>(x, wn, bf(w_down), wi, bf(w_up), xn, part, mixed, inject, n, hc, s.hc_rank, n_inj, eps, c.stream);
+            const HcComb cb{comb_out ? x : nullptr, comb_out, comb_inject};
+            if (q8d && q8u) hc_fused_launch<TT>(x, wn, q8p(w_down), wi, q8p(w_up), xn, part, mixed, inject, n, hc, s.hc_rank, n_inj, eps, c.stream, cb);
+            else if (q8d) hc_fused_launch<TT>(x, wn, q8p(w_down), wi, bf(w_up), xn, part, mixed, inject, n, hc, s.hc_rank, n_inj, eps, c.stream, cb);
+            else if (q8u) hc_fused_launch<TT>(x, wn, bf(w_down), wi, q8p(w_up), xn, part, mixed, inject, n, hc, s.hc_rank, n_inj, eps, c.stream, cb);
+            else hc_fused_launch<TT>(x, wn, bf(w_down), wi, bf(w_up), xn, part, mixed, inject, n, hc, s.hc_rank, n_inj, eps, c.stream, cb);
         };
         switch (T) {
             case 1: run(std::integral_constant<int, 1>{}); break;
