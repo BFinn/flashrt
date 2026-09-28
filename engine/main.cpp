@@ -11,6 +11,8 @@
 #include "core/json.hpp"
 #include "engine/session.hpp"
 
+#include <cuda_runtime.h>
+
 #include <atomic>
 #include <condition_variable>
 #include <cstdio>
@@ -180,6 +182,7 @@ int main(int argc, char** argv) {
                      .set("drafts", drafts));
         } catch (const std::exception& e) {
             error(id, e.what());
+            (void)cudaGetLastError();   // a failed request must not leave its error to the next one's checks (sw86)
         }
         std::lock_guard<std::mutex> lk(q.mu);
         q.running.clear();

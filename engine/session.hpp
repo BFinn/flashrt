@@ -33,7 +33,7 @@ struct SessionOptions {
     bool kv_q8 = true;
     int kv_hot = 4096;                // q8 host KV with this many GPU blocks per layer (0 = all in VRAM)
     int workers = 8;
-    int reserve_mib = 256;            // VRAM left free after the expert cache (decode allocates little after it; sw64)
+    int reserve_mib = 512;            // VRAM left free after the expert cache: requests vary more than fr_bench's runs (256 there; sw64, sw86)
     int swap_budget = 8;
     int prefill_batch = 64;
     int prefill_chunk = 0;            // prompts adding at least chunk_min tokens prefill in chunks of this

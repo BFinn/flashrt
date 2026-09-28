@@ -17,7 +17,7 @@ RTX 5080 16 GB, Ryzen 9 7900X, DDR5-3600 (EXPO off), Qwen3.8-Flash-Next GSQ Q2_0
 | Draft head | Q2_0 experts (`--mtp-bits 2`) | Acceptance equal to Q4_0/Q8_0; frees ~500 cache slots (+5%). | sw26, sw65 |
 | | LM head trimmed to 32,768 ranked + prompt tokens | Halves the draft step; no measurable acceptance loss. | sw26, sw84 |
 | KV | q8 host KV with a GPU hot set of 4,096 blocks at long context | | sw18, sw21 |
-| VRAM reserve | 256 MiB | Every MiB is expert-cache slots: about +0.3% speed per +1% of capacity. | sw64 |
+| VRAM reserve | 256 MiB in `fr_bench`, 512 MiB in the engine | Every MiB is expert-cache slots: about +0.3% speed per +1% of capacity. The engine keeps more for varied requests (a server at 256 failed its first request before the checkpoints were allocated up front; sw86). | sw64, sw86 |
 | CPU miss pool | 8 workers (6 is marginally better for plain decode, within noise) | | p1-moe-cpu, sw79 |
 | Kernels | all defaults on (see the toggles below) | | sw73-sw78 |
 

@@ -129,7 +129,13 @@ with the MTP head's KV, 6 windows of 128 tokens each:
 - **Scope done:** the MTP head (Q4_0 experts, trimmed LM head), verify windows on the fast path
   with rewinds, window graphs, exact speculative sampling on a GPU sampler, the multi-token CPU
   miss kernel in use, and the engine process serving it all over the protocol.
-- **At temperature 1.0 one draft per round is best** (1.56-1.61 tokens per round). A second
+- **Since sw85, drafts at temperature > 0 are sampled** from the head's distribution and verified
+  by speculative sampling: 32K `--spec 1` 143.1 tok/s, 245K 97.1.
+  - The output is exact in distribution (`test_spec_sample`; the distribution test within
+    noise), but no longer equals plain sampling token for token.
+  - `--argmax-drafts` restores the scheme measured in the table above.
+- **At temperature 1.0 one draft per round was best with argmax drafts** (1.56-1.61 tokens per
+  round). With sampled drafts a second draft is break-even or slightly ahead (sw85). A second
   draft's acceptance does not pay for the wider window's extra expert misses. Greedy decoding
   at 2K gains 20% with 1-2 drafts (123 tok/s against 102).
 - **The window's union of missed experts is the cost of speculation here:** each extra verified

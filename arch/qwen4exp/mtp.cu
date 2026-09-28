@@ -353,9 +353,14 @@ void MtpHead::set_vocab(const std::vector<int32_t>& ids) {
     head_.bytes = rb * ids.size();
 }
 
-void MtpHead::save_checkpoint(const float* h_dev) {
+void MtpHead::reserve_checkpoint() {
     const size_t ring = size_t(qsa_ring_slots(s_)) * s_.idx_dim, h = size_t(s_.hc_count) * s_.d_model;
     if (!ckpt_) ck(cudaMalloc(&ckpt_, (ring + h) * 4), "cudaMalloc MTP checkpoint");
+}
+
+void MtpHead::save_checkpoint(const float* h_dev) {
+    const size_t ring = size_t(qsa_ring_slots(s_)) * s_.idx_dim, h = size_t(s_.hc_count) * s_.d_model;
+    reserve_checkpoint();
     ck(cudaMemcpyAsync(ckpt_, kv_.idx_ring, ring * 4, cudaMemcpyDeviceToDevice, stream_), "MTP checkpoint");
     ck(cudaMemcpyAsync(ckpt_ + ring, h_dev, h * 4, cudaMemcpyDeviceToDevice, stream_), "MTP checkpoint");
     ck(cudaStreamSynchronize(stream_), "MTP checkpoint");

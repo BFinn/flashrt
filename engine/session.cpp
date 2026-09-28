@@ -98,6 +98,10 @@ struct Session::Impl {
         ck(cudaMalloc(&h_buf, size_t(o.prefill_batch) * hrow * 4), "cudaMalloc h");
         ck(cudaMalloc(&tok_dev, 64 * 4), "cudaMalloc tokens");
         ck(cudaHostAlloc(&tok_host, 64 * 4, cudaHostAllocDefault), "cudaHostAlloc tokens");
+        // what requests allocate on first use goes first: the recurrent-state checkpoints (sw86: a
+        // server with the reserve at 256 MiB failed its first request allocating them)
+        fwd->reserve_checkpoint();
+        if (mtp) mtp->reserve_checkpoint();
         // the expert cache takes the VRAM that is left; it is filled after the first prefill
         size_t free_b = 0, total_b = 0;
         ck(cudaMemGetInfo(&free_b, &total_b), "cudaMemGetInfo");

@@ -101,6 +101,9 @@ public:
     // indexer rings); restore_checkpoint() returns the sequence to that position. As for
     // commit(), the KV caches need nothing. For prompt-prefix reuse across requests.
     void save_checkpoint();
+    // Allocates the checkpoint now (save_checkpoint otherwise does on first use), so a server can
+    // take it before the expert cache sizes itself to the free VRAM
+    void reserve_checkpoint();
     void restore_checkpoint();
     int checkpoint_pos() const { return ckpt_pos_; }
 

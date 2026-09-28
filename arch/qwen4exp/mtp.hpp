@@ -84,6 +84,7 @@ public:
     // The indexer ring and the streams the next catch-up starts from (h [hc][n]): what a
     // restored checkpoint of the target also needs from the head.
     void save_checkpoint(const float* h_dev);
+    void reserve_checkpoint();   // allocate it now (save_checkpoint otherwise does on first use)
     void restore_checkpoint(float* h_dev);
     // The head's state after a prefill of pos positions (its KV cache, and the target's streams
     // at pos - 1, h_carry_dev [hc][n]), in a file of its own; load returns pos.

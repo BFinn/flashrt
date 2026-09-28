@@ -357,7 +357,9 @@ pub async fn start(st: Arc<AppState>, req: ChatRequest) -> Result<(mpsc::Receive
                     break;
                 }
                 Some("error") => {
-                    send!(ChatEvent::Error(ev.get("msg").and_then(Value::as_str).unwrap_or("engine error").to_string()));
+                    let msg = ev.get("msg").and_then(Value::as_str).unwrap_or("engine error").to_string();
+                    tracing::error!("{id}: engine error: {msg}");
+                    send!(ChatEvent::Error(msg));
                     break;
                 }
                 _ => {}

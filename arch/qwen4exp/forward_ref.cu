@@ -265,14 +265,17 @@ std::vector<std::pair<void*, size_t>> ForwardRef::ckpt_parts() {
     return parts;
 }
 
+void ForwardRef::reserve_checkpoint() {
+    if (ckpt_) return;
+    size_t total = 0;
+    for (const auto& p : ckpt_parts()) total += (p.second + 255) & ~size_t(255);
+    ck(cudaMalloc(&ckpt_, total), "cudaMalloc checkpoint");
+    ckpt_bytes_ = total;
+}
+
 void ForwardRef::save_checkpoint() {
     const auto parts = ckpt_parts();
-    size_t total = 0;
-    for (const auto& p : parts) total += (p.second + 255) & ~size_t(255);
-    if (!ckpt_) {
-        ck(cudaMalloc(&ckpt_, total), "cudaMalloc checkpoint");
-        ckpt_bytes_ = total;
-    }
+    reserve_checkpoint();
     size_t off = 0;
     for (const auto& p : parts) {
         ck(cudaMemcpyAsync(static_cast<char*>(ckpt_) + off, p.first, p.second, cudaMemcpyDeviceToDevice, stream_), "checkpoint");
