@@ -61,12 +61,19 @@ public:
 
     // Restricts the head to these token ids (empty: the full vocabulary again).
     void set_vocab(const std::vector<int32_t>& ids);
+    // Allocates the trimmed head for up to n tokens now, so later set_vocab calls reuse it (a
+    // server sets a vocabulary per request and must not reallocate VRAM the expert cache took).
+    void reserve_vocab(int n);
     int vocab() const { return vocab_ids_.empty() ? ts_.n_vocab : int(vocab_ids_.size()); }
     // The drafted token of one logits row (GPU argmax, mapped back to a token id); with p_top, also
     // its probability under the head's softmax (over vocab()).
     int32_t argmax(const float* logits_row_dev, float* p_top = nullptr);
 
     void reset();   // a new sequence
+    // The indexer ring and the streams the next catch-up starts from (h [hc][n]): what a
+    // restored checkpoint of the target also needs from the head.
+    void save_checkpoint(const float* h_dev);
+    void restore_checkpoint(float* h_dev);
     // The head's state after a prefill of pos positions (its KV cache, and the target's streams
     // at pos - 1, h_carry_dev [hc][n]), in a file of its own; load returns pos.
     void save_state(const std::string& path, int pos, const float* h_carry_dev);
@@ -104,12 +111,14 @@ private:
     std::vector<int32_t> vocab_ids_;
     GpuTensor head_;
     size_t head_bytes_ = 0;
+    int head_cap_ = 0;   // rows the head buffer holds
     int32_t *amax_dev_ = nullptr, *amax_host_ = nullptr;   // [index, token, p as float bits]
     // draft chain (graph mode): params [token, position, -, step], drafts, the step's input streams
     int32_t *chain_dp_ = nullptr, *chain_drafts_ = nullptr;
     float *h_in_ = nullptr, *chain_logits_ = nullptr;
     cudaGraphExec_t chain_graph_ = nullptr;
     BlockScratch chain_scratch_;   // the buffers the chain graph was captured with
+    float* ckpt_ = nullptr;         // [ring | h]
 };
 
 }  // namespace flashrt::qwen4exp

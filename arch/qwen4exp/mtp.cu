@@ -306,30 +306,54 @@ void MtpHead::load_experts_q4(const Gguf& g, bool q2) {
     }
 }
 
+void MtpHead::reserve_vocab(int n) {
+    if (n <= head_cap_) return;
+    const GpuTensor& full = tw_.get("output.weight");
+    const size_t rb = size_t(gemv::row_bytes(full.type, full.cols()));
+    if (head_.dev) cudaFree(head_.dev);
+    head_bytes_ = rb * size_t(n) + gemv::kWeightTailPad + size_t(n) * 4;
+    ck(cudaMalloc(&head_.dev, head_bytes_), "cudaMalloc MTP head");
+    head_cap_ = n;
+    vocab_ids_.clear();
+}
+
 void MtpHead::set_vocab(const std::vector<int32_t>& ids) {
     if (chain_graph_) {
         cudaGraphExecDestroy(chain_graph_);
         chain_graph_ = nullptr;
     }
-    if (head_.dev) cudaFree(head_.dev);
-    head_ = GpuTensor{};
-    head_bytes_ = 0;
     vocab_ids_ = ids;
     if (ids.empty()) return;
+    reserve_vocab(int(ids.size()));
     const GpuTensor& full = tw_.get("output.weight");
     const size_t rb = size_t(gemv::row_bytes(full.type, full.cols()));
-    head_bytes_ = rb * ids.size() + gemv::kWeightTailPad + ids.size() * 4;
-    uint8_t* dev = nullptr;
-    ck(cudaMalloc(&dev, head_bytes_), "cudaMalloc MTP head");
-    ck(cudaMemset(dev, 0, head_bytes_), "memset MTP head");
+    uint8_t* dev = static_cast<uint8_t*>(head_.dev);
+    // rows, the tail pad (zeros) after the last used row, then the ids
+    ck(cudaMemsetAsync(dev + rb * ids.size(), 0, gemv::kWeightTailPad, stream_), "memset MTP head pad");
     int32_t* ids_dev = reinterpret_cast<int32_t*>(dev + rb * ids.size() + gemv::kWeightTailPad);
     ck(cudaMemcpy(ids_dev, ids.data(), ids.size() * 4, cudaMemcpyHostToDevice), "MTP head ids");
     k_gather_rows<<<unsigned(ids.size()), 256, 0, stream_>>>(static_cast<const uint8_t*>(full.dev), ids_dev, dev, rb);
     ck(cudaStreamSynchronize(stream_), "MTP head gather");
-    head_.dev = dev;
     head_.type = full.type;
     head_.dims = {full.cols(), int64_t(ids.size())};
     head_.bytes = rb * ids.size();
+}
+
+void MtpHead::save_checkpoint(const float* h_dev) {
+    const size_t ring = size_t(qsa_ring_slots(s_)) * s_.idx_dim, h = size_t(s_.hc_count) * s_.d_model;
+    if (!ckpt_) ck(cudaMalloc(&ckpt_, (ring + h) * 4), "cudaMalloc MTP checkpoint");
+    ck(cudaMemcpyAsync(ckpt_, kv_.idx_ring, ring * 4, cudaMemcpyDeviceToDevice, stream_), "MTP checkpoint");
+    ck(cudaMemcpyAsync(ckpt_ + ring, h_dev, h * 4, cudaMemcpyDeviceToDevice, stream_), "MTP checkpoint");
+    ck(cudaStreamSynchronize(stream_), "MTP checkpoint");
+}
+
+void MtpHead::restore_checkpoint(float* h_dev) {
+    if (!ckpt_) throw std::runtime_error("MTP restore_checkpoint: none saved");
+    const size_t ring = size_t(qsa_ring_slots(s_)) * s_.idx_dim, h = size_t(s_.hc_count) * s_.d_model;
+    ck(cudaMemcpyAsync(kv_.idx_ring, ckpt_, ring * 4, cudaMemcpyDeviceToDevice, stream_), "MTP restore");
+    ck(cudaMemcpyAsync(h_dev, ckpt_ + ring, h * 4, cudaMemcpyDeviceToDevice, stream_), "MTP restore");
+    reset_qsa_hot(s_, kv_, stream_);
+    ck(cudaStreamSynchronize(stream_), "MTP restore");
 }
 
 void MtpHead::save_state(const std::string& path, int pos, const float* h_carry_dev) {
@@ -429,6 +453,7 @@ int32_t MtpHead::argmax(const float* logits_row_dev, float* p_top) {
 }
 
 MtpHead::~MtpHead() {
+    if (ckpt_) cudaFree(ckpt_);
     if (chain_graph_) cudaGraphExecDestroy(chain_graph_);
     for (void* p : {static_cast<void*>(chain_dp_), static_cast<void*>(chain_drafts_), static_cast<void*>(h_in_), static_cast<void*>(chain_logits_)})
         if (p) cudaFree(p);
@@ -504,7 +529,7 @@ void MtpHead::enqueue(const float* h_prev, const int32_t* tokens, int T, int pos
     if (out_from < T && logits_dev) {
         const int R = T - out_from;
         hc_mix(c, il, 3, x_ + size_t(out_from) * hc * n, R, norm_, nullptr);
-        if (head_.dev) linear(ct, head_, norm_, logits_dev, R);
+        if (!vocab_ids_.empty()) linear(ct, head_, norm_, logits_dev, R);
         else head_logits(ct, norm_, R, logits_dev);
     }
     ck(cudaGetLastError(), "MtpHead::forward");

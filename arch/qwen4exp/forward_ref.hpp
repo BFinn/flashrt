@@ -76,6 +76,13 @@ public:
     // nothing: the positions past it are rewritten before anything reads them.
     void commit(int n);
 
+    // A device copy of the recurrent state at pos() (GDN states, conv and PLE histories, the
+    // indexer rings); restore_checkpoint() returns the sequence to that position. As for
+    // commit(), the KV caches need nothing. For prompt-prefix reuse across requests.
+    void save_checkpoint();
+    void restore_checkpoint();
+    int checkpoint_pos() const { return ckpt_pos_; }
+
     // Greedy token from a logits row on the device (GPU argmax; 4 bytes come back).
     int32_t argmax(const float* logits_row_dev);
 
@@ -147,6 +154,11 @@ private:
     int window_T_ = 0, window_pos0_ = -1;
     std::vector<GdnWindow> gdn_win_;
     std::vector<PleWindow> ple_win_;
+    // checkpoint: one device buffer holding every piece, and where each piece lives
+    void* ckpt_ = nullptr;
+    size_t ckpt_bytes_ = 0;
+    int ckpt_pos_ = -1;
+    std::vector<std::pair<void*, size_t>> ckpt_parts();
 };
 
 }  // namespace flashrt::qwen4exp

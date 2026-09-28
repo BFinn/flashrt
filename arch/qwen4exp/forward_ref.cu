@@ -64,6 +64,7 @@ ForwardRef::~ForwardRef() {
     for (int il : s_.ple_layers) free_ple_state(ple_state_[il]);
     for (GdnWindow& w : gdn_win_) free_gdn_window(w);
     for (PleWindow& w : ple_win_) free_ple_window(w);
+    if (ckpt_) cudaFree(ckpt_);
     free_block_scratch(scratch_);
     for (float* p : {emb_, x_, mixed_, inject_, blk_, pemb_, norm_}) cudaFree(p);
     if (ple_host_.raw_dev) cudaFree(ple_host_.raw_dev);
@@ -237,6 +238,50 @@ void ForwardRef::commit(int n) {
     }
     fast_host_->access_prev_T = n;   // the cache learns from the kept tokens only
     window_pos0_ = -1;
+}
+
+std::vector<std::pair<void*, size_t>> ForwardRef::ckpt_parts() {
+    const Spec& s = s_;
+    const size_t gch = size_t(2 * s.ssm_groups * s.ssm_state + s.ssm_heads * s.ssm_state);
+    std::vector<std::pair<void*, size_t>> parts;
+    for (int il : s.gdn_layers) {
+        parts.push_back({gdn_[il].S, size_t(s.ssm_heads) * s.ssm_state * s.ssm_state * 4});
+        parts.push_back({gdn_[il].conv, size_t(s.ssm_conv - 1) * gch * 4});
+    }
+    for (int il : s.ple_layers) parts.push_back({ple_state_[il].hist, size_t(ple_.ngram) * 3 * size_t(s.hc_count) * s.d_model * 4 + 4});
+    for (int il : s.qsa_layers) parts.push_back({kv_[il].idx_ring, size_t(qsa_ring_slots(s)) * s.idx_dim * 4});
+    return parts;
+}
+
+void ForwardRef::save_checkpoint() {
+    const auto parts = ckpt_parts();
+    size_t total = 0;
+    for (const auto& p : parts) total += (p.second + 255) & ~size_t(255);
+    if (!ckpt_) {
+        ck(cudaMalloc(&ckpt_, total), "cudaMalloc checkpoint");
+        ckpt_bytes_ = total;
+    }
+    size_t off = 0;
+    for (const auto& p : parts) {
+        ck(cudaMemcpyAsync(static_cast<char*>(ckpt_) + off, p.first, p.second, cudaMemcpyDeviceToDevice, stream_), "checkpoint");
+        off += (p.second + 255) & ~size_t(255);
+    }
+    ck(cudaStreamSynchronize(stream_), "checkpoint");
+    ckpt_pos_ = pos_;
+}
+
+void ForwardRef::restore_checkpoint() {
+    if (ckpt_pos_ < 0) throw std::runtime_error("restore_checkpoint: none saved");
+    if (window_pos0_ >= 0) throw std::runtime_error("restore_checkpoint: a window is open");
+    size_t off = 0;
+    for (const auto& p : ckpt_parts()) {
+        ck(cudaMemcpyAsync(p.first, static_cast<char*>(ckpt_) + off, p.second, cudaMemcpyDeviceToDevice, stream_), "restore");
+        off += (p.second + 255) & ~size_t(255);
+    }
+    for (int il : s_.qsa_layers) reset_qsa_hot(s_, kv_[il], stream_);   // slots may hold rewritten positions' old values
+    ck(cudaStreamSynchronize(stream_), "restore");
+    pos_ = ckpt_pos_;
+    have_access_ = false;
 }
 
 int ForwardRef::first_ple_layer() const { return s_.ple_layers.empty() ? s_.n_layer : s_.ple_layers.front(); }

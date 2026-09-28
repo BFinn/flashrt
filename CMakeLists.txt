@@ -24,7 +24,8 @@ add_library(flashrt_core STATIC
   core/gguf.cpp
   core/expert_arena.cpp
   core/row_reader.cpp
-  core/cpu_pool.cpp)
+  core/cpu_pool.cpp
+  core/json.cpp)
 target_include_directories(flashrt_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(flashrt_core PUBLIC Threads::Threads)
 
@@ -46,9 +47,6 @@ add_library(flashrt_qwen4exp STATIC
   arch/qwen4exp/ple.cpp)
 target_link_libraries(flashrt_qwen4exp PUBLIC flashrt_core flashrt_q2_0)
 
-# ---- engine process (protocol skeleton; generation arrives in P1)
-add_executable(flashrt-engine engine/main.cpp)
-target_link_libraries(flashrt-engine PRIVATE flashrt_core)
 
 # ---- phase 0 probes
 add_executable(membw tools/membw.cpp)
@@ -122,6 +120,10 @@ if(FLASHRT_CUDA)
   target_link_libraries(flashrt_qwen4exp_gpu PUBLIC flashrt_qwen4exp flashrt_gemv)
   add_executable(fr_gpu_load tools/fr_gpu_load.cpp)
   target_link_libraries(fr_gpu_load PRIVATE flashrt_qwen4exp_gpu flashrt_gemv flashrt_ggml_stubs)   # stubs last
+
+  # the engine process: the JSON-lines protocol over a Session
+  add_executable(flashrt-engine engine/main.cpp engine/session.cpp)
+  target_link_libraries(flashrt-engine PRIVATE flashrt_qwen4exp_gpu flashrt_gemv flashrt_ggml_stubs)   # stubs last
 
   add_executable(fr_bench tools/fr_bench.cpp)
   target_link_libraries(fr_bench PRIVATE flashrt_qwen4exp_gpu flashrt_gemv flashrt_ggml_stubs)   # stubs last
