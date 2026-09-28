@@ -55,7 +55,7 @@ bool hc_q8_eligible(const GgufTensor& t) {
     return hc_q8_on() && t.type == 30 /* GGML_TYPE_BF16 */ && t.dims.size() == 2 && t.dims[0] % 32 == 0 && t.name.rfind("blk.", 0) == 0 &&
            (ends(".hc_attn_down.weight") || ends(".hc_attn_up.weight") || ends(".hc_ffn_down.weight") || ends(".hc_ffn_up.weight"));
 }
-size_t q8p_bytes(const GgufTensor& t) { return size_t(t.dims[0]) * t.dims[1] * 33 / 32; }
+size_t q8p_bytes(const GgufTensor& t) { return size_t(t.dims[0]) * t.dims[1] * 17 / 16; }   // int8 values + an fp16 scale per 32
 
 size_t tensor_slot(const GgufTensor& t, bool q3r_on) {
     size_t b = t.bytes;
