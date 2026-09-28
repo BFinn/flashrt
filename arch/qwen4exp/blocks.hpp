@@ -199,7 +199,8 @@ void free_qsa_cache(QsaCache& kv);
 // [T][heads * dim] (llama.cpp's "attn_gated"). sel_out, if given, gets each token's selected
 // cells (empty when the token attends to every cell).
 // Grows the QSA scratch (indexer scores for max_nb blocks, cells, attention partials) for T
-// tokens; graph capture calls it first so nothing is allocated while capturing.
+// tokens (n_splits < 0: no partials, for the tensor-core prefill kernel); graph capture calls it
+// first so nothing is allocated while capturing.
 void qsa_scratch_reserve(const Spec& s, BlockScratch& bs, int T, int max_nb, int n_splits = 0);
 void qsa_mixer(const BlockCtx& c, int il, const float* x, int T, int pos0, QsaCache& kv, float* out,
                float* gated_out = nullptr, std::vector<std::vector<int32_t>>* sel_out = nullptr);
