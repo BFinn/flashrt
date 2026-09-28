@@ -410,6 +410,10 @@ cache after, from the prefill's routing counts and the startup prior.
 
 ## Next steps (priority order)
 
+`docs/sweet-spots.md` has the tuned configurations, the knee of each track and the untested
+paths ranked by expected value. At the top of that list: sampled drafts with speculative
+sampling (sw84: acceptance 0.48 → 0.66 at 32K).
+
 1. **Cheaper verify windows:** the misses dominate. They are host-DRAM bound (sw79), so the
    levers are fewer misses and a better drafter:
    - a draft length chosen per round from the window's expected misses;

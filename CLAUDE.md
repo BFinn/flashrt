@@ -7,6 +7,8 @@ Read these before writing code:
 - `docs/engine.md`: the engine as built. It covers the per-token decode flow, why each piece is
   shaped as it is (with links to the evidence), what was rejected, current numbers, the benchmark
   runbook, known issues and next steps. **Start here when resuming work.**
+- `docs/sweet-spots.md`: the best configurations measured, where each tuning track reached its
+  knee and why, the untested paths ranked, and every `FLASHRT_*` toggle.
 - `docs/interfaces.md`: how generic flashrt is, and the C++ seams.
 - `docs/clean-room.md`: what may and may not be copied.
 Machine-specific details live in `CLAUDE.local.md`, which is not committed.
