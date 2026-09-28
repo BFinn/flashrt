@@ -724,7 +724,7 @@ __device__ __forceinline__ int afrag(int row, int col, int kd) {
 template <int DK>
 __global__ void __launch_bounds__(256, 2) k_gdn_chunk_prep(const float* conv, const float* g, const float* beta, int T, int t_base,
                                                           int k_heads, int v_heads, int channels, __half* Qh, __half* Wf, __half* Kt,
-                                                          __half* Pf, __half* Ut, float* gcb) {
+                                                          __half* Pf, float* Ut, float* gcb) {
     static_assert(DK == 128, "state 128");
     constexpr int C = kGdnChunk, QK_IT = (C / 2) * (DK / 2) / 256, V_IT = C * (DK / 2) / 256;
     extern __shared__ __align__(16) unsigned char gsm_raw[];
@@ -889,7 +889,7 @@ __global__ void __launch_bounds__(256, 2) k_gdn_chunk_prep(const float* conv, co
         T2[gsw(lane + 32, c, C)] = __float2half_rn(x1[j] * bg);
     }
     __syncthreads();
-    // 5. W = T diag(beta gamma) K (A fragments, fp16) and U~ = T diag(beta) V (fp16 rows):
+    // 5. W = T diag(beta gamma) K (A fragments, fp16) and U~ = T diag(beta) V (fp32 rows):
     //    warp = (product, row tile), the columns in two halves
     {
         const int prod = warp >> 2, mt = warp & 3;
@@ -920,13 +920,13 @@ __global__ void __launch_bounds__(256, 2) k_gdn_chunk_prep(const float* conv, co
                     *reinterpret_cast<uint4*>(&wf[(mt * (DK / 16) + half * 4 + q) * 256 + lane * 8]) = u;
                 }
             } else {
-                __half* ut = Ut + item * C * DK;
+                float* ut = Ut + item * C * DK;
 #pragma unroll
                 for (int j = 0; j < 8; ++j)
 #pragma unroll
                     for (int hh = 0; hh < 2; ++hh) {
                         const int t = mt * 16 + g8 + hh * 8, d = (half * 8 + j) * 8 + tq * 2;
-                        *reinterpret_cast<uint32_t*>(&ut[t * DK + d]) = pack_h2(acc[j][2 * hh], acc[j][2 * hh + 1]);
+                        *reinterpret_cast<float2*>(&ut[t * DK + d]) = make_float2(acc[j][2 * hh], acc[j][2 * hh + 1]);
                     }
             }
         }
@@ -942,7 +942,7 @@ __global__ void __launch_bounds__(256, 2) k_gdn_chunk_prep(const float* conv, co
 //   4. the fp16 copy of S0 for the next chunk.
 template <int DK, int NC, int NW, int MINB>
 __global__ void __launch_bounds__(32 * NW, MINB) k_gdn_chunk_state(float* S, const __half* Qh, const __half* Wf, const __half* Kt,
-                                                            const __half* Pf, const __half* Ut, const float* gcb, float* o, int T, int t_base,
+                                                            const __half* Pf, const float* Ut, const float* gcb, float* o, int T, int t_base,
                                                             int n_chunks, int v_heads) {
     constexpr int C = kGdnChunk, NTW = NC / NW, SP = NC + 8;   // n-tiles per warp; padded row of the fp16 copies
     static_assert(NW % 8 == 0 && NTW % 2 == 0, "warps: 8 row tiles x column groups");
@@ -971,12 +971,12 @@ __global__ void __launch_bounds__(32 * NW, MINB) k_gdn_chunk_state(float* S, con
         const __half* Am = (mt < 4 ? Wf : Qh) + item * C * DK + size_t((mt & 3) * (DK / 16)) * 256 + lane * 8;
         float2 ut[NTW][2];
         if (mt < 4) {
-            const __half* u = Ut + item * C * DK + i0;
+            const float* u = Ut + item * C * DK + i0;
 #pragma unroll
             for (int j = 0; j < NTW; ++j)
 #pragma unroll
                 for (int hh = 0; hh < 2; ++hh)
-                    ut[j][hh] = __half22float2(*reinterpret_cast<const __half2*>(u + size_t(mt * 16 + g8 + hh * 8) * DK + (nb + j) * 8 + tq * 2));
+                    ut[j][hh] = *reinterpret_cast<const float2*>(u + size_t(mt * 16 + g8 + hh * 8) * DK + (nb + j) * 8 + tq * 2);
         }
         float x[NTW][4] = {};
 #pragma unroll
@@ -2436,12 +2436,12 @@ __global__ void k_idx_select(const float* scores, int ld, int32_t* cells, int32_
 
 size_t gdn_chunk_ws_bytes(const Spec& s) {
     const size_t items = size_t(kGdnSlab) * s.ssm_heads, C = kGdnChunk, dk = s.ssm_state;
-    return items * (C * (4 * dk + C) * 2 + 4);   // Q^, W, K^, U~ and P (fp16), gamma_C
+    return items * (C * (3 * dk + C) * 2 + C * dk * 4 + 4);   // Q^, W, K^ and P (fp16), U~ (fp32), gamma_C
 }
 
 namespace {
 template <int NC, int NW, int MINB>
-void gdn_state_launch(float* S, const __half* Qh, const __half* Wf, const __half* Kt, const __half* Pf, const __half* Ut, const float* gcb,
+void gdn_state_launch(float* S, const __half* Qh, const __half* Wf, const __half* Kt, const __half* Pf, const float* Ut, const float* gcb,
                       float* o, int T, int t_base, int n_chunks, int H, cudaStream_t stream) {
     constexpr int DK = 128;
     const size_t smem = size_t(DK + kGdnChunk) * (NC + 8) * 2;
@@ -2470,8 +2470,8 @@ void gdn_delta_prefill(const Spec& s, float* S, const float* conv, const float* 
     __half* Wf = Qh + items * C * DK;
     __half* Kt = Wf + items * C * DK;
     __half* Pf = Kt + items * C * DK;
-    __half* Ut = Pf + items * C * C;
-    float* gcb = reinterpret_cast<float*>(Ut + items * C * DK);
+    float* Ut = reinterpret_cast<float*>(Pf + items * C * C);
+    float* gcb = Ut + items * C * DK;
     const size_t smem_prep = size_t(3 * C * DK) * 2;   // K, Q (fp16) and A^T (fp32 [C][C] = C * DK halves)
     static const int nc = [] {   // FLASHRT_GDN_NC: value columns per state block (32, 64, 128)
         const char* e = std::getenv("FLASHRT_GDN_NC");
