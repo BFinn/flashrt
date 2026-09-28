@@ -1822,9 +1822,76 @@ void hc_init(const BlockCtx& c, const float* emb, float* x, int T) {
     ck(cudaGetLastError(), "hc_init");
 }
 
+namespace {
+// One warp per token (sw81): the logits in registers (element 32 i + lane), max and sum by
+// shuffles, then K rounds of warp argmax (higher p first, ties to the lower index; the same rule
+// as k_route_topk, whose p may differ in the last bit through the sum's order).
+template <int V>
+__global__ void __launch_bounds__(256) k_route_topk_w(const float* logits, int T, int E, int K, int32_t* ids, float* wts, uint32_t* counts) {
+    const int t = blockIdx.x * 8 + (threadIdx.x >> 5), lane = threadIdx.x & 31;
+    if (t >= T) return;
+    const float* l = logits + size_t(t) * E;
+    float v[V];
+    float m = -INFINITY;
+#pragma unroll
+    for (int i = 0; i < V; ++i) {
+        const int e = 32 * i + lane;
+        v[i] = e < E ? l[e] : -INFINITY;
+        m = fmaxf(m, v[i]);
+    }
+    for (int o = 16; o > 0; o >>= 1) m = fmaxf(m, __shfl_xor_sync(~0u, m, o));
+    float sum = 0.0f;
+#pragma unroll
+    for (int i = 0; i < V; ++i) {
+        v[i] = 32 * i + lane < E ? __expf(v[i] - m) : 0.0f;
+        sum += v[i];
+    }
+    for (int o = 16; o > 0; o >>= 1) sum += __shfl_xor_sync(~0u, sum, o);
+#pragma unroll
+    for (int i = 0; i < V; ++i) v[i] = 32 * i + lane < E ? v[i] / sum : -1.0f;
+    float ws = 0.0f, selp = 0.0f;
+    for (int k = 0; k < K; ++k) {
+        float bv = -2.0f;
+        int bi = 0x7fffffff;
+#pragma unroll
+        for (int i = 0; i < V; ++i)
+            if (v[i] > bv) {   // ascending index within a lane: the first maximum wins ties
+                bv = v[i];
+                bi = 32 * i + lane;
+            }
+        for (int o = 16; o > 0; o >>= 1) {
+            const float ov = __shfl_xor_sync(~0u, bv, o);
+            const int oi = __shfl_xor_sync(~0u, bi, o);
+            if (ov > bv || (ov == bv && oi < bi)) {
+                bv = ov;
+                bi = oi;
+            }
+        }
+        if ((bi & 31) == lane)
+#pragma unroll
+            for (int i = 0; i < V; ++i)
+                if (32 * i + lane == bi) v[i] = -1.0f;
+        if (lane == 0) {
+            ids[size_t(t) * K + k] = bi;
+            if (counts) atomicAdd(counts + bi, 1u);
+        }
+        if (lane == k) selp = bv;
+        ws += bv;
+    }
+    ws = fmaxf(ws, 6.103515625e-5f);
+    if (lane < K) wts[size_t(t) * K + lane] = selp / ws;
+}
+}  // namespace
+
 void moe_route_topk(cudaStream_t stream, const float* logits, int T, int E, int k, int32_t* ids, float* wts, uint32_t* counts) {
     if (E > 1024 || k > 32) throw std::runtime_error("moe_route_topk: unsupported shape");
-    k_route_topk<<<T, ((E + 31) / 32) * 32, 0, stream>>>(logits, E, k, ids, wts, counts);
+    static const bool warp = [] {   // FLASHRT_ROUTE_WARP=0: the block-per-token kernel
+        const char* e = std::getenv("FLASHRT_ROUTE_WARP");
+        return !(e && e[0] == '0');
+    }();
+    if (warp && E <= 512) k_route_topk_w<16><<<(T + 7) / 8, 256, 0, stream>>>(logits, T, E, k, ids, wts, counts);
+    else if (warp) k_route_topk_w<32><<<(T + 7) / 8, 256, 0, stream>>>(logits, T, E, k, ids, wts, counts);
+    else k_route_topk<<<T, ((E + 31) / 32) * 32, 0, stream>>>(logits, E, k, ids, wts, counts);
     ck(cudaGetLastError(), "moe_route_topk");
 }
 
