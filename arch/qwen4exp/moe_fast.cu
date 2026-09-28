@@ -346,10 +346,12 @@ __global__ void k_moe_down_g(const uint8_t* const* g_ptr, const int8_t* g_slot, 
 // memory and are read over PCIe by the hit kernels, and only the rest go to the CPU.
 // Windows: one block per token t (blockIdx.x), each with its own logits, x, hit list, route
 // record and routed flag.
+// miss_n[t] (device) gets the token's CPU miss count: a token without misses skips the x copy
+// here and the mailbox wait and read in k_moe_combine_db (FLASHRT_DB_SKIP=0: off; sw77).
 __global__ void k_route(const float* logits, const int32_t* table, int E, int K, const uint8_t* slots, size_t slot_bytes,
                         const uint8_t** hit_ptr, float* hit_w, int32_t* hit_n, const uint8_t* arena_dev, size_t arena_stride,
                         int layer, float pcie_frac, int pcie_max, int32_t* route_dev, const float* x, int n, uint8_t* mb,
-                        size_t x_off, uint32_t seq, const int32_t* dp) {
+                        size_t x_off, uint32_t seq, const int32_t* dp, int32_t* miss_n, int skip) {
     if (dp) seq = uint32_t(dp[2]);
     const int tok = blockIdx.x;
     logits += size_t(tok) * E;
@@ -365,6 +367,7 @@ __global__ void k_route(const float* logits, const int32_t* table, int E, int K,
     __shared__ int sel_slot[kMaxK];
     __shared__ int cand_i[1024];
     __shared__ float cand_p[1024];
+    __shared__ int s_nm;
     const int e = threadIdx.x;
     const float lg = e < E ? logits[e] : -INFINITY;
     const int my_slot = e < E ? table[e] : -1;   // loaded early, used if e is selected
@@ -473,10 +476,15 @@ __global__ void k_route(const float* logits, const int32_t* table, int E, int K,
         route_dev[1] = nm;
         route_dev[kRouteGpu] = ng;
         *hit_n = nh + ng;
+        miss_n[tok] = skip ? nm : 1;
+        s_nm = nm;
     }
+    __syncthreads();
     if (mb) {
-        float* xh = reinterpret_cast<float*>(mb + x_off) + size_t(tok) * n;
-        for (int i = e; i < n; i += blockDim.x) xh[i] = x[i];
+        if (s_nm > 0 || !skip) {   // the CPU reads x only for its misses
+            float* xh = reinterpret_cast<float*>(mb + x_off) + size_t(tok) * n;
+            for (int i = e; i < n; i += blockDim.x) xh[i] = x[i];
+        }
         __threadfence_system();
         __syncthreads();
         if (e == 0) reinterpret_cast<volatile uint32_t*>(mb + kMbRouted)[tok] = seq;
@@ -500,10 +508,14 @@ __global__ void k_moe_combine(float* out, const float* yh, const float* hit_w, c
 // fire it) it gives up, records seq in the mailbox's error word, and carries on with whatever
 // is there; the host reports the error after the token.
 // Windows: blockIdx.y = token t.
+// A token without CPU misses (miss_n[t] == 0) neither waits nor reads the mailbox: its CPU part
+// is zero. The host still serves the layer (statistics), and doorbell_end_token waits for it.
 __global__ void k_moe_combine_db(float* out, const float* yh, const float* hit_w, const int32_t* hit_n, uint8_t* mb,
-                                 size_t out_off, uint32_t seq, const float* shexp, const float* gate, int n, int Kmax, const int32_t* dp) {
+                                 size_t out_off, uint32_t seq, const float* shexp, const float* gate, int n, int Kmax, const int32_t* dp,
+                                 const int32_t* miss_n) {
     if (dp) seq = uint32_t(dp[2]);
-    if (threadIdx.x == 0) {
+    const bool cpu = miss_n[blockIdx.y] != 0;
+    if (cpu && threadIdx.x == 0) {
         const volatile uint32_t* done = reinterpret_cast<const volatile uint32_t*>(mb + kMbDone);
         const int64_t t0 = int64_t(global_ns());
         for (uint32_t polls = 0; *done != seq; ++polls) {
@@ -518,11 +530,19 @@ __global__ void k_moe_combine_db(float* out, const float* yh, const float* hit_w
     __syncthreads();
     const int i = blockIdx.x * blockDim.x + threadIdx.x, t = blockIdx.y;
     if (i >= n) return;
-    float acc = reinterpret_cast<const volatile float*>(mb + out_off)[size_t(t) * n + i];
+    float acc = cpu ? reinterpret_cast<const volatile float*>(mb + out_off)[size_t(t) * n + i] : 0.0f;
     const int K = hit_n[t];
     for (int k = 0; k < K; ++k) acc += hit_w[t * Kmax + k] * yh[(size_t(t) * Kmax + k) * n + i];
     const float g = 1.0f / (1.0f + __expf(-gate[t]));
     out[size_t(t) * n + i] = acc + shexp[size_t(t) * n + i] * g;
+}
+
+bool db_skip() {
+    static const bool on = [] {
+        const char* e = std::getenv("FLASHRT_DB_SKIP");
+        return !(e && e[0] == '0');
+    }();
+    return on;
 }
 
 __global__ void k_swiglu_1(float* g, const float* u, int n) {   // any number of rows
@@ -966,7 +986,8 @@ void moe_block_fast(const BlockCtx& c, int il, const float* x, const ExpertCache
     int32_t* route_dev = reinterpret_cast<int32_t*>(hit_ptr + size_t(T) * kMaxK);             // [T][kRouteInts]
     if (reinterpret_cast<uintptr_t>(hit_ptr) % 8) throw std::runtime_error("moe_block_fast: misaligned scratch");
     int32_t* hit_n = route_dev + size_t(T) * kRouteInts;                // [T] (padded to 8)
-    float* hits_scratch = reinterpret_cast<float*>(hit_n + 8);          // moe_hits_scratch_bytes
+    int32_t* miss_n = hit_n + 8;                                        // [T] (padded to 8)
+    float* hits_scratch = reinterpret_cast<float*>(miss_n + 8);         // moe_hits_scratch_bytes
     if (size_t(hits_scratch - c.scratch.f32) * 4 + moe_hits_scratch_bytes(K, ff, T) > c.scratch.f32_elems * 4)
         throw std::runtime_error("moe_block_fast: scratch too small");
 
@@ -978,7 +999,7 @@ void moe_block_fast(const BlockCtx& c, int il, const float* x, const ExpertCache
     uint8_t* mb = h.doorbell ? h.mbox_dev + size_t(il) * h.mbox_stride : nullptr;
     k_route<<<T, ((E + 31) / 32) * 32, 0, c.stream>>>(logits, cache.table_dev + size_t(il) * E, E, K, cache.slots, cache.slot_bytes,
                                                      hit_ptr, hit_w, hit_n, h.arena_dev, h.arena_stride, il, h.pcie_frac, h.pcie_max,
-                                                     route_dev, x, n, mb, mb_x_off(h.max_window), h.seq, c.dparams);
+                                                     route_dev, x, n, mb, mb_x_off(h.max_window), h.seq, c.dparams, miss_n, db_skip() ? 1 : 0);
     if (!h.doorbell) {
         ck(cudaMemcpyAsync(h.route_host, route_dev, size_t(kRouteInts) * 4, cudaMemcpyDeviceToHost, c.stream), "route to host");
         ck(cudaMemcpyAsync(h.x_host, x, size_t(n) * 4, cudaMemcpyDeviceToHost, c.stream), "x to host");
@@ -1004,7 +1025,7 @@ void moe_block_fast(const BlockCtx& c, int il, const float* x, const ExpertCache
 
     if (h.doorbell) {   // 3'. the miss server fills the mailbox; the combine waits for it on the GPU
         k_moe_combine_db<<<dim3((n + 255) / 256, T), 256, 0, c.stream>>>(out, yh, hit_w, hit_n, mb, mb_out_off(n, h.max_window), h.seq,
-                                                                        sh, gate, n, K, c.dparams);
+                                                                        sh, gate, n, K, c.dparams, miss_n);
         ck(cudaGetLastError(), "moe_block_fast");
         return;
     }
