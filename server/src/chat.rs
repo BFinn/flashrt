@@ -170,7 +170,7 @@ impl Section {
             }
             // search a little before `sent`, in case a stop straddles the boundary (held back, so it cannot)
             if let Some(i) = self.text[from..].find(s.as_str()) {
-                if best.map_or(true, |(b, _)| from + i < b) {
+                if best.is_none_or(|(b, _)| from + i < b) {
                     best = Some((from + i, s));
                 }
             }

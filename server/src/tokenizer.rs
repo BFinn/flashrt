@@ -73,7 +73,7 @@ impl Tokenizer {
         let mut special_ids = vec![false; tokens.len()];
         for (i, t) in tokens.iter().enumerate() {
             id_of.insert(t, i as u32);
-            let special = types.get(i).map_or(false, |&ty| ty == 3 || ty == 4);   // control, user-defined
+            let special = types.get(i).is_some_and(|&ty| ty == 3 || ty == 4);   // control, user-defined
             if special {
                 specials.push((t.to_string(), i as u32));
                 special_ids[i] = true;
@@ -184,7 +184,7 @@ impl Tokenizer {
             let mut best: Option<(u32, usize, u32)> = None;   // (rank, position, merged id)
             for i in 0..parts.len().saturating_sub(1) {
                 if let Some(&(rank, id)) = self.merges.get(&(parts[i], parts[i + 1])) {
-                    if best.map_or(true, |(r, _, _)| rank < r) {
+                    if best.is_none_or(|(r, _, _)| rank < r) {
                         best = Some((rank, i, id));
                     }
                 }

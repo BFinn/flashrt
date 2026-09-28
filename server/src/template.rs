@@ -80,7 +80,7 @@ impl ChatTemplate {
             ctx.insert(k.clone(), v.clone());
         }
         let t = self.env.get_template("chat")?;
-        t.render(JValue::from_serialize(&Value::Object(ctx))).map_err(|e| {
+        t.render(JValue::from_serialize(Value::Object(ctx))).map_err(|e| {
             let mut msg = e.to_string();
             let mut src = std::error::Error::source(&e);
             while let Some(s) = src {

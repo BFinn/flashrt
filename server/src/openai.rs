@@ -110,7 +110,7 @@ pub async fn chat_completions(st: Arc<AppState>, req: Value) -> Response {
     r.messages = messages;
     common(&req, &mut r);
     let tool_choice_none = req.get("tool_choice").and_then(Value::as_str) == Some("none");
-    if let Some(t) = req.get("tools").filter(|t| t.as_array().map_or(false, |a| !a.is_empty())) {
+    if let Some(t) = req.get("tools").filter(|t| t.as_array().is_some_and(|a| !a.is_empty())) {
         if !tool_choice_none {
             r.tools = Some(t.clone());
         }
