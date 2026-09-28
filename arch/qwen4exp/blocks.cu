@@ -68,42 +68,77 @@ __global__ void k_scale_silu(float* x, int n, float scale) {
 // mixed[t][i] = mean over s of xn[t][s][i] * sigmoid(gate[t][s][i])
 // As k_grouped_rms_norm for n % 4 == 0 and blockDim.x == n / 4: one float4 per thread, kept in
 // registers between the reduction and the write. yb, if given, gets y rounded to BF16 as well
-// (the input of BF16 products, so they need no conversion pass).
-__global__ void k_grouped_rms_norm_v4(const float* x, const float* w, float* y, int n, int hc, float eps, __nv_bfloat16* yb) {
+// (the input of BF16 products, so they need no conversion pass); y may then be null, with inv
+// [row] getting each row's 1 / rms instead (k_gated_mean_x recomputes y from x).
+__global__ void k_grouped_rms_norm_v4(const float* x, const float* w, float* y, int n, int hc, float eps, __nv_bfloat16* yb,
+                                      float* inv_out) {
     const int row = blockIdx.x, s = row % hc, i = threadIdx.x;
     const float4 v = reinterpret_cast<const float4*>(x + size_t(row) * n)[i];
     const float ss = block_sum(v.x * v.x + v.y * v.y + v.z * v.z + v.w * v.w);
     const float inv = rsqrtf(ss / n + eps);
     const float4 wv = reinterpret_cast<const float4*>(w + size_t(s) * n)[i];
     const float4 r = make_float4(v.x * inv * wv.x, v.y * inv * wv.y, v.z * inv * wv.z, v.w * inv * wv.w);
-    reinterpret_cast<float4*>(y + size_t(row) * n)[i] = r;
+    if (y) reinterpret_cast<float4*>(y + size_t(row) * n)[i] = r;
+    if (inv_out && i == 0) inv_out[row] = inv;
     if (yb) {
         __nv_bfloat162 b[2] = {__floats2bfloat162_rn(r.x, r.y), __floats2bfloat162_rn(r.z, r.w)};
         reinterpret_cast<uint2*>(yb + size_t(row) * n)[i] = *reinterpret_cast<uint2*>(b);
     }
 }
 
-// Prefill, 4 streams: k_hc_combine (x += out * 2 sigmoid(inject / 4) per stream) and then
-// k_grouped_rms_norm_v4 on the new x, in one pass. One block per token; thread i holds float4 i
-// of each stream, so out is read once and x once. Same arithmetic as the two kernels.
+// sum over the block of 4 values per thread, in a fixed order (the result in every thread)
+__device__ float4 block_sum4(float4 v) {
+    __shared__ float4 red4[32];
+    for (int o = 16; o > 0; o >>= 1) {
+        v.x += __shfl_xor_sync(0xffffffff, v.x, o);
+        v.y += __shfl_xor_sync(0xffffffff, v.y, o);
+        v.z += __shfl_xor_sync(0xffffffff, v.z, o);
+        v.w += __shfl_xor_sync(0xffffffff, v.w, o);
+    }
+    const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5, nw = (blockDim.x + 31) >> 5;
+    if (lane == 0) red4[warp] = v;
+    __syncthreads();
+    float4 r = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+    for (int k = 0; k < nw; ++k) {
+        const float4 u = red4[k];
+        r.x += u.x;
+        r.y += u.y;
+        r.z += u.z;
+        r.w += u.w;
+    }
+    __syncthreads();
+    return r;
+}
+
+// Prefill, 4 streams: k_hc_combine (x += out * 2 sigmoid(inject / 4) per stream; skipped when out
+// is null) and then k_grouped_rms_norm_v4 on the new x, in one pass. One block per token; thread
+// i holds float4 i of each stream, so out is read once and x once. Same arithmetic as the two
+// kernels (y, inv_out: as there). w_inj, if given ([4][4 * n] BF16), gives inj_out[t][4]: the
+// inject product of the normed row, reduced in the block (no separate product reading yb).
 __global__ void k_hc_combine_norm4(float* x, const float* out, const float* inject, const float* w, float* y, __nv_bfloat16* yb, int n,
-                                   float eps) {
+                                   float eps, float* inv_out, const uint16_t* w_inj, float* inj_out) {
     constexpr int HC = 4;
     const int t = blockIdx.x, i = threadIdx.x;
-    const float4 o = reinterpret_cast<const float4*>(out + size_t(t) * n)[i];
     float4 v[HC];
+    if (out) {
+        const float4 o = reinterpret_cast<const float4*>(out + size_t(t) * n)[i];
 #pragma unroll
-    for (int s = 0; s < HC; ++s) {
-        const float wv = 2.0f / (1.0f + __expf(-inject[t * HC + s] / HC));
-        float4* xp = reinterpret_cast<float4*>(x + (size_t(t) * HC + s) * n) + i;
-        float4 a = *xp;
-        a.x += o.x * wv;
-        a.y += o.y * wv;
-        a.z += o.z * wv;
-        a.w += o.w * wv;
-        *xp = a;
-        v[s] = a;
+        for (int s = 0; s < HC; ++s) {
+            const float wv = 2.0f / (1.0f + __expf(-inject[t * HC + s] / HC));
+            float4* xp = reinterpret_cast<float4*>(x + (size_t(t) * HC + s) * n) + i;
+            float4 a = *xp;
+            a.x += o.x * wv;
+            a.y += o.y * wv;
+            a.z += o.z * wv;
+            a.w += o.w * wv;
+            *xp = a;
+            v[s] = a;
+        }
+    } else {
+#pragma unroll
+        for (int s = 0; s < HC; ++s) v[s] = reinterpret_cast<const float4*>(x + (size_t(t) * HC + s) * n)[i];
     }
+    float4 ip = make_float4(0.0f, 0.0f, 0.0f, 0.0f);   // this thread's share of the 4 inject outputs
 #pragma unroll
     for (int s = 0; s < HC; ++s) {
         const float4 a = v[s];
@@ -112,9 +147,27 @@ __global__ void k_hc_combine_norm4(float* x, const float* out, const float* inje
         const float4 wv = reinterpret_cast<const float4*>(w + size_t(s) * n)[i];
         const float4 r = make_float4(a.x * inv * wv.x, a.y * inv * wv.y, a.z * inv * wv.z, a.w * inv * wv.w);
         const size_t row = size_t(t) * HC + s;
-        reinterpret_cast<float4*>(y + row * n)[i] = r;
+        if (y) reinterpret_cast<float4*>(y + row * n)[i] = r;
+        if (inv_out && i == 0) inv_out[row] = inv;
         __nv_bfloat162 b[2] = {__floats2bfloat162_rn(r.x, r.y), __floats2bfloat162_rn(r.z, r.w)};
         reinterpret_cast<uint2*>(yb + row * n)[i] = *reinterpret_cast<uint2*>(b);
+        if (w_inj) {
+            float d[4];
+#pragma unroll
+            for (int oo = 0; oo < 4; ++oo) {
+                const uint2 wb = reinterpret_cast<const uint2*>(w_inj + size_t(oo) * HC * n + size_t(s) * n)[i];
+                d[oo] = __uint_as_float(wb.x << 16) * r.x + __uint_as_float(wb.x & 0xffff0000u) * r.y +
+                        __uint_as_float(wb.y << 16) * r.z + __uint_as_float(wb.y & 0xffff0000u) * r.w;
+            }
+            ip.x += d[0];
+            ip.y += d[1];
+            ip.z += d[2];
+            ip.w += d[3];
+        }
+    }
+    if (w_inj) {
+        const float4 tot = block_sum4(ip);
+        if (i == 0) reinterpret_cast<float4*>(inj_out)[t] = tot;
     }
 }
 
@@ -261,6 +314,21 @@ void hc_fused_launch(const float* x, const float* w_norm, const uint16_t* Wd, co
     }
     k_hc_down<TT><<<dim3((rows + 15) / 16, hc), 512, smem, st>>>(x, w_norm, Wd, Wi, xn, part, n, rank, n_inj, eps);
     k_hc_up_mix<TT><<<(n + 7) / 8, 256, 0, st>>>(Wu, part, n_inj, 1.0f / hc, xn, mixed, inject, n, rank);
+}
+
+// k_gated_mean with xn recomputed from x: xn[t][s][i] = x[t][s][i] * inv[t * hc + s] * w[s][i]
+// (the norm's own expression, so the same values), sparing the norm's write of xn
+__global__ void k_gated_mean_x(const float* x, const float* inv, const float* w, const float* gate, float* mixed, int n, int hc, int T) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    const int t = blockIdx.y;
+    if (i >= n || t >= T) return;
+    float acc = 0.0f;
+    for (int s = 0; s < hc; ++s) {
+        const size_t k = (size_t(t) * hc + s) * n + i;
+        const float xn = x[k] * inv[size_t(t) * hc + s] * w[size_t(s) * n + i];
+        acc += xn / (1.0f + __expf(-gate[k]));
+    }
+    mixed[size_t(t) * n + i] = acc * (1.0f / hc);
 }
 
 __global__ void k_gated_mean(const float* xn, const float* gate, float* mixed, int n, int hc, int T) {
@@ -733,21 +801,30 @@ void hc_mix_impl(const BlockCtx& c, int il, int which, float* x, const float* co
             bs.gemm_ws_bytes = ws;
         }
         auto* xb = static_cast<__nv_bfloat16*>(gemm::bf16_staging(bs.gemm_ws, bs.gemm_ws_bytes, hcd, T));
-        if (comb_out)
-            k_hc_combine_norm4<<<T, n / 4, 0, c.stream>>>(x, comb_out, comb_inject, static_cast<const float*>(w_norm.dev), xn, xb, n,
-                                                         float(s.rms_eps));
+        // without xn_out, xn is not written: the gated mean recomputes it from x and 1 / rms
+        float* xnw = xn_out ? xn : nullptr;
+        float* inv = xn_out ? nullptr : xn;   // [T][hc], in xn's space
+        const float* wn = static_cast<const float*>(w_norm.dev);
+        // with 4 streams, one block per token does the combine (if any), the norm and the inject
+        // product (4 outputs: a GEMM of its own ran at a fraction of bandwidth)
+        const bool fuse_inj = hc == 4 && w_inj && w_inj->rows() == 4;
+        if (hc == 4)
+            k_hc_combine_norm4<<<T, n / 4, 0, c.stream>>>(x, comb_out, comb_inject, wn, xnw, xb, n, float(s.rms_eps), inv,
+                                                         fuse_inj ? static_cast<const uint16_t*>(w_inj->dev) : nullptr, inject);
         else
-            k_grouped_rms_norm_v4<<<T * hc, n / 4, 0, c.stream>>>(x, static_cast<const float*>(w_norm.dev), xn, n, hc, float(s.rms_eps), xb);
+            k_grouped_rms_norm_v4<<<T * hc, n / 4, 0, c.stream>>>(x, wn, xnw, n, hc, float(s.rms_eps), xb, inv);
         gemm::gemm_bf16(w_down.dev, xb, lo, hcd, s.hc_rank, T, c.stream);
-        if (w_inj) gemm::gemm_bf16(w_inj->dev, xb, inject, hcd, w_inj->rows(), T, c.stream);
+        if (w_inj && !fuse_inj) gemm::gemm_bf16(w_inj->dev, xb, inject, hcd, w_inj->rows(), T, c.stream);
         k_scale_silu<<<(T * s.hc_rank + 255) / 256, 256, 0, c.stream>>>(lo, T * s.hc_rank, 1.0f / hc);
         linear(c, w_up, lo, gate, T);
-        k_gated_mean<<<dim3((n + 255) / 256, T), 256, 0, c.stream>>>(xn, gate, mixed, n, hc, T);
+        if (xn_out) k_gated_mean<<<dim3((n + 255) / 256, T), 256, 0, c.stream>>>(xn, gate, mixed, n, hc, T);
+        else k_gated_mean_x<<<dim3((n + 255) / 256, T), 256, 0, c.stream>>>(x, inv, wn, gate, mixed, n, hc, T);
         ck(cudaGetLastError(), "hc_mix");
         return;
     }
     if (v4)
-        k_grouped_rms_norm_v4<<<T * hc, n / 4, 0, c.stream>>>(x, static_cast<const float*>(w_norm.dev), xn, n, hc, float(s.rms_eps), nullptr);
+        k_grouped_rms_norm_v4<<<T * hc, n / 4, 0, c.stream>>>(x, static_cast<const float*>(w_norm.dev), xn, n, hc, float(s.rms_eps), nullptr,
+                                                             nullptr);
     else
         k_grouped_rms_norm<<<T * hc, 256, 0, c.stream>>>(x, static_cast<const float*>(w_norm.dev), xn, n, hc, float(s.rms_eps));
     linear(c, w_down, xn, lo, T);
