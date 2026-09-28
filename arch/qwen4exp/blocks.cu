@@ -325,18 +325,18 @@ __global__ void k_hc_up_mix(WU W, const float* part, int n_inject, float scale, 
     }
 }
 
-template <int TT, typename WF>
-void hc_fused_launch(const float* x, const float* w_norm, WF Wd, const uint16_t* Wi, WF Wu, float* xn, float* part, float* mixed,
+template <int TT, typename WD, typename WU>
+void hc_fused_launch(const float* x, const float* w_norm, WD Wd, const uint16_t* Wi, WU Wu, float* xn, float* part, float* mixed,
                      float* inject, int n, int hc, int rank, int n_inj, float eps, cudaStream_t st) {
     const int rows = rank + n_inj;
     const size_t smem = size_t(TT) * n * 4;
     static bool attr = false;
     if (!attr && smem > 48 * 1024) {
-        ck(cudaFuncSetAttribute(k_hc_down<TT, WF>, cudaFuncAttributeMaxDynamicSharedMemorySize, 96 * 1024), "hc_down smem");
+        ck(cudaFuncSetAttribute(k_hc_down<TT, WD>, cudaFuncAttributeMaxDynamicSharedMemorySize, 96 * 1024), "hc_down smem");
         attr = true;
     }
-    k_hc_down<TT, WF><<<dim3((rows + 15) / 16, hc), 512, smem, st>>>(x, w_norm, Wd, Wi, xn, part, n, rank, n_inj, eps);
-    k_hc_up_mix<TT, WF><<<(n + 7) / 8, 256, 0, st>>>(Wu, part, n_inj, 1.0f / hc, xn, mixed, inject, n, rank);
+    k_hc_down<TT, WD><<<dim3((rows + 15) / 16, hc), 512, smem, st>>>(x, w_norm, Wd, Wi, xn, part, n, rank, n_inj, eps);
+    k_hc_up_mix<TT, WU><<<(n + 7) / 8, 256, 0, st>>>(Wu, part, n_inj, 1.0f / hc, xn, mixed, inject, n, rank);
 }
 
 // Q8P (kTypeQ8P) -> BF16, for the hc paths that multiply BF16 (one thread per element)
@@ -803,8 +803,8 @@ void hc_mix_impl(const BlockCtx& c, int il, int which, float* x, const float* co
     constexpr uint32_t kBF16 = 30;   // GGML_TYPE_BF16
     // Q8P down/up (GpuWeights' hc conversion): the fused decode kernels read it directly; the other
     // paths multiply a BF16 copy dequantized into scratch below
-    const bool q8 = w_down.type == kTypeQ8P && w_up.type == kTypeQ8P;
-    const bool bf_or_q8 = (w_down.type == kBF16 && w_up.type == kBF16) || q8;
+    const bool q8d = w_down.type == kTypeQ8P, q8u = w_up.type == kTypeQ8P;
+    const bool bf_or_q8 = (w_down.type == kBF16 || q8d) && (w_up.type == kBF16 || q8u);
     const bool v4 = n % 4 == 0 && n / 4 <= 1024 && (n / 4) % 32 == 0;
     const bool prefill_bf16 = v4 && T >= kGemmMinTokens && bf_or_q8 && (!w_inj || w_inj->type == kBF16);
     if (comb_out && !(prefill_bf16 && hc == 4)) {   // not fused: the combine first
@@ -822,15 +822,15 @@ void hc_mix_impl(const BlockCtx& c, int il, int which, float* x, const float* co
             const int8_t* q = static_cast<const int8_t*>(t.dev);
             return WQ8P{q, reinterpret_cast<const __half*>(q + size_t(t.rows()) * t.cols())};
         };
+        auto bf = [](const GpuTensor& t) { return WBf16{static_cast<const uint16_t*>(t.dev)}; };
         auto run = [&](auto tt) {
             constexpr int TT = decltype(tt)::value;
-            if (q8)
-                hc_fused_launch<TT>(x, static_cast<const float*>(w_norm.dev), q8p(w_down), wi, q8p(w_up), xn, part, mixed, inject, n, hc,
-                                    s.hc_rank, n_inj, float(s.rms_eps), c.stream);
-            else
-                hc_fused_launch<TT>(x, static_cast<const float*>(w_norm.dev), WBf16{static_cast<const uint16_t*>(w_down.dev)}, wi,
-                                    WBf16{static_cast<const uint16_t*>(w_up.dev)}, xn, part, mixed, inject, n, hc, s.hc_rank, n_inj,
-                                    float(s.rms_eps), c.stream);
+            const float* wn = static_cast<const float*>(w_norm.dev);
+            const float eps = float(s.rms_eps);
+            if (q8d && q8u) hc_fused_launch<TT>(x, wn, q8p(w_down), wi, q8p(w_up), xn, part, mixed, inject, n, hc, s.hc_rank, n_inj, eps, c.stream);
+            else if (q8d) hc_fused_launch<TT>(x, wn, q8p(w_down), wi, bf(w_up), xn, part, mixed, inject, n, hc, s.hc_rank, n_inj, eps, c.stream);
+            else if (q8u) hc_fused_launch<TT>(x, wn, bf(w_down), wi, q8p(w_up), xn, part, mixed, inject, n, hc, s.hc_rank, n_inj, eps, c.stream);
+            else hc_fused_launch<TT>(x, wn, bf(w_down), wi, bf(w_up), xn, part, mixed, inject, n, hc, s.hc_rank, n_inj, eps, c.stream);
         };
         switch (T) {
             case 1: run(std::integral_constant<int, 1>{}); break;
@@ -842,7 +842,7 @@ void hc_mix_impl(const BlockCtx& c, int il, int which, float* x, const float* co
         return;
     }
     GpuTensor down_bf, up_bf;   // Q8P down/up dequantized for the paths below
-    if (q8) {
+    if (q8d || q8u) {
         auto deq = [&](const GpuTensor& t, void* dst, GpuTensor& out) {
             const size_t ne = size_t(t.rows()) * t.cols();
             const int8_t* q = static_cast<const int8_t*>(t.dev);
@@ -855,11 +855,11 @@ void hc_mix_impl(const BlockCtx& c, int il, int which, float* x, const float* co
         };
         const size_t nd = size_t(w_down.rows()) * w_down.cols(), nu = size_t(w_up.rows()) * w_up.cols();
         if (c.scratch.hc_bf16_bytes < (nd + nu) * 2) throw std::runtime_error("hc_mix: hc BF16 scratch too small");
-        deq(w_down, c.scratch.hc_bf16, down_bf);
-        deq(w_up, static_cast<char*>(c.scratch.hc_bf16) + nd * 2, up_bf);
+        if (q8d) deq(w_down, c.scratch.hc_bf16, down_bf);
+        if (q8u) deq(w_up, static_cast<char*>(c.scratch.hc_bf16) + nd * 2, up_bf);
     }
-    const GpuTensor& wd = q8 ? down_bf : w_down;
-    const GpuTensor& wu = q8 ? up_bf : w_up;
+    const GpuTensor& wd = q8d ? down_bf : w_down;
+    const GpuTensor& wu = q8u ? up_bf : w_up;
     if (prefill_bf16) {
         // prefill: the norm writes xn in BF16 too, into the GEMM workspace, and the down and inject
         // products read it there (before the up product, which reuses that space)
