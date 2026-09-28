@@ -594,16 +594,23 @@ __global__ void k_gated_rms_norm(const float* o, const float* w, const float* z,
 
 }  // namespace
 
+namespace {
+// enough for the widest per-token intermediates of any block (hc_dim-wide norm output, gate,
+// etc.) several times over
+size_t scratch_f32_elems(const Spec& s, int max_tokens) { return size_t(max_tokens) * size_t(s.hc_count) * s.d_model * 5 + (size_t(1) << 20); }
+size_t scratch_q8_bytes(const Spec& s) { return gemv::q8_1_bytes(std::max<int64_t>(int64_t(s.hc_count) * s.d_model, s.ssm_inner * 2), 8); }
+}  // namespace
+
 BlockScratch alloc_block_scratch(const Spec& s, int max_tokens) {
     BlockScratch b;
-    // enough for the widest per-token intermediates of any block (hc_dim-wide norm output,
-    // gate, etc.) several times over
-    b.f32_elems = size_t(max_tokens) * size_t(s.hc_count) * s.d_model * 5 + (size_t(1) << 20);
+    b.f32_elems = scratch_f32_elems(s, max_tokens);
     ck(cudaMalloc(&b.f32, b.f32_elems * 4), "cudaMalloc block scratch");
-    b.q8_bytes = gemv::q8_1_bytes(std::max<int64_t>(int64_t(s.hc_count) * s.d_model, s.ssm_inner * 2), 8);
+    b.q8_bytes = scratch_q8_bytes(s);
     ck(cudaMalloc(&b.q8, b.q8_bytes), "cudaMalloc q8 scratch");
     return b;
 }
+
+size_t block_scratch_bytes(const Spec& s, int max_tokens) { return scratch_f32_elems(s, max_tokens) * 4 + scratch_q8_bytes(s); }
 
 void free_block_scratch(BlockScratch& b) {
     if (b.f32) cudaFree(b.f32);

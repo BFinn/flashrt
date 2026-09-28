@@ -74,7 +74,7 @@ struct Ws {
     char* act;
     int32_t *ids_src1, *ids_dst, *bounds, *group;
 };
-Ws carve(void* ws, size_t ws_bytes, int64_t ncols, int64_t rows) {
+Ws carve(void* ws, size_t ws_bytes, int64_t ncols, int64_t rows, bool bf16) {
     Ws w;
     char* p = static_cast<char*>(ws);
     w.fixup = reinterpret_cast<float*>(p);
@@ -82,7 +82,7 @@ Ws carve(void* ws, size_t ws_bytes, int64_t ncols, int64_t rows) {
     w.act = p;
     const int64_t padded = GGML_PAD(ncols, MATRIX_ROW_PADDING);
     const size_t act = std::max<size_t>(size_t(rows) * padded * sizeof(block_q8_1_mmq) / QK8_1_MMQ + 128 * sizeof(block_q8_1_mmq),
-                                        size_t(rows) * ncols * 2);
+                                        bf16 ? size_t(rows) * ncols * 2 : 0);
     p += up256(act);
     w.ids_src1 = reinterpret_cast<int32_t*>(p);
     p += up256(size_t(rows) * 4);
@@ -199,17 +199,17 @@ __global__ void k_to_bf16(const float* x, __nv_bfloat16* y, size_t n) {
 
 bool supported(uint32_t t) { return info(t).blck > 0 || t == GGML_TYPE_BF16 || t == GGML_TYPE_F32; }
 
-size_t workspace_bytes(int64_t ncols, int64_t rows) {
+size_t workspace_bytes(int64_t ncols, int64_t rows, bool bf16) {
     const int64_t padded = GGML_PAD(ncols, MATRIX_ROW_PADDING);
     const size_t act = std::max<size_t>(size_t(rows) * padded * sizeof(block_q8_1_mmq) / QK8_1_MMQ + 128 * sizeof(block_q8_1_mmq),
-                                        size_t(rows) * ncols * 2);
+                                        bf16 ? size_t(rows) * ncols * 2 : 0);
     return up256(fixup_bytes()) + up256(act) + 2 * up256(size_t(rows) * 4) + up256(4096 * 4) +
            up256(size_t(group_blocks(rows)) * kGroupMaxExperts * 4);
 }
 
 void gemm(uint32_t t, const void* W, const float* x, float* y, int64_t ncols, int64_t nrows, int64_t T, void* ws, size_t ws_bytes,
           cudaStream_t stream) {
-    Ws w = carve(ws, ws_bytes, ncols, T);
+    Ws w = carve(ws, ws_bytes, ncols, T, t == GGML_TYPE_BF16);
     if (t == GGML_TYPE_BF16 || t == GGML_TYPE_F32) {
         cublasHandle_t h = cublas();
         cublasSetStream(h, stream);
@@ -252,7 +252,7 @@ void gemm_bf16(const void* W, const void* x_bf16, float* y, int64_t ncols, int64
     if (st != CUBLAS_STATUS_SUCCESS) throw std::runtime_error("gemm_bf16: cuBLAS failed (" + std::to_string(int(st)) + ")");
 }
 
-void* bf16_staging(void* ws, size_t ws_bytes, int64_t ncols, int64_t T) { return carve(ws, ws_bytes, ncols, T).act; }
+void* bf16_staging(void* ws, size_t ws_bytes, int64_t ncols, int64_t T) { return carve(ws, ws_bytes, ncols, T, true).act; }
 
 MoePlan moe_prepare(uint32_t t, int E, const float* x, bool x_per_slot, const int32_t* ids, int64_t T, int K, int64_t ncols, void* ws,
                     size_t ws_bytes, cudaStream_t stream) {
@@ -266,7 +266,7 @@ MoePlan moe_prepare(uint32_t t, int E, const float* x, bool x_per_slot, const in
     p.ncols = ncols;
     p.rows = T * K;
     p.ne11 = x_per_slot ? K : 1;
-    Ws w = carve(ws, ws_bytes, ncols, p.rows);
+    Ws w = carve(ws, ws_bytes, ncols, p.rows, false);
     const int64_t padded = GGML_PAD(ncols, MATRIX_ROW_PADDING);
     const bool dedup = p.ne11 == 1 && K > 1;
     {

@@ -114,6 +114,30 @@ struct ExpertStream {
     size_t total = 0;
 };
 
+size_t expert_stream_bytes_for(const Spec& s, const ExpertArena& arena, int max_tokens) {
+    const size_t E = s.n_expert, K = s.top_k, n = s.d_model, ff = s.d_ff_expert, ffs = s.d_ff_shared, T = size_t(max_tokens);
+    const size_t gu = E * ff * (n / 64) * 18, dn = E * n * (ff / 64) * 18;
+    const size_t pieces[] = {E * arena.stride,
+                             E * arena.stride,
+                             gu + gemv::kWeightTailPad,
+                             gu + gemv::kWeightTailPad,
+                             dn + gemv::kWeightTailPad,
+                             T * E * 4,
+                             T * K * 4,
+                             T * K * 4,
+                             T * K * ff * 4,
+                             T * K * ff * 4,
+                             T * K * n * 4,
+                             T * ffs * 4,
+                             T * ffs * 4,
+                             T * n * 4,
+                             T * 4,
+                             gemm::workspace_bytes(int64_t(std::max(n, ff)), int64_t(T * K), false)};
+    size_t tot = 0;
+    for (size_t p : pieces) tot += p + 256;
+    return tot;
+}
+
 ExpertStream* create_expert_stream(const Spec& s, const ExpertArena& arena, int max_tokens) {
     auto* es = new ExpertStream;
     es->s = &s;
@@ -143,8 +167,9 @@ ExpertStream* create_expert_stream(const Spec& s, const ExpertArena& arena, int 
     es->su = dalloc<float>(T * ffs, tot);
     es->sh = dalloc<float>(T * n, tot);
     es->gate = dalloc<float>(T, tot);
-    es->ws_bytes = gemm::workspace_bytes(std::max(n, ff), int64_t(T) * K);
+    es->ws_bytes = gemm::workspace_bytes(std::max(n, ff), int64_t(T) * K, false);   // Q8_1 activations only
     es->ws = dalloc<uint8_t>(es->ws_bytes, tot);
+    if (tot != expert_stream_bytes_for(s, arena, max_tokens)) throw std::logic_error("expert_stream_bytes_for is out of date");
     ck(cudaStreamCreateWithFlags(&es->copy, cudaStreamNonBlocking), "cudaStreamCreate expert copy");
     for (int b = 0; b < 2; ++b) {
         ck(cudaEventCreateWithFlags(&es->uploaded[b], cudaEventDisableTiming), "cudaEventCreate");

@@ -48,6 +48,7 @@ struct BlockScratch {
     size_t tok_cap = 0;
 };
 BlockScratch alloc_block_scratch(const Spec& s, int max_tokens);
+size_t block_scratch_bytes(const Spec& s, int max_tokens);   // what alloc_block_scratch takes
 // The addresses a captured graph bakes in: a graph is stale once any of them changes (a
 // scratch that grows is reallocated).
 inline bool same_buffers(const BlockScratch& a, const BlockScratch& b) {

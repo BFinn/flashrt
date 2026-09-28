@@ -22,8 +22,9 @@ namespace flashrt::gemm {
 bool supported(uint32_t ggml_type);
 
 // Device workspace one call needs (activations in MMQ's Q8_1 layout or BF16, routing lists,
-// the stream-k fixup). For moe(), T is tokens * experts per token.
-size_t workspace_bytes(int64_t ncols, int64_t T);
+// the stream-k fixup). For moe(), T is tokens * experts per token. bf16 = false: no room for
+// BF16 activations (enough for quantized types and moe()).
+size_t workspace_bytes(int64_t ncols, int64_t T, bool bf16 = true);
 
 // y = W x for T tokens.
 void gemm(uint32_t ggml_type, const void* W, const float* x, float* y, int64_t ncols, int64_t nrows, int64_t T, void* ws,

@@ -282,10 +282,14 @@ GenerateResult Session::generate(const GenerateRequest& r, const std::function<v
     // of it; then the last token alone, for its logits
     const int from = int(m.seq.size());
     const bool chunked = n - 1 - from >= m.o.chunk_min;
-    const int step = chunked ? m.o.prefill_chunk : m.o.prefill_batch;
+    int step = m.o.prefill_batch;
     if (chunked) {   // experts stream to the GPU; the expert cache's memory is lent to the chunks
         m.cache_release();
         m.fwd->set_prefill_lookahead(P.data(), n - 1);
+        size_t free_b = 0, total_b = 0;
+        ck(cudaMemGetInfo(&free_b, &total_b), "cudaMemGetInfo");
+        step = m.o.prefill_chunk > 0 ? m.o.prefill_chunk : m.fwd->pick_chunk(n - 1 - from, n - 1, free_b, m.o.prefill_chunk_max);
+        std::fprintf(stderr, "flashrt: prefill of %d tokens in chunks of %d (%zu MiB free)\n", n - 1 - from, step, free_b >> 20);
     }
     for (int p = from; p < n - 1; p += step) {
         const int T = std::min(step, n - 1 - p);

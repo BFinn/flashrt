@@ -31,7 +31,8 @@
 // first draft whose probability under the head is below P (then fewer than K are verified;
 // none if the first is below P).
 // --prefill-chunk C prefills C tokens per call (default 64: the CPU reference path; above 64 the
-// chunk path with the experts streamed to the GPU).
+// chunk path with the experts streamed to the GPU); "auto" picks the longest chunk the free VRAM
+// holds (up to 16,384), as flashrt-engine does.
 // --save-counts FILE writes the prefill's routing counts (use --count-half-life 0 for a whole
 // corpus): a cache prior for flashrt-engine --cache-prior.
 // --temp T [--top-k K] [--top-p P] [--min-p M] [--seed S] samples instead of greedy decoding
@@ -129,7 +130,10 @@ int main(int argc, char** argv) {
         else if (a == "--seed") seed = std::strtoull(next(), nullptr, 10);
         else if (a == "--dist-test") dist_test = std::atoi(next());
         else if (a == "--save-counts") save_counts = next();
-        else if (a == "--prefill-chunk") chunk = std::max(1, std::atoi(next()));
+        else if (a == "--prefill-chunk") {   // a length, or "auto": the longest that fits the free VRAM (ForwardRef::pick_chunk)
+            const std::string v = next();
+            chunk = v == "auto" ? 0 : std::max(1, std::atoi(v.c_str()));
+        }
         else { std::fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
     }
     std::vector<int32_t> seq;
@@ -215,6 +219,10 @@ int main(int argc, char** argv) {
         size_t fr = 0, tot = 0;
         cudaMemGetInfo(&fr, &tot);
         std::printf("VRAM before prefill: %zu MiB free\n", fr >> 20);
+        if (chunk == 0) {
+            chunk = fwd.pick_chunk(n_prompt, n_prompt, fr);
+            std::printf("prefill chunk: %d tokens (auto; estimated %zu MiB)\n", chunk, fwd.chunk_bytes(chunk, n_prompt) >> 20);
+        }
     }
     const auto tp = Clock::now();
     if (!load_state.empty()) {

@@ -3,6 +3,7 @@
 
 #include "core/gguf.hpp"
 #include "core/platform.hpp"
+#include "kernels/cuda/ggml_gemm.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -387,6 +388,33 @@ size_t ForwardRef::chunk_buffer_bytes() const {
     if (!chunk_.cap) return 0;
     const size_t n = s_.d_model, hc = s_.hc_count, B = size_t(chunk_.cap);
     return expert_stream_bytes(estream_) + chunk_.scratch.f32_elems * 4 + chunk_.scratch.q8_bytes + B * (6 * n + hc * n + hc) * 4;
+}
+
+size_t ForwardRef::chunk_bytes(int T, int end_pos) const {
+    const Spec& s = s_;
+    const size_t n = s.d_model, hc = s.hc_count, B = size_t(T);
+    size_t b = block_scratch_bytes(s, T) + B * (6 * n + hc * n + hc) * 4;   // alloc_bufs
+    b += expert_stream_bytes_for(s, *moe_host_.arena, T);
+    b += gemm::workspace_bytes(int64_t(hc * n), T);                        // linear(): the widest input is the hc norm's
+    b += size_t(s.n_layer) * s.n_expert * 4;                               // routing counts
+    const int r = s.qsa_block, ldc = (s.idx_top_k + 2 * r - 2) / r * r;
+    b += size_t(128) * (end_pos / r) * 8 + size_t(128) * ldc * 8;           // QSA sub-batches: scores, cell lists
+    for (int il : s.qsa_layers)
+        if (kv_[il].hot_blocks) {   // the VRAM mirror: K, V and their scales up to end_pos
+            const size_t m = size_t(end_pos) * s.n_head_kv * s.head_dim_k;
+            b += 2 * m + m / 8;
+        }
+    return b + b / 32 + (size_t(64) << 20);   // allocator rounding, the Q3_K weight copy
+}
+
+int ForwardRef::pick_chunk(int n, int end_pos, size_t free_bytes, int max_chunk) const {
+    if (n <= max_batch_) return n;
+    const size_t avail = free_bytes - std::min(free_bytes, size_t(256) << 20);
+    int c = std::min(max_chunk, n);
+    while (c > 1024 && chunk_bytes(c, end_pos) > avail) c = (c - 1) / 1024 * 1024;
+    c = std::max(c, std::min(n, max_batch_ + 1));
+    const int k = (n + c - 1) / c;
+    return std::min(c, ((n + k - 1) / k + 255) / 256 * 256);
 }
 
 void ForwardRef::forward(const int32_t* seq, int T, int out_from, float* logits_dev) {

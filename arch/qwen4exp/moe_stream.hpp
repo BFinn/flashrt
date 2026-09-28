@@ -23,6 +23,8 @@ struct ExpertStream;
 ExpertStream* create_expert_stream(const Spec& s, const ExpertArena& arena, int max_tokens);
 void destroy_expert_stream(ExpertStream* es);
 size_t expert_stream_bytes(const ExpertStream* es);   // device memory held
+// What create_expert_stream(s, arena, max_tokens) allocates.
+size_t expert_stream_bytes_for(const Spec& s, const ExpertArena& arena, int max_tokens);
 
 // Starts copying layer il's experts into the free slice buffer (on the stream's own copy
 // stream); moe_block_stream does it for the next layer, so a chunk only waits for its first.

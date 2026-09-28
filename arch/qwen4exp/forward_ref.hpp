@@ -49,6 +49,14 @@ public:
     void forward(const int32_t* seq, int T, int out_from, float* logits_dev);
     void release_chunk_buffers();
     size_t chunk_buffer_bytes() const;
+    // Device memory a prefill chunk of T tokens takes, for a prompt ending at end_pos: its
+    // buffers, the expert stream, the scratch its products and QSA grow, and in hot-set mode the
+    // KV mirror (estimated from the allocation formulas, plus a margin).
+    size_t chunk_bytes(int T, int end_pos) const;
+    // A chunk length for n prompt tokens ending at end_pos: the largest (up to max_chunk, in steps
+    // of 1,024) whose chunk_bytes fit free_bytes less 256 MiB, then evened out over the chunks it
+    // takes. Longer chunks give each expert more tokens (fuller tensor-core tiles).
+    int pick_chunk(int n, int end_pos, size_t free_bytes, int max_chunk = 16384) const;
     // The whole prompt a run of chunks comes from (valid until the prefill ends, or nullptr):
     // while a chunk computes, the next chunk's n-gram rows are read from the SSD.
     void set_prefill_lookahead(const int32_t* seq, int n) {
