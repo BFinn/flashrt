@@ -34,12 +34,13 @@ __global__ void k_bench(int iters, unsigned seed, float* out) {
     for (int it = 0; it < iters; ++it) {
 #pragma unroll
         for (int t = 0; t < 8; ++t) {
+            const unsigned at[4] = {a[0] + t, a[1], a[2], a[3]};   // distinct per t: no merged MMAs
             if constexpr (MODE == 0) {
-                mma_acc(ci[t], a, b0, b1);
+                mma_acc(ci[t], at, b0, b1);
             } else if constexpr (MODE == 1) {
                 int c0[4], c1[4];
-                mma(c0, a, b0, b1);
-                mma(c1, a, b1, b0);
+                mma(c0, at, b0, b1);
+                mma(c1, at, b1, b0);
 #pragma unroll
                 for (int q = 0; q < 4; ++q) {
                     const float f0 = __int_as_float(c0[q] + m0) - 12582912.0f, f1 = __int_as_float(c1[q] + m0) - 12582912.0f;
@@ -47,8 +48,8 @@ __global__ void k_bench(int iters, unsigned seed, float* out) {
                 }
             } else {
                 int c[4];
-                mma(c, a, b0, b1);
-                mma_acc(c, a, b1, b0);
+                mma(c, at, b0, b1);
+                mma_acc(c, at, b1, b0);
 #pragma unroll
                 for (int q = 0; q < 4; ++q) acc[t][q] = fmaf(__int_as_float(c[q] + m0) - 12582912.0f, s0 * s1, acc[t][q]);
             }
