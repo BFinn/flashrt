@@ -27,13 +27,13 @@ struct SessionOptions {
     std::string mtp;                  // the MTP draft GGUF ("" = no speculation)
     std::string draft_vocab;          // token ranking for the head's trimmed LM head ("" = full)
     int draft_vocab_n = 32768;
-    int mtp_bits = 4;                 // the head's experts: 8, 4 or 2
+    int mtp_bits = 2;                 // the head's experts: 8, 4 or 2 (2 frees VRAM for cache slots; same acceptance, sw65)
     int spec_k = 2;                   // drafts per round (0 = plain decoding)
     int max_ctx = 262144;
     bool kv_q8 = true;
     int kv_hot = 4096;                // q8 host KV with this many GPU blocks per layer (0 = all in VRAM)
     int workers = 8;
-    int reserve_mib = 1024;           // VRAM left free after the expert cache
+    int reserve_mib = 256;            // VRAM left free after the expert cache (decode allocates little after it; sw64)
     int swap_budget = 8;
     int prefill_batch = 64;
     int prefill_chunk = 0;            // prompts adding at least chunk_min tokens prefill in chunks of this

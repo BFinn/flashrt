@@ -25,7 +25,7 @@
 // target then decodes). The decode tok/s includes the drafting. --spec K decodes speculatively
 // instead (greedy): each round the head drafts K tokens, the target verifies the window of K + 1
 // in one step, and the matching prefix plus the target's next token are kept. The head's experts
-// are Q4_0 (requantized at load; --mtp-bits 8 keeps the GGUF's Q8_0, 2 uses Q2_0). --draft-vocab RANKS (bench/mtp_vocab.py) trims
+// are Q2_0 (requantized at load; --mtp-bits 8 keeps the GGUF's Q8_0, 4 uses Q4_0). --draft-vocab RANKS (bench/mtp_vocab.py) trims
 // the drafter's LM head to the top --draft-vocab-n ranked tokens (default 32768) plus the
 // prompt's distinct tokens, at most 65536 rows. --draft-pmin P stops a round's drafting at the
 // first draft whose probability under the head is below P (then fewer than K are verified;
@@ -87,8 +87,8 @@ int main(int argc, char** argv) {
     sp.temperature = 0.0f;
     uint64_t seed = 1;
     int dist_test = 0;
-    int mtp_bits = 4;
-    int n_prompt = 1024, gen = 128, slots = 0, reserve_mib = 1024, workers = 8, windows = 1;
+    int mtp_bits = 2;
+    int n_prompt = 1024, gen = 128, slots = 0, reserve_mib = 256, workers = 8, windows = 1;
     bool teacher = false;
     bool reference = false, doorbell = true, adaptive = true;
     int swap_budget = 8;
