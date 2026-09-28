@@ -1,0 +1,36 @@
+expert arena registered in 1.8 s
+KV cache: q8_0, host-resident, hot set of 4096 blocks per layer
+MTP draft head: layer 48, 1449 MiB of weights in VRAM, 1 drafts per verify round
+VRAM before prefill: 10073 MiB free
+state: MTP head state loaded
+state: loaded $BENCH/state-32k-q8-mtp.bin (32767 positions) in 0.2 s
+MTP draft vocabulary: 33692 tokens (32768 ranked, 924 from the prompt)
+expert cache: 6817 slots (27.7% of experts), filled in 0.2 s from 10012 MiB free
+adaptive cache: decayed LFU, swap budget 8 (set up in 0.0 s)
+decode: 129 tokens at depth 32768 in 1.25 s: 103.36 tok/s (speculative, MTP drafts), window 1, hit rate 91.60%, swaps 277
+decode: 128 tokens at depth 32897 in 1.14 s: 111.86 tok/s (speculative, MTP drafts), window 2, hit rate 91.91%, swaps 558
+decode: 129 tokens at depth 33025 in 1.19 s: 108.73 tok/s (speculative, MTP drafts), window 3, hit rate 86.95%, swaps 991
+expert cache hit rate 90.19% (212981 hits, 23179 misses: 23179 on the CPU, 0 read over PCIe)
+host per token: 5.67 ms waiting for routing, 2.36 ms running misses
+misses per layer: count (share of layers) and mean host miss time
+   0 :  31.8%     1.1 us
+   1 :  26.8%    58.5 us
+   2 :  16.8%    92.1 us
+   3 :  10.4%   125.8 us
+   4 :   5.0%   161.9 us
+   5 :   3.0%   195.6 us
+   6 :   1.8%   235.5 us
+   7 :   1.4%   261.4 us
+   8 :   0.9%   273.8 us
+   9 :   0.8%   308.4 us
+  10 :   0.4%   342.3 us
+  11 :   0.3%   467.9 us
+  12 :   0.2%   403.7 us
+  13 :   0.2%   437.5 us
+  14 :   0.1%   468.1 us
+  15 :   0.0%   489.6 us
+  16+:   0.1%   545.3 us
+CUDA graphs: on (1 capture(s))
+speculative: 246 rounds, 1.569 tokens per round, 1.00 drafts verified per round; accepted drafts: 0:43.1% 1:56.9%
+  per round: draft 1.05 ms, verify 13.30 ms, commit 0.20 ms
+tokens: 5820 310 4255 2785 279 44798 1116 47494 1441 2859 321 69377 279 2342 2420 9600 641 4855 22950 557 23793 26601 303 279

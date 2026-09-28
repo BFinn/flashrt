@@ -1,0 +1,36 @@
+expert arena registered in 1.9 s
+KV cache: q8_0, host-resident, hot set of 4096 blocks per layer
+VRAM before prefill: 11747 MiB free
+state: loaded $BENCH/state-32k-q8-mtp.bin (32767 positions) in 0.2 s
+expert cache: 8132 slots (33.1% of experts), filled in 0.3 s from 11746 MiB free
+adaptive cache: decayed LFU, swap budget 8 (set up in 0.0 s)
+prefetch diag after 64 tokens: misses 8.71% of selections
+  top-10: recall attn-ahead 59.6% layer-ahead 68.1%; misses caught attn-ahead 57.6% layer-ahead 58.1%
+  top-12: recall attn-ahead 65.6% layer-ahead 74.1%; misses caught attn-ahead 64.6% layer-ahead 65.1%
+  top-16: recall attn-ahead 73.8% layer-ahead 81.1%; misses caught attn-ahead 73.0% layer-ahead 74.2%
+  top-24: recall attn-ahead 82.0% layer-ahead 87.2%; misses caught attn-ahead 81.0% layer-ahead 83.1%
+prefetch diag after 128 tokens: misses 6.94% of selections
+  top-10: recall attn-ahead 59.8% layer-ahead 68.4%; misses caught attn-ahead 52.5% layer-ahead 53.4%
+  top-12: recall attn-ahead 65.6% layer-ahead 74.2%; misses caught attn-ahead 59.1% layer-ahead 60.4%
+  top-16: recall attn-ahead 73.7% layer-ahead 81.3%; misses caught attn-ahead 68.1% layer-ahead 70.2%
+  top-24: recall attn-ahead 82.2% layer-ahead 87.2%; misses caught attn-ahead 77.4% layer-ahead 79.7%
+prefetch diag after 192 tokens: misses 6.28% of selections
+  top-10: recall attn-ahead 59.8% layer-ahead 68.2%; misses caught attn-ahead 49.5% layer-ahead 50.2%
+  top-12: recall attn-ahead 65.6% layer-ahead 74.0%; misses caught attn-ahead 56.2% layer-ahead 57.6%
+  top-16: recall attn-ahead 73.7% layer-ahead 81.0%; misses caught attn-ahead 65.4% layer-ahead 67.9%
+  top-24: recall attn-ahead 82.1% layer-ahead 87.1%; misses caught attn-ahead 75.2% layer-ahead 78.1%
+decode: 192 tokens at depth 32768 in 3.01 s: 63.68 tok/s (fast path, doorbell), swaps 339
+expert cache hit rate 93.72% (86372 hits, 5788 misses: 5788 on the CPU, 0 read over PCIe)
+host per token: 13.70 ms waiting for routing, 1.26 ms running misses
+misses per layer: count (share of layers) and mean host miss time
+   0 :  61.4%     0.5 us
+   1 :  23.7%    49.3 us
+   2 :   8.9%    76.0 us
+   3 :   3.7%   105.3 us
+   4 :   1.6%   136.6 us
+   5 :   0.5%   169.3 us
+   6 :   0.2%   202.0 us
+   7 :   0.0%   220.8 us
+  10 :   0.0%   393.9 us
+CUDA graphs: off (0 capture(s))
+tokens: 5820 310 4255 2785 279 44798 1116 47494 1441 2859 321 69377 279 2342 303 424 641 4855 22950 2512 279 87304 321 1018
