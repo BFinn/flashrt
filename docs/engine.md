@@ -30,7 +30,14 @@ per-experiment evidence is in `bench/results/2026-09-2*`, each folder with a REA
 
   Prefill runs **5,580 tok/s at 32K, 5,629 at 64K and 5,170-5,309 at 245K** (sw61); KLD
   0.0084-0.0087. Through the engine, a 32K prompt takes 7.9 s.
-- **Next:** cheaper verify windows.
+- **Decode round (2026-09-28, sw63-sw68):**
+  - A verify window's second token costs about 3.6 ms of kernels, mostly its own experts (sw63).
+  - Forecasting routing to prefetch misses does not pay: uploads compete with the CPU misses for
+    host DRAM (sw63).
+  - Capacity is the lever: the VRAM reserve is now 256 MiB, the head's experts Q2_0, and the hc
+    down matrices Q8P. Each is measured teacher-forced (`fr_bench --teacher`) at +2-5%, at no
+    KLD cost.
+- **Next:** see "Next steps".
 
 ## One decode token (fast path)
 
@@ -218,6 +225,8 @@ cache after, from the prefill's routing counts and the startup prior.
 | **Experts from the planar layout on own int8 kernels** | ggml's MMQ ran at about 57-77 TOPS, and the layout conversion, SwiGLU and quantization passes cost more. | sw55: 32K 4,019 → 5,111 tok/s, 245K 3,622 → 4,871; test_moe_q2 1.8e-4 against MMQ |
 | **hc traffic: no xn write, inject in the norm block, deferred combine** | The hc elementwise kernels were at bandwidth (about 2 s at 64K). | sw58, sw59: 5,156 → 5,432 tok/s |
 | **BF16 per-slot expert outputs and hc gate** | The per-slot outputs were 100 KB per token, written and read back; KLD unchanged within the spread. | sw59: 5,432 → 5,606 tok/s; 0.8 GB less at 16K chunks |
+| **Decode A/B runs teacher-forced** (`--teacher`) | With sampled text, other slot counts produce other text, whose hit rate moves 20 points; forced tokens route alike. | sw64 |
+| **More expert-cache slots: reserve 256 MiB, Q2_0 head, hc down Q8P** | Misses are bound by host DRAM, so fewer misses is the lever. | sw64 +2.5%, sw65 +5%, sw68 +2.3-2.6% |
 | **Chunk length from free VRAM** | Longer chunks fill the expert tiles better (+8.6% from 8K to 16K), but 16K does not fit beside 245K of KV. | sw52-sw54: 245K 3,362 → 3,623 tok/s |
 | **Sampling draws keyed by (seed, position)** | A position's sample is the same in a plain step and in a verify window, so speculative output can be checked against plain output token for token. | test_sample, sw31 |
 
@@ -251,6 +260,11 @@ cache after, from the prefill's routing counts and the startup prior.
   load-latency bound. (`test_moe_q2`)
 - **GDN with 4 accumulators or 8 lanes per column:** no gain (sw60). The kernel runs at about 3x
   its instruction-issue estimate for reasons not found without performance counters.
+- **Prefetching forecast experts** (layer L's router on layer L-1's output): top-16 catches
+  66-68% of misses, but uploads read host DRAM, the CPU misses' bottleneck, about twice per miss
+  removed. (sw63)
+- **The hc up matrices as Q8P:** +5% at 32K, but KLD +0.0011 (the down matrices convert free).
+  Opt-in: `FLASHRT_HC_Q8=1`. (sw66, sw67)
 - **Attention over groups of adjacent tokens:** their selections overlap too little (4 tokens:
   union 1.72x one list), and building the union per group costs about what a CTA does now. (sw60)
 
