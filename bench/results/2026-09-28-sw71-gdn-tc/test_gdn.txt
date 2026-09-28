@@ -1,0 +1,3 @@
+T  1000: outputs 4.97e-04, final state 4.14e-04 relative ok; column 0.42 ms, chunked 0.24 ms
+T  3000: outputs 4.98e-04, final state 4.02e-04 relative ok; column 1.24 ms, chunked 0.71 ms
+all passed

@@ -1481,9 +1481,9 @@ void gdn_mixer(const BlockCtx& c, int il, const float* x, int T, GdnState& st, f
         const char* e = std::getenv("FLASHRT_GDN_COL");
         return !(e && e[0] == '0');
     }();
-    static const bool chunk_on = [] {   // FLASHRT_GDN_CHUNK=1: the chunked form (exact, but 5x slower in fp32: sw70)
+    static const bool chunk_on = [] {   // the chunked form on tensor cores (sw71); FLASHRT_GDN_CHUNK=0: the column kernel
         const char* e = std::getenv("FLASHRT_GDN_CHUNK");
-        return e && e[0] == '1';
+        return !(e && e[0] == '0');
     }();
     if (dk == 128 && T >= kGdnChunk && !win && chunk_on) {   // prefill: the chunked form
         BlockScratch& bs = c.scratch;
