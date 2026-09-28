@@ -21,6 +21,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <map>
 #include <random>
 #include <string>
@@ -64,8 +65,14 @@ double rel(const std::vector<float>& a, const std::vector<float>& b) {
 }  // namespace
 
 int main(int argc, char** argv) {
-    if (argc < 2) { std::fprintf(stderr, "usage: test_gemm MODEL.gguf\n"); return 2; }
-    const Gguf g = Gguf::open(argv[1]);
+    // the model file: the argument, else FLASHRT_TEST_MODEL; without one the test is skipped
+    // (exit 77, ctest's SKIP_RETURN_CODE)
+    const char* model = argc > 1 ? argv[1] : std::getenv("FLASHRT_TEST_MODEL");
+    if (!model || !*model) {
+        std::fprintf(stderr, "test_gemm: no model (pass MODEL.gguf or set FLASHRT_TEST_MODEL); skipped\n");
+        return 77;
+    }
+    const Gguf g = Gguf::open(model);
     const int T = 200;
     std::mt19937 rng(3);
     std::normal_distribution<float> nd(0.0f, 1.0f);
