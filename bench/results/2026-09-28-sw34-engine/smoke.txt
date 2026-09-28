@@ -1,0 +1,7 @@
+flashrt: qwen4exp, 48 layers, expert cache 6829 slots (27.8%), MTP drafts 2 per round
+ready after 22.2 s: {'ev': 'ready', 'version': '0.1.0', 'arch': 'qwen4exp', 'max_context': 32768, 'features': ['stop', 'sampling', 'prefix_reuse', 'mtp']}
+r1: prompt 2048 (reused 0) in 18.9 s, 96 tokens in 0.88 s (109.0 tok/s), finish length, drafts {'proposed': 102, 'accepted': 44}, first tokens [279, 58773, 26183, 593, 12694, 276, 2982, 2502]
+r2: prompt 2176 (reused 2143) in 0.3 s, 96 tokens in 0.84 s (114.7 tok/s), finish length, drafts {'proposed': 102, 'accepted': 45}, first tokens [20, 641, 733, 220, 22, 18, 21, 551]
+r3: prompt 2192 (reused 2176) in 0.2 s, 96 tokens in 0.80 s (120.0 tok/s), finish length, drafts {'proposed': 96, 'accepted': 48}, first tokens [359, 276, 641, 695, 1216, 4490, 1116, 1495]
+r4: prompt 2048 (reused 0) in 16.4 s, 8 tokens in 0.07 s (117.9 tok/s), finish cancelled, drafts {'proposed': 8, 'accepted': 3}, first tokens [279, 58773, 26183, 593, 12694, 276, 2982, 2502]
+engine exited with 0

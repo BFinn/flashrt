@@ -1,0 +1,37 @@
+KV cache: q8_0, host-resident, hot set of 4096 blocks per layer
+MTP draft head: layer 48, 774 MiB of weights in VRAM, 2 drafts per verify round
+state: MTP head state loaded
+state: loaded $BENCH/state-32k-q8-mtp.bin (32767 positions) in 0.2 s
+MTP draft vocabulary: 33692 tokens (32768 ranked, 924 from the prompt)
+expert cache: 7383 slots (30.0% of experts), filled in 0.7 s from 10758 MiB free
+adaptive cache: decayed LFU, swap budget 8 (arena registered in 1.6 s)
+decode: 128 tokens at depth 32768 in 1.21 s: 105.69 tok/s (speculative, MTP drafts), window 1, hit rate 93.05%, swaps 194
+decode: 128 tokens at depth 32896 in 1.34 s: 95.43 tok/s (speculative, MTP drafts), window 2, hit rate 93.18%, swaps 470
+decode: 128 tokens at depth 33024 in 1.30 s: 98.46 tok/s (speculative, MTP drafts), window 3, hit rate 86.07%, swaps 875
+decode: 128 tokens at depth 33152 in 1.03 s: 124.85 tok/s (speculative, MTP drafts), window 4, hit rate 85.27%, swaps 1268
+decode: 130 tokens at depth 33280 in 1.16 s: 112.32 tok/s (speculative, MTP drafts), window 5, hit rate 90.60%, swaps 1665
+decode: 128 tokens at depth 33410 in 1.21 s: 106.05 tok/s (speculative, MTP drafts), window 6, hit rate 91.84%, swaps 1993
+expert cache hit rate 90.33% (560615 hits, 60025 misses: 60025 on the CPU, 0 read over PCIe)
+host per token: 5.47 ms waiting for routing, 2.82 ms running misses
+misses per layer: count (share of layers) and mean host miss time
+   0 :  21.3%     1.3 us
+   1 :  22.1%    61.6 us
+   2 :  17.4%    92.9 us
+   3 :  13.1%   127.9 us
+   4 :   9.1%   159.0 us
+   5 :   5.9%   193.4 us
+   6 :   3.8%   225.0 us
+   7 :   2.6%   256.4 us
+   8 :   1.6%   288.8 us
+   9 :   1.1%   322.0 us
+  10 :   0.7%   354.1 us
+  11 :   0.5%   386.8 us
+  12 :   0.3%   416.8 us
+  13 :   0.2%   450.3 us
+  14 :   0.1%   478.6 us
+  15 :   0.1%   512.5 us
+  16+:   0.3%   596.9 us
+CUDA graphs: on (1 capture(s))
+speculative: 431 rounds, 1.787 tokens per round, 2.00 drafts verified per round; accepted drafts: 0:48.5% 1:24.4% 2:27.1%
+  per round: draft 0.96 ms, verify 15.49 ms, commit 0.35 ms
+tokens: 5820 24304 383 279 44798 641 561 2201 2859 13496 1142 440 836 8545 9600 321 16693 310 3222 836 9599 1116 694 4970

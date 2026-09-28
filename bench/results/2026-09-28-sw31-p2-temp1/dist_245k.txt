@@ -1,0 +1,11 @@
+KV cache: q8_0, host-resident, hot set of 4096 blocks per layer
+MTP draft head: layer 48, 1449 MiB of weights in VRAM, 2 drafts per verify round
+state: MTP head state loaded
+state: loaded $BENCH/state-245k-q8-mtp.bin (245759 positions) in 1.4 s
+MTP draft vocabulary: 39015 tokens (32768 ranked, 6247 from the prompt)
+expert cache: 6600 slots (26.9% of experts), filled in 0.7 s from 9726 MiB free
+adaptive cache: decayed LFU, swap budget 8 (arena registered in 1.8 s)
+distribution test: 300 seeds at position 245761, 2 drafts; first token equal in 300 (100.00%), histogram TV 0.0000; second token emitted in 59, equal in 59 of 59
+terminate called after throwing an instance of 'std::runtime_error'
+  what():  draft chain: an illegal memory access was encountered
+timeout: the monitored command dumped core

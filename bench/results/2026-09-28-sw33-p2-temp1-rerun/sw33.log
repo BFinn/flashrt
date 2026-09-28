@@ -1,0 +1,9 @@
+kld win3 rc=0
+spec2_q2_t1_32k rc=0
+spec2_q2_t1_245k rc=0
+spec1_q2_t1_245k rc=0
+spec3_q2_g_245k rc=0
+spec2_t1_32k rc=0
+spec2_t1_245k rc=0
+dist_245k rc=0
+spec2_t1_w11_245k rc=0

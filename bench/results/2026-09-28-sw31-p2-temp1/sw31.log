@@ -1,0 +1,18 @@
+spec2_chain_2k rc=0
+dist_2k rc=0
+spec2_q2_2k rc=0
+spec2_t1_32k_fresh rc=0
+plain_t1_32k rc=0
+spec1_t1_32k rc=0
+$BENCH/sw31.sh: line 11: 1057542 Aborted                 timeout 2400 $B/fr_bench $M --ids $I "$@" > $O/$name.txt 2>&1
+spec2_t1_32k rc=134
+plain_t1_245k rc=0
+spec1_t1_245k rc=0
+$BENCH/sw31.sh: line 11: 1060911 Aborted                 timeout 2400 $B/fr_bench $M --ids $I "$@" > $O/$name.txt 2>&1
+spec2_t1_245k rc=134
+spec2_g_245k rc=0
+$BENCH/sw31.sh: line 11: 1062934 Aborted                 timeout 2400 $B/fr_bench $M --ids $I "$@" > $O/$name.txt 2>&1
+dist_245k rc=134
+spec2_w11_2k rc=0
+$BENCH/sw31.sh: line 11: 1065912 Aborted                 timeout 2400 $B/fr_bench $M --ids $I "$@" > $O/$name.txt 2>&1
+spec2_t1_w11_245k rc=134
