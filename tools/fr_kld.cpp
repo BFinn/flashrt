@@ -126,6 +126,12 @@ int main(int argc, char** argv) {
     for (int ch = 0; ch < chunks; ++ch) {
         const int32_t* seq = tokens.data() + size_t(ch) * ctx;
         fwd.reset();
+        if (fast && pstep > batch && cache.slots) {   // the chunks' buffers need the expert cache's VRAM: lend it, rebuild after
+            fwd.set_cache_manager(nullptr);
+            destroy_cache_manager(mgr);
+            mgr = nullptr;
+            free_expert_cache(cache);
+        }
         // steps (p0, T): batches, or in --fast mode batches up to `first` and then single tokens
         std::vector<std::pair<int, int>> steps;
         for (int p0 = 0; p0 < (fast ? first : ctx); p0 += pstep) steps.push_back({p0, std::min(pstep, (fast ? first : ctx) - p0)});
@@ -141,7 +147,7 @@ int main(int argc, char** argv) {
         for (size_t si = 0; si < steps.size(); ++si) {
             const int p0 = steps[si].first, j_real = steps[si].second < 0 ? -steps[si].second : 0;
             const int T = j_real ? j_real : steps[si].second;
-            if (fast && p0 == first && !host.doorbell) {   // chunk 0's prefill is done: fill the cache, start the fast path
+            if (fast && p0 == first && !cache.slots) {   // the prefill is done: fill the cache, start the fast path
                 fwd.release_chunk_buffers();   // the expert cache takes that VRAM
                 size_t free_b = 0, total_b = 0;
                 cudaMemGetInfo(&free_b, &total_b);
@@ -155,13 +161,15 @@ int main(int argc, char** argv) {
                 for (int i : idx) order.push_back({i / s.n_expert, i % s.n_expert});
                 cache = alloc_expert_cache(s, slots);
                 expert_cache_fill(s, cache, arena, order, fwd.stream());
-                host = alloc_moe_fast_host(s, std::max(1, window));
-                host.arena = &arena;
-                host.pool = &pool;
-                start_doorbell(s, host, cpus[0]);
-                pin_current_thread(cpus[8 % cpus.size()]);
-                pool.set_spin_us(2000);
-                if (pcie_frac > 0) enable_pcie_misses(host, arena, pcie_frac, 4);
+                if (!host.doorbell) {
+                    host = alloc_moe_fast_host(s, std::max(1, window));
+                    host.arena = &arena;
+                    host.pool = &pool;
+                    start_doorbell(s, host, cpus[0]);
+                    pin_current_thread(cpus[8 % cpus.size()]);
+                    pool.set_spin_us(2000);
+                    if (pcie_frac > 0) enable_pcie_misses(host, arena, pcie_frac, 4);
+                }
                 fwd.set_fast_moe(&cache, &host);
                 if (adaptive) {
                     mgr = create_cache_manager(s, cache, arena, CachePolicyConfig{}, fwd.counts());
