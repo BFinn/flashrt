@@ -23,11 +23,14 @@ per-experiment evidence is in `bench/results/2026-09-2*`, each folder with a REA
   - BF16 activations written by the hyper-connection norm, flashrt's own expert grouping;
   - the arena registered at load.
 
-  - the chunk length chosen from free VRAM.
+  - the chunk length chosen from free VRAM;
+  - the routed experts on flashrt's own int8 kernels, straight from the planar arena layout
+    (`kernels/cuda/moe_q2.cu`);
+  - less hyper-connection traffic, and BF16 expert outputs and hc gate.
 
-  Prefill runs **4,006 tok/s at 32K and 3,549-3,623 at 245K** (chunks of 16,384 and about
-  10-11K); KLD 0.0082-0.0087. Through the engine, a 32K prompt takes 10.2 s.
-- **Next:** cheaper verify windows; for prefill, the expert MMQ (a third of it).
+  Prefill runs **5,580 tok/s at 32K, 5,629 at 64K and 5,170-5,309 at 245K** (sw61); KLD
+  0.0084-0.0087. Through the engine, a 32K prompt takes 7.9 s.
+- **Next:** cheaper verify windows.
 
 ## One decode token (fast path)
 
@@ -158,6 +161,23 @@ of KV. `fr_bench --prefill-chunk auto` does the same.
   products. The combine after the mixer is fused into the FFN mix's norm (`k_hc_combine_norm4`).
 - **Expert grouping** (`moe_prepare`) is flashrt's own: per-block histograms, a scan and a stable
   placement, O(T K). ggml's helper scanned every slot once per expert.
+- **The routed experts** (`moe_q2::run`) read the streamed planar Q2_0 slice directly: there is
+  no conversion to ggml's layout.
+  - One 32-bit load per lane gives both k-steps' `mma.m16n8k32` A fragments of a 64-weight block
+    (shifts 0/2/4/6).
+  - The codes enter the MMA unsigned; Q2_0's -1 is folded into each activation block's
+    `kMagic - sum`, which also turns int32 into float without I2F.
+  - Gate and up run in one kernel; its epilogue does SwiGLU and the int8 quantization of the
+    down input.
+  - Down keeps the tile's activations in shared memory and streams the weights over all row
+    tiles.
+  - The tile list is built on the GPU. Per-slot outputs are BF16.
+  - `FLASHRT_MOE_Q2MMA=0` switches back to the MMQ path.
+- **Hyper-connections in prefill:**
+  - the norm writes 1/rms, and the gated mean recomputes xn from x;
+  - one block per token does the combine, the norm and the 4-output inject product;
+  - the layer-end combine is deferred into the next layer's first mix;
+  - the up product writes the gate in BF16.
 - **The n-gram rows** of the next chunk are read from the SSD while a chunk computes.
 - **Routing counts** accumulate on the GPU and feed the expert cache after the prefill.
 
@@ -195,6 +215,9 @@ cache after, from the prefill's routing counts and the startup prior.
 | **Tensor-core indexer scores** | FP32 scoring is linear in depth: 1.65 s at 64K, an estimated 20 s at 245K. | sw49: 64K 2,984 → 3,197 tok/s; 0.16 s |
 | **BF16 from the hc norm; own expert grouping; hc combine fused into the norm** | The conversions cost as much as the BF16 GEMMs (1.17 s at 64K); ggml's grouping took 0.67 s. | sw48, sw51 (bit-identical) |
 | **The arena registered at load** | `cudaHostRegister` takes 1.8 s and fell into the first long prompt. | sw50 |
+| **Experts from the planar layout on own int8 kernels** | ggml's MMQ ran at about 57-77 TOPS, and the layout conversion, SwiGLU and quantization passes cost more. | sw55: 32K 4,019 → 5,111 tok/s, 245K 3,622 → 4,871; test_moe_q2 1.8e-4 against MMQ |
+| **hc traffic: no xn write, inject in the norm block, deferred combine** | The hc elementwise kernels were at bandwidth (about 2 s at 64K). | sw58, sw59: 5,156 → 5,432 tok/s |
+| **BF16 per-slot expert outputs and hc gate** | The per-slot outputs were 100 KB per token, written and read back; KLD unchanged within the spread. | sw59: 5,432 → 5,606 tok/s; 0.8 GB less at 16K chunks |
 | **Chunk length from free VRAM** | Longer chunks fill the expert tiles better (+8.6% from 8K to 16K), but 16K does not fit beside 245K of KV. | sw52-sw54: 245K 3,362 → 3,623 tok/s |
 | **Sampling draws keyed by (seed, position)** | A position's sample is the same in a plain step and in a verify window, so speculative output can be checked against plain output token for token. | test_sample, sw31 |
 
@@ -222,6 +245,14 @@ cache after, from the prefill's routing counts and the startup prior.
   than tile fill. (sw48)
 - **MMQ without stream-k for the expert calls:** not possible without patching ggml. The
   kernel's tiling is chosen at compile time, and stream-k already spreads the experts evenly.
+- **Activation scales per 64 in moe_q2** (`FLASHRT_MOE_AB64=1`): +2.3% at 32K, but KLD +0.0003
+  (fp16) and +0.0007 (q8), outside the spread. Kept off. (sw57)
+- **More pipeline stages for moe_q2's gate/up** (3 or 4): no change. The kernel is not
+  load-latency bound. (`test_moe_q2`)
+- **GDN with 4 accumulators or 8 lanes per column:** no gain (sw60). The kernel runs at about 3x
+  its instruction-issue estimate for reasons not found without performance counters.
+- **Attention over groups of adjacent tokens:** their selections overlap too little (4 tokens:
+  union 1.72x one list), and building the union per group costs about what a CTA does now. (sw60)
 
 ## Current numbers (all exact within the KLD gate)
 
@@ -238,10 +269,9 @@ cache after, from the prefill's routing counts and the startup prior.
 | **245K, temperature 1.0: plain / `--spec 1` / `--spec 2`, 6 windows, means** | 78.5 / 90.2 / 83.2 | same |
 | **245K greedy `--spec 2`, fresh prefill with the head, 3 windows** | 83.7 / 94.8 / 92.3 | `2026-09-28-sw30-spec-245k` |
 | Verify window KLD (windows of 3 with rewinds, hot set 512) | 0.009232 | `2026-09-28-sw33-p2-temp1-rerun` |
-| **Prefill, chunks of 8,192, 32K / 64K (q8 KV)** | 3,689 / 3,655 tok/s | `2026-09-28-sw51-prefill` |
-| **Prefill, chunks of 16,384, 32K / 64K (q8 KV)** | 4,005 / 3,975 tok/s | `2026-09-28-sw52-chunk16k` |
-| **Prefill, automatic chunks, 245K (q8 KV / host KV + mirror)** | 3,623 / 3,549 tok/s | `2026-09-28-sw54-autochunk` |
-| **Engine: 32K prompt, MTP head, cache rebuild** | 10.2 s | `2026-09-28-sw54-autochunk` |
+| **Prefill, automatic chunks, 32K / 64K (q8 KV)** | 5,580 / 5,629 tok/s | `2026-09-28-sw61-milestone` |
+| **Prefill, automatic chunks, 245K (q8 KV / host KV + mirror)** | 5,309 / 5,170 tok/s | `2026-09-28-sw61-milestone` |
+| **Engine: 32K prompt, MTP head, cache rebuild** | 7.9 s | `2026-09-28-sw61-milestone` |
 | Prefill KLD (logits from chunks; fp16, q8; fast path after chunks) | 0.0082-0.0087 | sw47, sw49, sw50 |
 | Prefill, reference path (CPU experts, 64-token batches) | 109-123 tok/s | |
 
@@ -316,9 +346,9 @@ cache after, from the prefill's routing counts and the startup prior.
 - **Two unexplained aborts** ("unspecified launch failure", Xid 43, sw7 and sw11). They fit a
   false doorbell timeout from unsigned timer arithmetic, which is now fixed and reports instead
   of trapping. There has been none in the 30+ runs since. The root cause is not proven.
-- **The chunk path holds about 0.5 MiB per token** (sw53). The block scratch is sized about 30%
-  above the widest mixer's need, and the per-slot expert outputs take 100 KB per token. Trimming
-  both would let 245K run chunks of about 13K.
+- **The chunk path holds about 0.45 MiB per token.** moe_q2 and the BF16 per-slot outputs
+  removed about 120 KB per token (sw53, sw59), so 245K now fits chunks of 15-16K. The block
+  scratch is still sized about 30% above the widest mixer's need.
 - **Hot set:** `k_hot_select` is serial CLOCK in one thread (17 µs per layer), and the copy costs
   about 30 µs per layer at steady state. Both have room to improve.
 - **`k_idx_select`** still spends about 70 µs per layer at 245K in 4 single-CTA histogram passes.
@@ -341,9 +371,11 @@ cache after, from the prefill's routing counts and the startup prior.
    several window tokens share (the grouped hit kernels read each once), a draft length chosen
    per round from the window's expected misses, and more cache slots (the Q2_0 head frees about
    500).
-2. **Prefill:** at 64K the expert MMQ takes 5.4 s of 16.9 s of kernels, about 57 TOPS of int8. At
-   chunks of 8,192 each expert averages 160 tokens, which fills 62% of its two 128-wide tiles.
-   Chunks of 16,384 help (+8.6%) where they fit. Next: an expert kernel that reads the arena's
-   planar Q2_0 directly (saving the 0.65 s conversion too), and a leaner chunk footprint. Smaller
-   items: Q3_K MMQ 1.2 s, and the hc elementwise kernels, about 2 s together.
+2. **Prefill** (64K, 11.6 s; profile in sw58), items of about 1 s each:
+   - Q3_K MMQ, about 122 TOPS: a Q3R kernel in the style of moe_q2, with the weights expanded to
+     int8 in shared memory;
+   - moe_q2's gate/up, about 170 TOPS against a 283-TOPS arithmetic ceiling at its occupancy;
+   - GDN: the chunked WY form of the delta rule;
+   - attention (L2-bound gathers);
+   - the hc gated mean and norm, at bandwidth.
 3. **Tuning:** multi-CTA select, a parallel hot-set CLOCK, an adaptive swap budget.
