@@ -71,9 +71,9 @@ public:
     // Runs seq[pos() .. pos() + T) (T <= W) on the fast path in one doorbell step, every row's
     // logits to logits_dev [T][n_vocab], and advances pos() by T. commit() must follow.
     void forward_window(const int32_t* seq, int T, float* logits_dev);
-    // Keeps the first n (1 <= n <= T) tokens of the last window: the recurrent states are rewound
-    // and pos() becomes the window's start + n. The KV caches need nothing: the positions past
-    // it are rewritten before anything reads them.
+    // Keeps the first n (0 <= n <= T) tokens of the last window: the recurrent states are rewound
+    // and pos() becomes the window's start + n (n = 0 undoes the window). The KV caches need
+    // nothing: the positions past it are rewritten before anything reads them.
     void commit(int n);
 
     // Greedy token from a logits row on the device (GPU argmax; 4 bytes come back).

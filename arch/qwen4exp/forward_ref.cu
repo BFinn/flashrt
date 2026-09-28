@@ -227,7 +227,7 @@ void ForwardRef::forward_window(const int32_t* seq, int T, float* logits_dev) {
 }
 
 void ForwardRef::commit(int n) {
-    if (window_pos0_ < 0 || n < 1 || n > window_T_) throw std::runtime_error("commit: no window, or n out of range");
+    if (window_pos0_ < 0 || n < 0 || n > window_T_) throw std::runtime_error("commit: no window, or n out of range");
     if (n < window_T_) {
         const BlockCtx c{s_, w_, scratch_, stream_};
         for (int il : s_.gdn_layers) gdn_rewind(c, gdn_[il], gdn_win_[il], window_T_, n);
