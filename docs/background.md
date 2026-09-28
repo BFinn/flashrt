@@ -153,10 +153,7 @@ Strata 0.1.6 (KV streaming) plus sampling (PR #19) was being validated in the ba
 
 ## Where the full material is
 
-- **The research survey:** a separate private repository, branch `research/next-optimisations`,
-  file `models/qwen3.8-flash-next-gsq-q2_0/next-optimisations.md`.
-- **Vault notes** (Mac only, see `CLAUDE.local.md`): `Strata`, `PCIe Bandwidth as the MoE
-  Offload Bottleneck`, `Flash-Next Offload Speedup Leads (2026-09)`, `Hierarchical KV
-  Offload for Sparse Attention`, `Speculative Decoding with MoE`, `Training-to-Inference
-  Expert Dropping`, `Predictive Expert Prefetching`.
-- **Raw benchmark logs** on the box: `$BENCH` (windows 1-9).
+- **The P0 measurements** behind this digest are in `bench/results/2026-09-27-p0*` and
+  `bench/results/2026-09-27-p1-*`, each with a README.
+- **The survey that preceded flashrt** (literature, other engines, the leads it ranked) was
+  kept outside this repository.

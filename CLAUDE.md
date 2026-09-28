@@ -1,53 +1,50 @@
-# flashrt: working notes for Claude
+# flashrt: notes for coding agents
 
 Read these before writing code:
-- `docs/background.md`: what was measured on the target box, where the time goes, which
-  ideas were rejected, and the first experiments.
-- `docs/design.md`: architecture, engine protocol, phase gates, and gate status.
-- `docs/engine.md`: the engine as built. It covers the per-token decode flow, why each piece is
-  shaped as it is (with links to the evidence), what was rejected, current numbers, the benchmark
-  runbook, known issues and next steps. **Start here when resuming work.**
-- `docs/sweet-spots.md`: the best configurations measured, where each tuning track reached its
-  knee and why, the untested paths ranked, and every `FLASHRT_*` toggle.
+- `docs/engine.md`: the engine as built. It covers the decode, speculation and prefill flows,
+  why each piece is shaped as it is (with links to the evidence), what was rejected, the
+  runbook, and known issues. **Start here.**
+- `docs/sweet-spots.md`: the best configurations measured, where each tuning track stopped and
+  why, the untested paths ranked, and every `FLASHRT_*` toggle.
+- `docs/design.md`: architecture, engine protocol, phase gates and their status.
+- `docs/background.md`: what was measured before flashrt existed, and which ideas were rejected.
 - `docs/interfaces.md`: how generic flashrt is, and the C++ seams.
 - `docs/clean-room.md`: what may and may not be copied.
-Machine-specific details live in `CLAUDE.local.md`, which is not committed.
 
-## Workflow: edit here, build and measure on the GPU box
+Machine-specific setup (where to build and measure, paths, box rules) lives in
+`CLAUDE.local.md`, which is not committed.
 
-- **This checkout (the Mac) is the source of truth.** Edit, commit, and push to GitHub
-  from here. The research vault is reachable only from here.
-- **The GPU box is a build and benchmark target.** It reaches GitHub (`origin`, over SSH)
-  and the Hugging Face Hub, but not the vault.
-  - Deploy with `git push the box main`. The remote checkout updates its files on push.
-  - Then build and run over ssh.
-  - **The box never commits to `main`.** A commit there diverges its checkout, and the
-    next `git push the box main` fails.
-- **Bring results back.** Put anything worth keeping (benchmark JSON, logs, summaries) in
-  `bench/results/<date>-<topic>/`.
-  - Either push it from the box to a `results/<date>-<topic>` branch on `origin`, then
-    merge that branch into `main` here;
-  - or copy it with `scp` and commit it here.
-
-## Build (on the GPU box)
+## Build and test
 
 ```bash
 cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=120 \
       -DCMAKE_CUDA_COMPILER=/usr/local/cuda-12.9/bin/nvcc
 cmake --build build
-source ~/.cargo/env && cargo build --release --manifest-path server/Cargo.toml
+cargo build --release --manifest-path server/Cargo.toml
+(cd build && ctest --output-on-failure)            # FLASHRT_TEST_MODEL=<gguf> for gemm and moe_q2
+cargo test --release --manifest-path server/Cargo.toml
 ```
 
 ## Rules
 
-- **Clean room.** Strata's ideas are fine, its source code is not. Do not open Strata's
-  `src/` while writing flashrt code. ggml, llama.cpp and ik_llama.cpp (MIT), vLLM and
-  SGLang (Apache-2.0), and CUTLASS (BSD) may be vendored with their notices.
-- **Every speed claim comes from `bench/`,** with the arm, depth, run count and date. The
-  phase gates in `docs/design.md` are the targets. Quote measured numbers, not estimates,
-  unless an estimate is labelled as one.
+- **Clean room.**
+  - Strata's ideas are fine, its source code is not. Do not open Strata's `src/` while
+    writing flashrt code.
+  - These may be vendored with their notices: ggml, llama.cpp and ik_llama.cpp (MIT), vLLM
+    and SGLang (Apache-2.0), CUTLASS (BSD).
+- **Every speed claim comes from `bench/`,** with the arm, depth, run count and date.
+  - Each run's script, logs and a README go in `bench/results/<date>-<topic>/`.
+  - Quote measured numbers, not estimates, unless an estimate is labelled as one.
+  - Paths in scripts use the placeholders defined in `docs/engine.md` (Runbook), never a
+    home directory.
 - **Correctness gate.** Changes that affect outputs need a KL-divergence check against the
-  llama.cpp reference before any speed number counts.
+  llama.cpp reference (`tools/fr_kld`) before any speed number counts.
+- **Paired decode comparisons.** A/B decode runs use `fr_bench --teacher`, so every arm routes
+  the same tokens. Sampled drafts are the exception: teacher forcing keeps argmax drafts, so
+  measure them on sampled runs over 6+ windows.
+- **The server is part of the check.** After a change to the engine or to VRAM budgeting, run
+  `bench/server_smoke.py` against a server on the current build. `fr_bench` allocates
+  differently and cannot catch everything.
 - **Generality waits.** Build qwen4exp end to end first. Design the architecture add-on API
   when a second architecture arrives.
 - **Commit trailer.** End commit messages with the session attribution line the harness

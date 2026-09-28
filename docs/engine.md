@@ -358,7 +358,20 @@ cache after, from the prefill's routing counts and the startup prior.
   bit-identical (Q8_1 against Q8 arithmetic), so tokens can differ between cache configurations.
   Compare with KLD, not tokens.
 
-## Runbook (on the box, as capped `systemd-run` units; see `CLAUDE.local.md`)
+## Runbook (on the target box, as capped `systemd-run` units)
+
+Paths in this runbook and in the `bench/results` scripts are placeholders:
+
+| Placeholder | Directory |
+|---|---|
+| `$FLASHRT` | this checkout |
+| `$MODELS` | the model's GGUF shards and the MTP draft head (`mtp-Flash-Next-Q8_0-noembd.gguf`) |
+| `$BENCH` | a scratch directory: prompt ids, saved states, the KLD base, run folders and logs |
+| `$DATA` | datasets, other model builds and routing traces |
+| `$STRATA`, `$LLAMA_CPP` | the reference engines' trees (Strata; llama.cpp with the expert cache and sparse QSA) |
+| `$EXT` | an external drive for backups |
+
+The scripts run with `set -u`, so they stop if one is unset.
 
 - **Model:** `M=$MODELS/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf`.
 - **Prompt:** `I=$BENCH/p0c-20260927/wiki.prompt_ids.txt` (250K wikitext token ids, the P0

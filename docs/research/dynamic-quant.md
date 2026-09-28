@@ -338,7 +338,7 @@ combinations with three formats). It splits into three layers:
   - Keep the trial shard, the ternary database and the logits on the NVMe. Every trial
     rewrites and reloads them, and a USB disk would add minutes per trial.
   - exFAT has no symlinks and no POSIX permissions. Its throughput is unmeasured.
-- **the box reaches the Hub** (HTTP 200 from `huggingface.co`, 2026-09-27). It can stream
+- **The box reaches the Hub** (HTTP 200 from `huggingface.co`, 2026-09-27). It can stream
   or download the BF16 experts itself, between benchmark windows.
 
 **Building the ternary database without local disk.**
