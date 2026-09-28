@@ -1,0 +1,121 @@
+// SPDX-License-Identifier: Apache-2.0
+// linear_multi (several BF16 mat-vecs of one input in one launch) against separate ggml MMVF
+// calls, on decode's shapes: router + shared-expert gate (512 + 1 rows), GDN alpha + beta
+// (48 + 48), indexer q + k (512 + 128), K = 2560, for 1..8 tokens. Checks the outputs (no
+// epilogue) and times both, weights rotated through > 256 MB so they come from VRAM.
+//
+//   test_linear_multi
+#include "arch/qwen4exp/blocks.hpp"
+#include "kernels/cuda/ggml_gemv.h"
+
+#include <cuda_bf16.h>
+#include <cuda_runtime.h>
+
+#include <cmath>
+#include <cstdio>
+#include <random>
+#include <vector>
+
+using namespace flashrt;
+using namespace flashrt::qwen4exp;
+
+int main() {
+    constexpr int K = 2560;
+    struct Shape {
+        const char* name;
+        int r0, r1;
+    };
+    const Shape shapes[] = {{"router + shexp gate", 512, 1}, {"alpha + beta", 48, 48}, {"indexer q + k", 512, 128}};
+    Spec s;
+    GpuWeights w;
+    BlockScratch bs;
+    cudaStream_t st;
+    cudaStreamCreate(&st);
+    BlockCtx c{s, w, bs, st};
+    std::mt19937 rng(3);
+    std::normal_distribution<float> nd(0.0f, 1.0f);
+    float* x;
+    cudaMalloc(&x, size_t(8) * K * 4);
+    {
+        std::vector<float> h(size_t(8) * K);
+        for (float& v : h) v = nd(rng);
+        cudaMemcpy(x, h.data(), h.size() * 4, cudaMemcpyHostToDevice);
+    }
+    int fail = 0;
+    cudaEvent_t e0, e1;
+    cudaEventCreate(&e0);
+    cudaEventCreate(&e1);
+    for (const Shape& sh : shapes) {
+        const int rows = sh.r0 + sh.r1;
+        const size_t mat = size_t(rows) * K * 2;
+        const int copies = int(std::max<size_t>(1, (256u << 20) / mat));
+        std::vector<__nv_bfloat16> hw(size_t(rows) * K);
+        for (auto& v : hw) v = __float2bfloat16(0.02f * nd(rng));
+        std::vector<void*> wd(copies);
+        for (auto& p : wd) {
+            cudaMalloc(&p, mat + gemv::kWeightTailPad);
+            cudaMemcpy(p, hw.data(), mat, cudaMemcpyHostToDevice);
+        }
+        float *y0, *y1, *z0, *z1;
+        cudaMalloc(&y0, size_t(8) * sh.r0 * 4);
+        cudaMalloc(&y1, size_t(8) * sh.r1 * 4);
+        cudaMalloc(&z0, size_t(8) * sh.r0 * 4);
+        cudaMalloc(&z1, size_t(8) * sh.r1 * 4);
+        auto tensors = [&](int i, GpuTensor& a, GpuTensor& b) {
+            a.dev = wd[i];
+            a.type = 30;
+            a.dims = {K, sh.r0};
+            b.dev = static_cast<char*>(wd[i]) + size_t(sh.r0) * K * 2;
+            b.type = 30;
+            b.dims = {K, sh.r1};
+        };
+        for (int T : {1, 2, 3, 4, 8}) {
+            GpuTensor a, b;
+            tensors(0, a, b);
+            const LinearOut outs[2] = {{&a, y0}, {&b, y1}};
+            if (!linear_multi_ok(outs, 2, T)) {
+                std::printf("not applicable\n");
+                return 1;
+            }
+            linear_multi(c, outs, 2, x, T);
+            gemv::matvec(30, a.dev, x, z0, K, sh.r0, T, nullptr, st);
+            gemv::matvec(30, b.dev, x, z1, K, sh.r1, T, nullptr, st);
+            cudaStreamSynchronize(st);
+            std::vector<float> a0(size_t(T) * sh.r0), a1(size_t(T) * sh.r1), b0(a0.size()), b1(a1.size());
+            cudaMemcpy(a0.data(), y0, a0.size() * 4, cudaMemcpyDeviceToHost);
+            cudaMemcpy(a1.data(), y1, a1.size() * 4, cudaMemcpyDeviceToHost);
+            cudaMemcpy(b0.data(), z0, b0.size() * 4, cudaMemcpyDeviceToHost);
+            cudaMemcpy(b1.data(), z1, b1.size() * 4, cudaMemcpyDeviceToHost);
+            double num = 0, den = 0;
+            for (size_t i = 0; i < a0.size(); ++i) num += (a0[i] - b0[i]) * (a0[i] - b0[i]), den += b0[i] * b0[i];
+            for (size_t i = 0; i < a1.size(); ++i) num += (a1[i] - b1[i]) * (a1[i] - b1[i]), den += b1[i] * b1[i];
+            const double err = std::sqrt(num / den);
+            const bool ok = err < 1e-5;
+            fail += !ok;
+            float ms[2];
+            const int iters = 400;
+            for (int k = 0; k < 2; ++k) {
+                cudaEventRecord(e0, st);
+                for (int it = 0; it < iters; ++it) {
+                    tensors(it % copies, a, b);
+                    if (k == 0) {
+                        const LinearOut o2[2] = {{&a, y0}, {&b, y1}};
+                        linear_multi(c, o2, 2, x, T);
+                    } else {
+                        gemv::matvec(30, a.dev, x, z0, K, sh.r0, T, nullptr, st);
+                        gemv::matvec(30, b.dev, x, z1, K, sh.r1, T, nullptr, st);
+                    }
+                }
+                cudaEventRecord(e1, st);
+                cudaEventSynchronize(e1);
+                cudaEventElapsedTime(&ms[k], e0, e1);
+            }
+            std::printf("%-20s T %d: error %.1e %s; fused %.2f us, separate %.2f us\n", sh.name, T, err, ok ? "ok" : "FAIL",
+                        1e3 * ms[0] / iters, 1e3 * ms[1] / iters);
+        }
+        for (void* p : wd) cudaFree(p);
+        for (float* p : {y0, y1, z0, z1}) cudaFree(p);
+    }
+    std::printf("%s\n", fail ? "FAILED" : "all passed");
+    return fail ? 1 : 0;
+}
