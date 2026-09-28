@@ -84,6 +84,7 @@ int main(int argc, char** argv) {
     int draft_k = 4, spec_k = 0, vocab_n = 32768, chunk = 64;
     float draft_pmin = 0.0f;
     bool accept_probe = false;
+    bool argmax_drafts = false;
     sample::Params sp;
     sp.temperature = 0.0f;
     uint64_t seed = 1;
@@ -129,6 +130,7 @@ int main(int argc, char** argv) {
         else if (a == "--draft-vocab-n") vocab_n = std::atoi(next());
         else if (a == "--draft-pmin") draft_pmin = float(std::atof(next()));
         else if (a == "--accept-probe") accept_probe = true;
+        else if (a == "--argmax-drafts") argmax_drafts = true;
         else if (a == "--temp") sp.temperature = float(std::atof(next()));
         else if (a == "--top-k") sp.top_k = std::atoi(next());
         else if (a == "--top-p") sp.top_p = float(std::atof(next()));
@@ -194,6 +196,17 @@ int main(int argc, char** argv) {
         if (teacher)
             for (int j = 0; j < R; ++j) y[j] = text[size_t(pos0) + j];
         return y;
+    };
+    // Sampled drafts (the default for --spec at temperature > 0, sw85): the verify rows through
+    // sample::spec_verify with the head's q; returns the emitted tokens y_0 .. y_a and a, the
+    // number of drafts kept (the first rejection's residual sample, or the last row's sample)
+    auto spec_pick = [&](const float* lg, int R, int64_t pos0, const MtpHead& head, int& a) {
+        sample::spec_verify(lg, R, s.n_vocab, sp, seed, pos0, head.drafts_dev(), head.q_ids(), head.q_p(), head.q_n(), tok_dev, fwd.stream());
+        cudaMemcpyAsync(tok_host, tok_dev, size_t(2 * R) * 4, cudaMemcpyDeviceToHost, fwd.stream());
+        cudaStreamSynchronize(fwd.stream());
+        a = 0;
+        while (a < R - 1 && tok_host[R + a]) ++a;
+        return std::vector<int32_t>(tok_host, tok_host + a + 1);
     };
     auto argmax = [&]() {
         if (teacher) {
@@ -388,9 +401,15 @@ int main(int argc, char** argv) {
     std::vector<long> acc_hist(spec_k + 1, 0);
     long rounds = 0, drafted = 0;
     double draft_s = 0, verify_s = 0, commit_s = 0;
+    // sampled drafts: --spec at temperature > 0, unless --argmax-drafts, --draft-pmin or --teacher
+    // (teacher forcing keeps a draft when it equals the file's token, which only argmax drafts fit)
+    const bool sampled = mtp && spec_k > 0 && sp.temperature > 0.0f && !argmax_drafts && draft_pmin <= 0 && !teacher;
+    if (mtp && spec_k > 0)
+        std::printf("drafts: %s\n", sampled ? "sampled from the head's q, verified by speculative sampling"
+                                              : "the head's argmax, kept while the sampled token equals them");
     if (dist_test > 0 && spec_k > 0) {
-        // the drafts from this state (deterministic; the head's KV at these positions is rewritten
-        // by the real rounds later)
+        // the drafts from this state (argmax: once; sampled: per seed; the head's KV at these
+        // positions is rewritten by the real rounds later)
         const int p = int(seq.size()) - 1;
         std::vector<int32_t> win(seq.end() - 1, seq.end());
         mtp->forward(h_buf, seq.data() + p - pend + 1, pend, p - pend + 1, pend - 1, mtp_logits);
@@ -406,14 +425,26 @@ int main(int argc, char** argv) {
         const uint64_t seed0 = seed;
         long eq0 = 0, n1 = 0, eq1 = 0, acc1 = 0;
         std::map<int32_t, long> h_spec, h_plain;
+        long acc_s = 0;
         for (int i = 0; i < dist_test; ++i) {
             seed = seed0 + 1000003ull * uint64_t(i + 1);
-            // speculative round: sample every row, keep while equal to the draft
-            fwd.forward_window(seqw.data(), spec_k + 1, logits_win);
-            const std::vector<int32_t> y = pick(logits_win, spec_k + 1, p + 1);
-            fwd.commit(0);
             int a = 0;
-            while (a < spec_k && y[a] == win[a + 1]) ++a;
+            std::vector<int32_t> y;
+            if (sampled) {   // this seed's drafts, then the speculative-sampling verify
+                mtp->set_draft_sampling(sp, seed);
+                mtp->forward(h_buf, seq.data() + p - pend + 1, pend, p - pend + 1, pend - 1, mtp->chain_logits());
+                const std::vector<int32_t> dr = mtp->draft_chain(pend - 1, p + 1, spec_k);
+                std::copy(dr.begin(), dr.end(), seqw.end() - spec_k);
+                fwd.forward_window(seqw.data(), spec_k + 1, logits_win);
+                y = spec_pick(logits_win, spec_k + 1, p + 1, *mtp, a);
+                fwd.commit(0);
+                acc_s += a;
+            } else {   // speculative round: sample every row, keep while equal to the draft
+                fwd.forward_window(seqw.data(), spec_k + 1, logits_win);
+                y = pick(logits_win, spec_k + 1, p + 1);
+                fwd.commit(0);
+                while (a < spec_k && y[a] == win[a + 1]) ++a;
+            }
             // plain steps: y0 from x_p; y1 from x_p, y0
             std::vector<int32_t> s2(seq.begin(), seq.end());
             fwd.forward_window(s2.data(), 1, logits_win);
@@ -426,7 +457,7 @@ int main(int argc, char** argv) {
             eq0 += y[0] == z0;
             ++h_spec[y[0]];
             ++h_plain[z0];
-            if (a >= 1) {   // the spec round emitted a second token
+            if (a >= 1 && !sampled) {   // the spec round emitted a second token (token parity: argmax drafts only)
                 ++acc1;
                 if (z0 == y[0]) {
                     ++n1;
@@ -442,6 +473,10 @@ int main(int argc, char** argv) {
         std::printf("distribution test: %d seeds at position %d, %zu drafts; first token equal in %ld (%.2f%%), histogram TV %.4f; "
                     "second token emitted in %ld, equal in %ld of %ld\n",
                     dist_test, p + 1, win.size() - 1, eq0, 100.0 * eq0 / dist_test, tv / (2.0 * dist_test), acc1, eq1, n1);
+        if (sampled) {   // two independent histograms of dist_test samples: TV noise about sqrt(bins / (pi N))
+            std::printf("  sampled drafts: %.3f drafts kept per round; %zu distinct first tokens (TV noise ~ %.3f)\n",
+                        double(acc_s) / dist_test, h_plain.size(), std::sqrt(double(h_plain.size()) / (M_PI * dist_test)));
+        }
     }
     // --accept-probe: for each round's first draft, the target's sampling distribution p (the
     // sampler's chain on the verify row) and the head's q, from which: the acceptance of the argmax
@@ -476,6 +511,7 @@ int main(int argc, char** argv) {
         out.clear();
         for (int i = 0; i < keep; ++i) out.push_back({ix[i], e2[i] / z2});
     };
+    if (sampled) mtp->set_draft_sampling(sp, seed);
     cudaProfilerStart();   // nsys --capture-range=cudaProfilerApi profiles the decode loop only
     for (int wi = 0; wi < windows; ++wi) {
         const long hits0 = host.hits, misses0 = host.misses, gmiss0 = host.gpu_misses;
@@ -512,6 +548,9 @@ int main(int argc, char** argv) {
             std::vector<int32_t> seqw(seq.begin(), seq.end() - 1);
             seqw.insert(seqw.end(), win.begin(), win.end());
             fwd.forward_window(seqw.data(), kd + 1, logits_win);
+            int a_s = -1;   // sampled drafts: the number kept
+            std::vector<int32_t> y_s;
+            if (sampled) y_s = spec_pick(logits_win, kd + 1, p + 1, *mtp, a_s);
             if (accept_probe && draft_pmin <= 0) {
                 cudaMemcpy(pr_t.data(), logits_win, pr_t.size() * 4, cudaMemcpyDefault);
                 const std::vector<int32_t>& vid = mtp->vocab_ids();
@@ -544,9 +583,11 @@ int main(int argc, char** argv) {
                 pr_ptop += pd.empty() ? 0.0 : pd[0].second;
                 ++pr_n;
             }
-            const std::vector<int32_t> y = pick(logits_win, kd + 1, p + 1);   // y_j for position p + 1 + j
+            const std::vector<int32_t> y = sampled ? y_s : pick(logits_win, kd + 1, p + 1);   // y_j for position p + 1 + j
             int a = 0;
-            while (a < kd && y[a] == win[a + 1]) ++a;
+            if (sampled) a = a_s;
+            else
+                while (a < kd && y[a] == win[a + 1]) ++a;
             drafted += kd;
             // 3. keep x_p, d1 .. da; emit y_0 .. y_a
             const auto t2 = Clock::now();

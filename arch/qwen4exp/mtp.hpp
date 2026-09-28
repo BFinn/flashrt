@@ -21,6 +21,7 @@
 #include "arch/qwen4exp/blocks.hpp"
 #include "arch/qwen4exp/gpu_weights.hpp"
 #include "arch/qwen4exp/spec.hpp"
+#include "kernels/cuda/sample.h"
 
 #include <cuda_runtime.h>
 
@@ -57,6 +58,15 @@ public:
     // pos - 1), then k - 1 chained steps at positions pos .., each replaying one captured graph
     // that feeds its own draft and streams to the next.
     std::vector<int32_t> draft_chain(int row, int pos, int k);
+    // Sampled drafts (temperature > 0): each draft is drawn from the head's logits through the
+    // sampler chain p, with its q kept on the device for sample::spec_verify (q_ids / q_p / q_n,
+    // [k][kMaxTopK]), the drafts at drafts_dev(). Temperature <= 0: argmax drafts again.
+    void set_draft_sampling(const sample::Params& p, uint64_t seed);
+    bool sampled() const { return sampled_; }
+    const int32_t* drafts_dev() const { return chain_drafts_; }
+    const int32_t* q_ids() const { return q_ids_; }
+    const float* q_p() const { return q_p_; }
+    const int32_t* q_n() const { return q_n_; }
     float* chain_logits() { return chain_logits_; }
 
     // Restricts the head to these token ids (empty: the full vocabulary again).
@@ -118,6 +128,13 @@ private:
     int32_t *chain_dp_ = nullptr, *chain_drafts_ = nullptr;
     float *h_in_ = nullptr, *chain_logits_ = nullptr;
     cudaGraphExec_t chain_graph_ = nullptr;
+    cudaGraphExec_t chain_graph_s_ = nullptr;   // the sampled-draft chain
+    bool sampled_ = false;
+    sample::DraftCfg dcfg_host_{};
+    sample::DraftCfg* dcfg_dev_ = nullptr;
+    int32_t *q_ids_ = nullptr, *q_n_ = nullptr;
+    float* q_p_ = nullptr;
+    int32_t chain_init_[4] = {};   // host source of the chain's parameter reset (stable for the async copy)
     BlockScratch chain_scratch_;   // the buffers the chain graph was captured with
     float* ckpt_ = nullptr;         // [ring | h]
 };

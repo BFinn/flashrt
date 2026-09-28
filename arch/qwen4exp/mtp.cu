@@ -228,6 +228,10 @@ MtpHead::MtpHead(const Gguf& g, const Spec& target, const GpuWeights& target_w, 
     ck(cudaHostAlloc(&amax_host_, 64, cudaHostAllocDefault), "cudaHostAlloc MTP argmax");
     ck(cudaMalloc(&chain_dp_, 16 * 4), "cudaMalloc MTP chain");
     ck(cudaMalloc(&chain_drafts_, 16 * 4), "cudaMalloc MTP chain");
+    ck(cudaMalloc(&dcfg_dev_, sizeof(sample::DraftCfg)), "cudaMalloc MTP draft sampling");
+    ck(cudaMalloc(&q_ids_, 8 * sample::kMaxTopK * 4), "cudaMalloc MTP q");
+    ck(cudaMalloc(&q_p_, 8 * sample::kMaxTopK * 4), "cudaMalloc MTP q");
+    ck(cudaMalloc(&q_n_, 8 * 4), "cudaMalloc MTP q");
     ck(cudaMalloc(&h_in_, size_t(s_.hc_count) * s_.d_model * 4), "cudaMalloc MTP chain");
     ck(cudaMalloc(&chain_logits_, size_t(ts_.n_vocab) * 4), "cudaMalloc MTP chain");
 
@@ -317,10 +321,20 @@ void MtpHead::reserve_vocab(int n) {
     vocab_ids_.clear();
 }
 
+void MtpHead::set_draft_sampling(const sample::Params& p, uint64_t seed) {
+    sampled_ = p.temperature > 0.0f;
+    dcfg_host_ = sample::DraftCfg{p, seed};
+    ck(cudaMemcpyAsync(dcfg_dev_, &dcfg_host_, sizeof(dcfg_host_), cudaMemcpyHostToDevice, stream_), "MTP draft sampling");
+}
+
 void MtpHead::set_vocab(const std::vector<int32_t>& ids) {
     if (chain_graph_) {
         cudaGraphExecDestroy(chain_graph_);
         chain_graph_ = nullptr;
+    }
+    if (chain_graph_s_) {
+        cudaGraphExecDestroy(chain_graph_s_);
+        chain_graph_s_ = nullptr;
     }
     vocab_ids_ = ids;
     if (ids.empty()) return;
@@ -406,34 +420,45 @@ std::vector<int32_t> MtpHead::draft_chain(int row, int pos, int k) {
     const int32_t* ids_dev =
         vocab_ids_.empty() ? nullptr
                            : reinterpret_cast<const int32_t*>(static_cast<const uint8_t*>(head_.dev) + head_.bytes + gemv::kWeightTailPad);
-    // the first draft: from the logits of the last forward() row (mtp_logits_ must hold it)
-    argmax_dev(stream_, chain_logits_, vocab(), amax_dev_);
-    k_draft_top<<<1, 1024, 0, stream_>>>(chain_logits_, vocab(), ids_dev, amax_dev_, false);
     // the chain's parameters: [token, position, -, step]; the input streams are row `row` of x_
-    const int32_t init[4] = {0, pos - 1, 0, 0};   // k_chain_next advances it to pos
-    ck(cudaMemcpyAsync(chain_dp_, init, sizeof(init), cudaMemcpyHostToDevice, stream_), "chain params");
+    chain_init_[0] = 0;
+    chain_init_[1] = pos - 1;   // k_chain_next advances it to pos
+    chain_init_[2] = chain_init_[3] = 0;
+    ck(cudaMemcpyAsync(chain_dp_, chain_init_, sizeof(chain_init_), cudaMemcpyHostToDevice, stream_), "chain params");
+    // the first draft: from the logits of the last forward() row (mtp_logits_ must hold it)
+    auto draft_step = [&] {   // the draft for position dp[1] + 1 into amax_dev_[1]
+        if (sampled_) sample::draft_row(chain_logits_, vocab(), dcfg_dev_, chain_dp_, ids_dev, amax_dev_, q_ids_, q_p_, q_n_, stream_);
+        else {
+            argmax_dev(stream_, chain_logits_, vocab(), amax_dev_);
+            k_draft_top<<<1, 1024, 0, stream_>>>(chain_logits_, vocab(), ids_dev, amax_dev_, false);
+        }
+    };
+    draft_step();
     k_chain_next<<<1, 1, 0, stream_>>>(amax_dev_, chain_dp_, chain_drafts_);
     ck(cudaMemcpyAsync(h_in_, x_ + size_t(row) * hc * n, size_t(hc) * n * 4, cudaMemcpyDeviceToDevice, stream_), "chain h");
     if (k > 1) {
-        if (chain_graph_ && !same_buffers(chain_scratch_, scratch_)) {   // an eager call grew the scratch
-            cudaGraphExecDestroy(chain_graph_);
-            chain_graph_ = nullptr;
+        cudaGraphExec_t& graph = sampled_ ? chain_graph_s_ : chain_graph_;   // one per draft kind
+        if ((chain_graph_ || chain_graph_s_) && !same_buffers(chain_scratch_, scratch_)) {   // an eager call grew the scratch
+            for (cudaGraphExec_t* gp : {&chain_graph_, &chain_graph_s_})
+                if (*gp) {
+                    cudaGraphExecDestroy(*gp);
+                    *gp = nullptr;
+                }
         }
-        if (!chain_graph_) {   // one chained step: forward at (dp[0], dp[1]), its draft, the bookkeeping, h for the next
+        if (!graph) {   // one chained step: forward at (dp[0], dp[1]), its draft, the bookkeeping, h for the next
             qsa_scratch_reserve(s_, scratch_, 1, kv_.capacity / s_.qsa_block);
             cudaGraph_t g = nullptr;
             ck(cudaStreamBeginCapture(stream_, cudaStreamCaptureModeThreadLocal), "begin MTP capture");
             enqueue(h_in_, nullptr, 1, 0, 0, chain_logits_, chain_dp_);
-            argmax_dev(stream_, chain_logits_, vocab(), amax_dev_);
-            k_draft_top<<<1, 1024, 0, stream_>>>(chain_logits_, vocab(), ids_dev, amax_dev_, false);
+            draft_step();
             k_chain_next<<<1, 1, 0, stream_>>>(amax_dev_, chain_dp_, chain_drafts_);
             ck(cudaMemcpyAsync(h_in_, x_, size_t(hc) * n * 4, cudaMemcpyDeviceToDevice, stream_), "chain h");
             ck(cudaStreamEndCapture(stream_, &g), "end MTP capture");
-            ck(cudaGraphInstantiate(&chain_graph_, g, 0), "instantiate MTP graph");
+            ck(cudaGraphInstantiate(&graph, g, 0), "instantiate MTP graph");
             cudaGraphDestroy(g);
             chain_scratch_ = scratch_;
         }
-        for (int j = 1; j < k; ++j) ck(cudaGraphLaunch(chain_graph_, stream_), "launch MTP graph");
+        for (int j = 1; j < k; ++j) ck(cudaGraphLaunch(graph, stream_), "launch MTP graph");
     }
     ck(cudaMemcpyAsync(amax_host_, chain_drafts_, size_t(k) * 4, cudaMemcpyDeviceToHost, stream_), "drafts to host");
     ck(cudaStreamSynchronize(stream_), "draft chain");
@@ -455,6 +480,9 @@ int32_t MtpHead::argmax(const float* logits_row_dev, float* p_top) {
 MtpHead::~MtpHead() {
     if (ckpt_) cudaFree(ckpt_);
     if (chain_graph_) cudaGraphExecDestroy(chain_graph_);
+    if (chain_graph_s_) cudaGraphExecDestroy(chain_graph_s_);
+    for (void* p : {static_cast<void*>(dcfg_dev_), static_cast<void*>(q_ids_), static_cast<void*>(q_p_), static_cast<void*>(q_n_)})
+        if (p) cudaFree(p);
     for (void* p : {static_cast<void*>(chain_dp_), static_cast<void*>(chain_drafts_), static_cast<void*>(h_in_), static_cast<void*>(chain_logits_)})
         if (p) cudaFree(p);
     if (exp_dev_) cudaFree(exp_dev_);

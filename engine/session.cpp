@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <cstdio>
 #include <fstream>
 #include <numeric>
@@ -188,6 +189,18 @@ struct Session::Impl {
         refill_cache();
     }
 
+    // Sampled drafts (temperature > 0; FLASHRT_ARGMAX_DRAFTS=1: argmax drafts): the verify rows
+    // through speculative sampling with the head's q; a = the drafts kept (sw85)
+    std::vector<int32_t> spec_pick(const float* lg, int R, int64_t pos0, const GenerateRequest& r, int& a) {
+        sample::spec_verify(lg, R, s.n_vocab, r.sampling, r.seed, pos0, mtp->drafts_dev(), mtp->q_ids(), mtp->q_p(), mtp->q_n(), tok_dev,
+                            fwd->stream());
+        ck(cudaMemcpyAsync(tok_host, tok_dev, size_t(2 * R) * 4, cudaMemcpyDeviceToHost, fwd->stream()), "tokens");
+        ck(cudaStreamSynchronize(fwd->stream()), "sample");
+        a = 0;
+        while (a < R - 1 && tok_host[R + a]) ++a;
+        return std::vector<int32_t>(tok_host, tok_host + a + 1);
+    }
+
     std::vector<int32_t> pick(const float* lg, int R, int64_t pos0, const GenerateRequest& r) {
         sample::sample_rows(lg, R, s.n_vocab, r.sampling, r.seed, pos0, tok_dev, fwd->stream());
         ck(cudaMemcpyAsync(tok_host, tok_dev, size_t(R) * 4, cudaMemcpyDeviceToHost, fwd->stream()), "tokens");
@@ -336,6 +349,12 @@ GenerateResult Session::generate(const GenerateRequest& r, const std::function<v
     emit(y);
     int pend = 1;   // speculative: the head's rows still to run, positions seq.size() - pend + 1 .. seq.size()
     if (K > 0) ck(cudaMemcpy(m.h_buf, m.h_carry, m.hrow * 4, cudaMemcpyDeviceToDevice), "h");
+    static const bool argmax_drafts = [] {
+        const char* e = std::getenv("FLASHRT_ARGMAX_DRAFTS");
+        return e && e[0] == '1';
+    }();
+    const bool sampled = K > 0 && r.sampling.temperature > 0.0f && !argmax_drafts;
+    if (K > 0) m.mtp->set_draft_sampling(sampled ? r.sampling : sample::Params{0.0f}, r.seed);
     std::vector<int32_t> seqw;
     while (!done) {
         if (cancel.load()) {
@@ -362,9 +381,13 @@ GenerateResult Session::generate(const GenerateRequest& r, const std::function<v
         seqw.insert(seqw.end(), d.begin(), d.end());
         // verify, sample every row, keep drafts while they match
         m.fwd->forward_window(seqw.data(), K + 1, m.logits_win);
-        const std::vector<int32_t> ys = m.pick(m.logits_win, K + 1, p + 1, r);
         int a = 0;
-        while (a < K && ys[a] == d[a]) ++a;
+        std::vector<int32_t> ys;
+        if (sampled) ys = m.spec_pick(m.logits_win, K + 1, p + 1, r, a);
+        else {
+            ys = m.pick(m.logits_win, K + 1, p + 1, r);
+            while (a < K && ys[a] == d[a]) ++a;
+        }
         m.fwd->commit(a + 1);
         ck(cudaMemcpyAsync(m.h_buf, m.fwd->streams(), size_t(a + 1) * m.hrow * 4, cudaMemcpyDeviceToDevice, m.fwd->stream()), "h");
         m.seq.insert(m.seq.end(), seqw.begin() + p, seqw.begin() + p + a + 1);
