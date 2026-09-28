@@ -1,0 +1,18 @@
+flashrt: expert cache filled from $BENCH/cache-prior-calib32k.bin (32768 tokens)
+flashrt: qwen4exp, 48 layers, expert cache 6785 slots (27.6%), MTP drafts 1 per round
+2026-09-28T04:21:49.433945Z  INFO flashrt_server: engine ready version=0.1.0 arch=qwen4exp max_context=65536
+2026-09-28T04:21:49.434017Z  INFO flashrt_server: listening on 127.0.0.1:8090
+2026-09-28T04:21:50.827489Z  INFO flashrt_server::chat: r0: prompt 28 (reused 0) in 420 ms, 3 tokens in 55 ms, Stop
+2026-09-28T04:21:52.229220Z  INFO flashrt_server::chat: r1: prompt 59 (reused 0) in 476 ms, 63 tokens in 924 ms, Stop
+2026-09-28T04:21:53.764282Z  INFO flashrt_server::chat: r2: prompt 327 (reused 0) in 1018 ms, 40 tokens in 516 ms, ToolCalls
+2026-09-28T04:21:54.589090Z  INFO flashrt_server::chat: r3: prompt 398 (reused 368) in 290 ms, 41 tokens in 534 ms, Stop
+2026-09-28T04:21:55.064481Z  INFO flashrt_server::chat: r4: prompt 24 (reused 0) in 240 ms, 21 tokens in 234 ms, StopSequence
+2026-09-28T04:21:55.166976Z  INFO flashrt_server::chat: r5: prompt 5 (reused 0) in 79 ms, 2 tokens in 23 ms, Stop
+2026-09-28T04:21:56.348742Z  INFO flashrt_server::chat: r6: prompt 62 (reused 0) in 491 ms, 57 tokens in 689 ms, Stop
+2026-09-28T04:21:57.847849Z  INFO flashrt_server::chat: r7: prompt 322 (reused 0) in 995 ms, 45 tokens in 503 ms, ToolCalls
+2026-09-28T04:21:58.622376Z  INFO flashrt_server::chat: r8: prompt 60 (reused 0) in 498 ms, 26 tokens in 276 ms, Cancelled
+2026-09-28T04:21:58.819409Z  INFO flashrt_server::chat: r9: prompt 15 (reused 0) in 172 ms, 1 tokens in 24 ms, Stop
+2026-09-28T04:22:01.619485Z  INFO flashrt_server::chat: r10: prompt 2035 (reused 0) in 1232 ms, 128 tokens in 1514 ms, Length
+2026-09-28T04:22:02.290022Z  INFO flashrt_server::chat: r11: prompt 2166 (reused 2163) in 57 ms, 64 tokens in 613 ms, Length
+2026-09-28T04:22:20.257742Z  INFO flashrt_server::chat: r12: prompt 33587 (reused 0) in 16727 ms, 128 tokens in 1223 ms, Length
+2026-09-28T04:22:20.980478Z  INFO flashrt_server::chat: r13: prompt 33718 (reused 33715) in 61 ms, 64 tokens in 652 ms, Length

@@ -1,0 +1,30 @@
+WARNING: Device-side CUDA Event completion trace is currently enabled.
+         This may increase runtime overhead and the likelihood of false
+         dependencies across CUDA Streams. If you wish to avoid this, please
+         disable the feature with --cuda-event-trace=false.
+WARNING: CPU IP/backtrace sampling not supported, disabling.
+Try the 'nsys status --environment' command to learn more.
+
+WARNING: CPU context switch tracing not supported, disabling.
+Try the 'nsys status --environment' command to learn more.
+
+KV cache: q8_0
+prefill: 65536 tokens in 29.7 s (2206.6 tok/s, chunks of 8192, experts streamed to the GPU)
+expert cache: 7519 slots (30.6% of experts), filled in 0.2 s from 10938 MiB free
+adaptive cache: decayed LFU, swap budget 8 (arena registered in 0.0 s)
+decode: 1 tokens at depth 65536 in 0.02 s: 43.41 tok/s (fast path, doorbell), swaps 0
+expert cache hit rate 82.08% (394 hits, 86 misses: 86 on the CPU, 0 read over PCIe)
+host per token: 18.30 ms waiting for routing, 3.87 ms running misses
+misses per layer: count (share of layers) and mean host miss time
+   0 :  16.7%     0.6 us
+   1 :  27.1%    60.7 us
+   2 :  29.2%    85.7 us
+   3 :  14.6%   125.6 us
+   4 :  12.5%   165.6 us
+CUDA graphs: on (1 capture(s))
+tokens: 445 56030
+Collecting data...
+Generating '/tmp/nsys-report-013d.qdstrm'
+[1/1] [0%                          ] q8.nsys-rep[1/1] [0%                          ] q8.nsys-rep[1/1] [===24%                      ] q8.nsys-rep[1/1] [====25%                     ] q8.nsys-rep[1/1] [====26%                     ] q8.nsys-rep[1/1] [====27%                     ] q8.nsys-rep[1/1] [====28%                     ] q8.nsys-rep[1/1] [=====29%                    ] q8.nsys-rep[1/1] [=====30%                    ] q8.nsys-rep[1/1] [===23%                      ] q8.nsys-rep[1/1] [==18%                       ] q8.nsys-rep[1/1] [======33%                   ] q8.nsys-rep[1/1] [====28%                     ] q8.nsys-rep[1/1] [===24%                      ] q8.nsys-rep[1/1] [==21%                       ] q8.nsys-rep[1/1] [==20%                       ] q8.nsys-rep[1/1] [=====29%                    ] q8.nsys-rep[1/1] [=======38%                  ] q8.nsys-rep[1/1] [==========48%               ] q8.nsys-rep[1/1] [============57%             ] q8.nsys-rep[1/1] [===============66%          ] q8.nsys-rep[1/1] [=================74%        ] q8.nsys-rep[1/1] [==================76%       ] q8.nsys-rep[1/1] [========================100%] q8.nsys-rep[1/1] [========================100%] q8.nsys-rep
+Generated:
+	$BENCH/sw41/q8.nsys-rep

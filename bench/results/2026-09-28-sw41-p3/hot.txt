@@ -1,0 +1,30 @@
+WARNING: Device-side CUDA Event completion trace is currently enabled.
+         This may increase runtime overhead and the likelihood of false
+         dependencies across CUDA Streams. If you wish to avoid this, please
+         disable the feature with --cuda-event-trace=false.
+WARNING: CPU IP/backtrace sampling not supported, disabling.
+Try the 'nsys status --environment' command to learn more.
+
+WARNING: CPU context switch tracing not supported, disabling.
+Try the 'nsys status --environment' command to learn more.
+
+KV cache: q8_0, host-resident, hot set of 4096 blocks per layer
+prefill: 65536 tokens in 49.3 s (1328.9 tok/s, chunks of 8192, experts streamed to the GPU)
+expert cache: 8053 slots (32.8% of experts), filled in 0.3 s from 11642 MiB free
+adaptive cache: decayed LFU, swap budget 8 (arena registered in 0.0 s)
+decode: 1 tokens at depth 65536 in 0.02 s: 43.37 tok/s (fast path, doorbell), swaps 0
+expert cache hit rate 84.58% (406 hits, 74 misses: 74 on the CPU, 0 read over PCIe)
+host per token: 18.73 ms waiting for routing, 3.48 ms running misses
+misses per layer: count (share of layers) and mean host miss time
+   0 :  25.0%     0.5 us
+   1 :  22.9%    64.9 us
+   2 :  29.2%    89.0 us
+   3 :  18.8%   129.2 us
+   4 :   4.2%   176.2 us
+CUDA graphs: on (1 capture(s))
+tokens: 445 56030
+Collecting data...
+Generating '/tmp/nsys-report-7302.qdstrm'
+[1/1] [0%                          ] hot.nsys-rep[1/1] [0%                          ] hot.nsys-rep[1/1] [5%                          ] hot.nsys-rep[1/1] [===23%                      ] hot.nsys-rep[1/1] [==19%                       ] hot.nsys-rep[1/1] [=16%                        ] hot.nsys-rep[1/1] [====28%                     ] hot.nsys-rep[1/1] [===24%                      ] hot.nsys-rep[1/1] [==21%                       ] hot.nsys-rep[1/1] [==19%                       ] hot.nsys-rep[1/1] [=17%                        ] hot.nsys-rep[1/1] [====25%                     ] hot.nsys-rep[1/1] [======33%                   ] hot.nsys-rep[1/1] [========40%                 ] hot.nsys-rep[1/1] [==========48%               ] hot.nsys-rep[1/1] [============56%             ] hot.nsys-rep[1/1] [==============64%           ] hot.nsys-rep[1/1] [================71%         ] hot.nsys-rep[1/1] [==================76%       ] hot.nsys-rep[1/1] [========================100%] hot.nsys-rep[1/1] [========================100%] hot.nsys-rep
+Generated:
+	$BENCH/sw41/hot.nsys-rep

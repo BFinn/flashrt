@@ -16,7 +16,9 @@ per-experiment evidence is in `bench/results/2026-09-2*`, each folder with a REA
   checkpoints, sampling, speculation, cancellation.
 - **The Rust server works end to end (2026-09-28):** OpenAI and Anthropic APIs with streaming,
   reasoning, tool calls and stop strings over the engine (`bench/results/2026-09-28-sw35-server`).
-- **Next:** cheaper verify windows, then P3 prefill.
+- **P3 is complete (2026-09-28):** prefill in chunks with the experts streamed to the GPU, 2,135-
+  2,272 tok/s at 32K and 1,940-1,959 at 245K (was 109-123 on the CPU path).
+- **Next:** cheaper verify windows, and the prefill kernels the profile names (attention, GDN).
 
 ## One decode token (fast path)
 
@@ -115,6 +117,25 @@ too (`moe_cpu` takes up to 4 tokens per expert). Each missed expert is read once
 the union of a window's misses grows almost linearly with its length: the CPU misses dominate a
 window's cost.
 
+## Prefill in chunks (P3)
+
+A `forward()` of more tokens than the decode batch is a chunk (the engine uses 4,096; fr_bench
+`--prefill-chunk`):
+- **Dense layers** run as matrix-matrix products (`kernels/cuda/ggml_gemm.h`): ggml's MMQ int8
+  tensor-core kernels for the quantized types, launched by flashrt (`mmq_launch.cuh`, one file per
+  weight type), cuBLAS for BF16. Q3R matrices are unpacked back to Q3_K for it.
+- **The MoE** (`moe_stream.cu`): a chunk routes to essentially every expert, so the layer's whole
+  expert slice (676 MB) is copied from the host arena while the previous layer computes, converted
+  on the GPU from the arena's planar Q2_0 to ggml's layout, and multiplied by grouped MMQ (the grid
+  sized by the largest expert's token count). About 32 GB cross PCIe per chunk, at 41-50 GB/s.
+- **QSA** runs its scoring, selection and attention in sub-batches of 128 tokens. With host KV,
+  the chunks attend from a VRAM mirror of the cache (sized to the prompt, freed after).
+- **The n-gram rows** of the next chunk are read from the SSD while a chunk computes.
+- **Routing counts** accumulate on the GPU and feed the expert cache after the prefill.
+
+The engine lends the expert cache's VRAM to the chunk buffers (about 4-7 GB) and rebuilds the
+cache after, from the prefill's routing counts and the startup prior.
+
 ## Why it is shaped like this (with the evidence)
 
 | Decision | Why | Evidence |
@@ -139,6 +160,8 @@ window's cost.
 | **GDN backup + replay for rewinds** | One state copy per window instead of one per token; a partial accept replays only the kept tokens. | sw25 (KLD with rewinds 0.0087) |
 | **Fused hc kernels for windows, each weight read once** | The generic path read the BF16 hc weights at 300 GB/s: 4.6 ms of a 3-token window. | sw28, sw29 |
 | **Window graphs, one pair per length** | Eager windows paid about 1.4 ms of launches per round. | sw27 |
+| **Prefill: every layer's experts streamed, not only the misses** | A 4K-8K chunk touches all 512 experts of a layer; one 676 MB copy per layer overlaps the previous layer, and the cache's VRAM is free for the chunk's buffers. | sw36-sw39 (P3): 136 → 2,135 tok/s at 32K |
+| **A VRAM mirror of host KV during prefill** | Chunk attention reading the host store over PCIe ran 2.6× slower. | sw42, sw43: 245K 738 → 1,940 tok/s |
 | **Sampling draws keyed by (seed, position)** | A position's sample is the same in a plain step and in a verify window, so speculative output can be checked against plain output token for token. | test_sample, sw31 |
 
 ## Tried and rejected, or parked
@@ -176,7 +199,9 @@ window's cost.
 | **245K, temperature 1.0: plain / `--spec 1` / `--spec 2`, 6 windows, means** | 78.5 / 90.2 / 83.2 | same |
 | **245K greedy `--spec 2`, fresh prefill with the head, 3 windows** | 83.7 / 94.8 / 92.3 | `2026-09-28-sw30-spec-245k` |
 | Verify window KLD (windows of 3 with rewinds, hot set 512) | 0.009232 | `2026-09-28-sw33-p2-temp1-rerun` |
-| Prefill (reference path, CPU experts) | 109-123 tok/s | P3 targets ≥ 1,700 |
+| **Prefill, chunks of 4,096 / 8,192, 32K** | 2,135 / 2,272 tok/s | `2026-09-28-sw39-p3` |
+| **Prefill, chunks of 8,192, 245K (q8 KV / host KV + mirror)** | 1,959 / 1,940 tok/s | `sw42-p3`, `sw43-p3` |
+| Prefill, reference path (CPU experts, 64-token batches) | 109-123 tok/s | |
 
 **Where the time goes at 245K with the hot set** (nsys `--cuda-graph-trace=node`, sw20):
 - 14.1 ms of GPU kernel time per token;
@@ -273,6 +298,7 @@ window's cost.
    several window tokens share (the grouped hit kernels read each once), a draft length chosen
    per round from the window's expected misses, and more cache slots (the Q2_0 head frees about
    500).
-2. **P3 prefill** (the reference path runs 109-123 tok/s: 38 minutes for 245K). It is now the
-   first thing a server user waits for: 17 s for a 2K prompt.
+2. **Prefill kernels:** at 64K the attention partials (FP32 CUDA cores) take 20% of prefill and
+   the sequential GDN delta rule 10%; a tensor-core attention and a chunked delta rule are next.
+   The expert MMQ (per-expert batches of about 80-160 tokens) is another 20%.
 3. **Tuning:** multi-CTA select, a parallel hot-set CLOCK, an adaptive swap budget.

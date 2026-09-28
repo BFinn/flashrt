@@ -135,6 +135,20 @@ with the MTP head's KV, 6 windows of 128 tokens each:
 - **The window's union of missed experts is the cost of speculation here:** each extra verified
   token adds about 3 ms at 2K, mostly waiting for the CPU (`bench/results/2026-09-28-sw28-profile`).
 
+**P3 status (2026-09-28): gates met.** Prefill in chunks, each layer's experts streamed to the GPU:
+
+| Gate | Target | Measured | Source |
+|---|---|---|---|
+| Prefill at 32K | ≥ 2,000 tok/s | 2,135 (chunks of 4,096), 2,272 (8,192); 2,008 through the server with the cache rebuild | `bench/results/2026-09-28-sw39-p3`, `sw45-p3` |
+| Prefill at 250K | ≥ 1,700 tok/s | 1,959 (q8 KV in VRAM), 1,940 (host KV with a VRAM mirror); 245,760 tokens, chunks of 8,192 | `sw42-p3`, `sw43-p3` |
+| KLD of prefill logits | ≤ 0.03 | 0.0085 (chunks of 1,024 and 4,096), 0.0088 (host KV) | `sw37-p3`, `sw44-p3` |
+
+- **Scope done:** big chunks on the expert cache's VRAM (the engine lends it and rebuilds the
+  cache after), the grouped int8 Q2_0 GEMM (ggml's MMQ, launched by flashrt), and the prefix cache
+  (the engine reuses the previous sequence or its checkpoint).
+- **Not done:** the tensor-core indexer. The indexer scores take about 6% of prefill time at 64K.
+- **The reference path took 38 minutes for 245K;** chunked prefill takes about 2 minutes.
+
 **How the KLD gate is measured** (set 2026-09-27, `bench/results/2026-09-27-p1-kld`):
 - **Protocol:** llama-perplexity's KL-divergence protocol on wikitext-2 test, 8,192-token chunks,
   2 chunks, scoring the second half of each chunk.

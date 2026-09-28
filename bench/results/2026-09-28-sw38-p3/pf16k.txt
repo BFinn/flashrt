@@ -1,0 +1,29 @@
+WARNING: Device-side CUDA Event completion trace is currently enabled.
+         This may increase runtime overhead and the likelihood of false
+         dependencies across CUDA Streams. If you wish to avoid this, please
+         disable the feature with --cuda-event-trace=false.
+WARNING: CPU IP/backtrace sampling not supported, disabling.
+Try the 'nsys status --environment' command to learn more.
+
+WARNING: CPU context switch tracing not supported, disabling.
+Try the 'nsys status --environment' command to learn more.
+
+KV cache: fp16
+prefill: 16384 tokens in 8.7 s (1883.8 tok/s, chunks of 4096, experts streamed to the GPU)
+expert cache: 7943 slots (32.3% of experts), filled in 0.3 s from 11496 MiB free
+adaptive cache: decayed LFU, swap budget 8 (arena registered in 0.0 s)
+decode: 1 tokens at depth 16384 in 0.02 s: 46.34 tok/s (fast path, doorbell), swaps 0
+expert cache hit rate 92.92% (446 hits, 34 misses: 34 on the CPU, 0 read over PCIe)
+host per token: 19.14 ms waiting for routing, 1.70 ms running misses
+misses per layer: count (share of layers) and mean host miss time
+   0 :  52.1%     0.7 us
+   1 :  29.2%    52.8 us
+   2 :  14.6%    97.7 us
+   3 :   4.2%   128.1 us
+CUDA graphs: on (1 capture(s))
+tokens: 17 1116
+Collecting data...
+Generating '/tmp/nsys-report-1792.qdstrm'
+[1/1] [0%                          ] pf16k.nsys-rep[1/1] [0%                          ] pf16k.nsys-rep[1/1] [5%                          ] pf16k.nsys-rep[1/1] [=====30%                    ] pf16k.nsys-rep[1/1] [===22%                      ] pf16k.nsys-rep[1/1] [==21%                       ] pf16k.nsys-rep[1/1] [=======39%                  ] pf16k.nsys-rep[1/1] [============56%             ] pf16k.nsys-rep[1/1] [=================72%        ] pf16k.nsys-rep[1/1] [==================75%       ] pf16k.nsys-rep[1/1] [========================100%] pf16k.nsys-rep[1/1] [========================100%] pf16k.nsys-rep
+Generated:
+	$BENCH/sw38/pf16k.nsys-rep
