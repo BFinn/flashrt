@@ -386,8 +386,10 @@ cache after, from the prefill's routing counts and the startup prior.
 - **Server:** `cargo build --release --manifest-path server/Cargo.toml`, then
   `server/target/release/flashrt-server --model $M --port 8090 --engine build/flashrt-engine --engine-arg $M --engine-arg --mtp --engine-arg $D --engine-arg --spec --engine-arg 1 --engine-arg --draft-vocab --engine-arg RANKS --engine-arg --cache-prior --engine-arg PRIOR`
   (`--api-key KEY` to require one). Checks: `--check-tokenizer TEXT IDS`, `--render REQUEST.json`,
-  and `bench/server_smoke.py --url ...` against a running server. Only as a test unit: no
-  service stays up on the box.
+  and `bench/server_smoke.py --url ...` against a running server (`bench/results/2026-09-28-sw86-server/sw86.sh`
+  runs the whole check as temporary units). Only as a test unit: no service stays up on the box.
+  Run it after any change to VRAM budgeting or the engine: sw86 caught a first-request
+  out-of-memory that `fr_bench` cannot see.
 - **Kernel profile:**
   `/usr/local/cuda-12.9/bin/nsys profile --capture-range=cudaProfilerApi --cuda-graph-trace=node --trace=cuda build/fr_bench ... --gen 64`.
   Without `--cuda-graph-trace=node`, graphs appear as single launches.
