@@ -291,6 +291,9 @@ __global__ void __launch_bounds__(32 * kHcDownWarps) k_hc_down2(const float* x, 
     constexpr int RPW = kHcDownRpw, NW = kHcDownWarps;
     extern __shared__ __align__(16) float xs[];   // [TT][n]: x * w_norm
     __shared__ float red[TT][NW];
+#if __CUDA_ARCH__ >= 900
+    cudaTriggerProgrammaticLaunchCompletion();   // k_hc_up_mix2 may start loading its weights
+#endif
     const int g = blockIdx.y, hc = gridDim.y, rows = rank + n_inject, nk = n / 256;
     const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, r0 = (blockIdx.x * NW + warp) * RPW;
     const size_t hcn = size_t(hc) * n;
@@ -452,6 +455,76 @@ __global__ void k_hc_up_mix(WU W, const float* part, int n_inject, float scale, 
     }
 }
 
+// v2 of k_hc_up_mix (sw75), rank == 64 * NCH: launched as a programmatic dependent of
+// k_hc_down2, it loads its weights while the down kernel runs, then waits for the partials
+// (cudaGridDependencySynchronize; a no-op without the launch attribute). The partials and xn are
+// read with plain loads after the wait.
+template <int TT, typename WU, int NCH>
+__global__ void __launch_bounds__(256) k_hc_up_mix2(WU W, const float* part, int n_inject, float scale, const float* xn, float* mixed,
+                                                    float* inject, int n) {
+    constexpr int HC = 4, rank = 64 * NCH;
+    __shared__ __align__(16) float xs[TT * rank];
+    __shared__ float contrib[TT][HC][8];
+    const int prow = rank + n_inject;
+    const int grp = threadIdx.x >> 3, l8 = threadIdx.x & 7;
+    const int st = grp >> 3, il = grp & 7, i = min(blockIdx.x * 8 + il, n - 1);
+    typename WU::Raw raw[NCH];
+    const size_t e0 = (size_t(st) * n + i) * rank;
+#pragma unroll
+    for (int k = 0; k < NCH; ++k) raw[k] = W.load(e0 + 8 * size_t(l8 + 8 * k));
+#if __CUDA_ARCH__ >= 900
+    cudaGridDependencySynchronize();
+#endif
+    for (int t = 0; t < TT; ++t)
+        for (int j = threadIdx.x; j < rank; j += blockDim.x) {
+            float lo = 0.0f;
+#pragma unroll
+            for (int g = 0; g < HC; ++g) lo += part[(size_t(t) * HC + g) * prow + j];
+            const float v = lo * scale;
+            xs[t * rank + j] = v / (1.0f + __expf(-v));
+        }
+    if (blockIdx.x == 0 && threadIdx.x < TT * n_inject) {
+        const int t = threadIdx.x / n_inject, k = threadIdx.x % n_inject;
+        float a = 0.0f;
+#pragma unroll
+        for (int g = 0; g < HC; ++g) a += part[(size_t(t) * HC + g) * prow + rank + k];
+        inject[t * n_inject + k] = a;
+    }
+    __syncthreads();
+    float acc[TT] = {};
+#pragma unroll
+    for (int k = 0; k < NCH; ++k) {
+        const int ch = l8 + 8 * k;
+        float wf[8];
+        WU::dec(raw[k], wf);
+#pragma unroll
+        for (int t = 0; t < TT; ++t) {
+            const float4 x0 = reinterpret_cast<const float4*>(xs + t * rank)[2 * ch];
+            const float4 x1 = reinterpret_cast<const float4*>(xs + t * rank)[2 * ch + 1];
+            const float xv[8] = {x0.x, x0.y, x0.z, x0.w, x1.x, x1.y, x1.z, x1.w};
+#pragma unroll
+            for (int q = 0; q < 8; ++q) acc[t] += wf[q] * xv[q];
+        }
+    }
+#pragma unroll
+    for (int t = 0; t < TT; ++t) {
+        float a = acc[t];
+        a += __shfl_xor_sync(0xffffffff, a, 4);
+        a += __shfl_xor_sync(0xffffffff, a, 2);
+        a += __shfl_xor_sync(0xffffffff, a, 1);
+        if (l8 == 0) contrib[t][st][il] = xn[(size_t(t) * HC + st) * n + i] / (1.0f + __expf(-a));
+    }
+    __syncthreads();
+    if (threadIdx.x < 8 * TT) {
+        const int t = threadIdx.x / 8, c8 = threadIdx.x % 8, ii = blockIdx.x * 8 + c8;
+        if (ii < n) {
+            float m = 0.0f;
+            for (int s2 = 0; s2 < HC; ++s2) m += contrib[t][s2][c8];
+            mixed[size_t(t) * n + ii] = m * (1.0f / HC);
+        }
+    }
+}
+
 template <int TT, typename WD, typename WU>
 void hc_fused_launch(const float* x, const float* w_norm, WD Wd, const uint16_t* Wi, WU Wu, float* xn, float* part, float* mixed,
                      float* inject, int n, int hc, int rank, int n_inj, float eps, cudaStream_t st) {
@@ -476,7 +549,26 @@ void hc_fused_launch(const float* x, const float* w_norm, WD Wd, const uint16_t*
         k_hc_down2<TT, WD><<<dim3((rows + per - 1) / per, hc), 32 * kHcDownWarps, smem, st>>>(x, w_norm, Wd, Wi, xn, part, n, rank, n_inj, eps);
     } else
         k_hc_down<TT, WD><<<dim3((rows + 15) / 16, hc), 512, smem, st>>>(x, w_norm, Wd, Wi, xn, part, n, rank, n_inj, eps);
-    k_hc_up_mix<TT, WU><<<(n + 7) / 8, 256, 0, st>>>(Wu, part, n_inj, 1.0f / hc, xn, mixed, inject, n, rank);
+    static const int up_mode = [] {   // FLASHRT_HC_UP2: 0 old kernel, 1 new kernel, 2 new kernel as a PDL dependent (default)
+        const char* e = std::getenv("FLASHRT_HC_UP2");
+        return e ? std::atoi(e) : 2;
+    }();
+    if (up_mode > 0 && rank == 320 && hc == 4) {
+        cudaLaunchConfig_t cfg{};
+        cfg.gridDim = dim3((n + 7) / 8);
+        cfg.blockDim = dim3(256);
+        cfg.dynamicSmemBytes = 0;
+        cfg.stream = st;
+        cudaLaunchAttribute attr[1];
+        attr[0].id = cudaLaunchAttributeProgrammaticStreamSerialization;
+        attr[0].val.programmaticStreamSerializationAllowed = 1;
+        cfg.attrs = attr;
+        cfg.numAttrs = up_mode == 2 ? 1 : 0;
+        ck(cudaLaunchKernelEx(&cfg, k_hc_up_mix2<TT, WU, 5>, Wu, static_cast<const float*>(part), n_inj, 1.0f / hc,
+                              static_cast<const float*>(xn), mixed, inject, n),
+           "hc_up_mix2");
+    } else
+        k_hc_up_mix<TT, WU><<<(n + 7) / 8, 256, 0, st>>>(Wu, part, n_inj, 1.0f / hc, xn, mixed, inject, n, rank);
 }
 
 // Q8P (kTypeQ8P) -> BF16, for the hc paths that multiply BF16 (one thread per element)
