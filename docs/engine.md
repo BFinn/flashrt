@@ -160,10 +160,23 @@ of KV. `fr_bench --prefill-chunk auto` does the same.
   - **Scores** (`k_idx_scores_tc`): 32 tokens x 4 heads as M rows against tiles of 64 pooled keys
     in fp16, with relu and the head sum fused.
   - Decode and verify windows keep the FP32 split-K kernels.
-- **GDN** (`k_gdn_delta_col`, calls of 16+ tokens): four lanes share two state columns (32 rows
-  each), so the column sums are shuffles, with no block barrier per token. q, k, v and the gates
-  arrive in tiles of 8 through shared memory, three tiles in flight. Shared-memory reads bound
-  it, so each lane reads the token's k and q once for both of its columns.
+- **GDN** (calls of 64+ tokens): the chunked (WY) delta rule on fp16 tensor cores
+  (`gdn_delta_prefill`, sw71).
+  - Chunks are 64 tokens; `k_gdn_chunk_prep` does the S-free part of every (chunk, head) in
+    parallel:
+    - it forms K K^T and Q K^T by mma, with the decays and beta in the epilogue;
+    - it solves T = (I + A)^-1 in fp32 by column substitution in registers;
+    - it forms W = T diag(beta gamma) K and U~ = T diag(beta) V by mma;
+    - it writes Q^, K^T, W and P as ready mma A fragments.
+  - `k_gdn_chunk_state`, one block per (head, 32 value columns), carries the state through
+    the chunks, fp32 in registers:
+    - U = U~ - W S0;
+    - O = gamma Q S0 + P U;
+    - S0 = gamma_C S0 + K^T U;
+    - an fp16 copy of S0 feeds the mma. This is FLA's precision split.
+  - In slabs of 8 chunks it is 1.8x the column kernel, which remains the fallback
+    (`FLASHRT_GDN_CHUNK=0`) and the path for 16-63 tokens: four lanes share two state columns, and
+    q, k, v arrive in tiles of 8 through shared memory.
 - **Hyper-connections:** the RMS norm writes `xn` in BF16 as well, for the down and inject
   products. The combine after the mixer is fused into the FFN mix's norm (`k_hc_combine_norm4`).
 - **Expert grouping** (`moe_prepare`) is flashrt's own: per-block histograms, a scan and a stable
@@ -218,6 +231,7 @@ cache after, from the prefill's routing counts and the startup prior.
 | **Prefill: every layer's experts streamed, not only the misses** | A 4K-8K chunk touches all 512 experts of a layer; one 676 MB copy per layer overlaps the previous layer, and the cache's VRAM is free for the chunk's buffers. | sw36-sw39 (P3): 136 → 2,135 tok/s at 32K |
 | **A VRAM mirror of host KV during prefill** | Chunk attention reading the host store over PCIe ran 2.6× slower. | sw42, sw43: 245K 738 → 1,940 tok/s |
 | **Tensor-core prefill attention, K/V gathered into fragments** | The FP32 split-K kernel ran at about 7 TFLOPS and wrote 0.8 MB of partials per token-layer. | sw46: 32K 2,193 → 2,644 tok/s; 64K attention 6.1 → 0.95 s |
+| **GDN prefill: the chunked form on tensor cores** | fp32 chunked is exact but 5x slower: it needs 2.4x the recurrence's FLOPs, and the fp32 tensor paths are no faster than the CUDA cores (TF32 61, BF16 122 TFLOPS). fp16 mma with an fp32 state is 1.8x the column kernel. Prep is DRAM-bound (about 70 MB per 512-token slab); state is mma-bound. | sw70, sw71 (+3.1-3.5% prefill, KLD 0.0084), sw72 |
 | **GDN: lanes own columns, tokens tiled through shared memory** | The block kernel waited on 4 barriers per token. v1, which prefetched one token into registers, waited on DRAM (slower). v2 was bound by shared-memory reads (24 per lane-token, over 4 addresses). | sw47, sw50: 32K 3,216 → 3,531 tok/s |
 | **Tensor-core indexer scores** | FP32 scoring is linear in depth: 1.65 s at 64K, an estimated 20 s at 245K. | sw49: 64K 2,984 → 3,197 tok/s; 0.16 s |
 | **BF16 from the hc norm; own expert grouping; hc combine fused into the norm** | The conversions cost as much as the BF16 GEMMs (1.17 s at 64K); ggml's grouping took 0.67 s. | sw48, sw51 (bit-identical) |
@@ -258,6 +272,9 @@ cache after, from the prefill's routing counts and the startup prior.
   (fp16) and +0.0007 (q8), outside the spread. Kept off. (sw57)
 - **More pipeline stages for moe_q2's gate/up** (3 or 4): no change. The kernel is not
   load-latency bound. (`test_moe_q2`)
+- **GDN chunk variants** (sw72):
+  - U~ in fp16: no faster, KLD 0.008744 against 0.008396;
+  - slabs of 4 or 16 chunks, and 64 or 128 columns per state block: all slower.
 - **GDN with 4 accumulators or 8 lanes per column:** no gain (sw60). The kernel runs at about 3x
   its instruction-issue estimate for reasons not found without performance counters.
 - **Prefetching forecast experts** (layer L's router on layer L-1's output): top-16 catches
@@ -283,7 +300,7 @@ cache after, from the prefill's routing counts and the startup prior.
 | **245K, temperature 1.0: plain / `--spec 1` / `--spec 2`, 6 windows, means** | 78.5 / 90.2 / 83.2 | same |
 | **245K greedy `--spec 2`, fresh prefill with the head, 3 windows** | 83.7 / 94.8 / 92.3 | `2026-09-28-sw30-spec-245k` |
 | Verify window KLD (windows of 3 with rewinds, hot set 512) | 0.009232 | `2026-09-28-sw33-p2-temp1-rerun` |
-| **Prefill, automatic chunks, 32K / 64K (q8 KV)** | 5,580 / 5,629 tok/s | `2026-09-28-sw61-milestone` |
+| **Prefill, automatic chunks, 32K / 64K (q8 KV)** | 5,955-5,978 / 5,982-6,012 tok/s | `2026-09-28-sw71-gdn-tc`, `sw72` |
 | **Prefill, automatic chunks, 245K (q8 KV / host KV + mirror)** | 5,309 / 5,170 tok/s | `2026-09-28-sw61-milestone` |
 | **Engine: 32K prompt, MTP head, cache rebuild** | 7.9 s | `2026-09-28-sw61-milestone` |
 | Prefill KLD (logits from chunks; fp16, q8; fast path after chunks) | 0.0082-0.0087 | sw47, sw49, sw50 |
@@ -385,9 +402,11 @@ cache after, from the prefill's routing counts and the startup prior.
    several window tokens share (the grouped hit kernels read each once), a draft length chosen
    per round from the window's expected misses, and more cache slots (the Q2_0 head frees about
    500).
-2. **Prefill** (64K, 11.3 s). Q3_K now multiplies as Q8_0, exactly (sw69, +3%). Left, in order:
-   - GDN's chunked (WY) form: an estimated 0.97 → 0.3-0.4 s at 64K (~5%), a large kernel. A
-     warp per state column, llama.cpp's design, is 3x slower (sw69).
+2. **Prefill** (64K, 10.9 s). Q3_K now multiplies as Q8_0, exactly (sw69, +3%). Left, in order:
+   - GDN: the chunked form is in (sw71). Left there:
+     - prep traffic: raw Q and K^T per key group, and V read by the state kernel with T in the
+       state step, would cut about 70 → 35 MB per slab;
+     - the state kernel's imbalance: 192 blocks on 84 SMs.
    - moe_q2's gate/up: about 170 TOPS against a 283-TOPS ceiling at its occupancy.
    - attention (L2-bound gathers);
    - the hc gated mean and norm, at bandwidth.
