@@ -412,15 +412,46 @@ __global__ void k_gdn_delta_reg(const float* S_in, float* S_out, float* S_bak, c
 }
 
 // The same delta rule for long calls (prefill): four lanes own a column of S, 32 rows each, so a
-// token's two column sums are two shuffles each and no block barrier; each lane reads the token's
-// q and k rows for its quarter itself (the same addresses across a warp's columns: broadcasts)
-// and loads the next token's while it computes. One warp per 8 columns, 4 warps per block.
+// token's two column sums are two shuffles each and no block barrier. The tokens' q, k, v, gate
+// and beta come in tiles of 16 through shared memory (cp.async, the next tile loading while this
+// one computes), as the recurrence can not wait for DRAM once per token. One warp per 8 columns,
+// 4 warps (32 columns) per block.
+constexpr int kGdnTile = 16;
+__device__ __forceinline__ void cp_async16(void* dst, const void* src) {
+    asm volatile("cp.async.cg.shared.global [%0], [%1], 16;\n" ::"r"(uint32_t(__cvta_generic_to_shared(dst))), "l"(src));
+}
+__device__ __forceinline__ void cp_async4(void* dst, const void* src) {
+    asm volatile("cp.async.ca.shared.global [%0], [%1], 4;\n" ::"r"(uint32_t(__cvta_generic_to_shared(dst))), "l"(src));
+}
 template <int DK>
 __global__ void __launch_bounds__(128) k_gdn_delta_col(const float* S_in, float* S_out, float* S_bak, const float* conv_out, const float* g,
                                                         const float* beta, float* o, int T, int k_heads, int v_heads, int channels) {
-    constexpr int R = DK / 4;   // rows per lane
+    constexpr int R = DK / 4, RP = R + 4;   // rows per lane; a quarter's stride in shared (padded: no bank conflicts)
+    __shared__ __align__(16) float qs[2][kGdnTile][4 * RP], ks[2][kGdnTile][4 * RP], vs[2][kGdnTile][32];
+    __shared__ float gs[2][kGdnTile], bs[2][kGdnTile];
     const int h = blockIdx.x, lane = threadIdx.x & 31, warp = threadIdx.x >> 5, hk = h % k_heads;
-    const int qd = lane & 3, i = blockIdx.y * 32 + warp * 8 + (lane >> 2), j0 = qd * R;
+    const int qd = lane & 3, ic = warp * 8 + (lane >> 2), i = blockIdx.y * 32 + ic, j0 = qd * R;
+    const size_t q_off = size_t(hk) * DK, k_off = size_t(k_heads) * DK + size_t(hk) * DK, v_off = size_t(2 * k_heads) * DK + size_t(h) * DK + blockIdx.y * 32;
+    auto load = [&](int tile, int buf) {
+        const int t0 = tile * kGdnTile, n = min(kGdnTile, T - t0);
+        for (int e = threadIdx.x; e < n * (DK / 4); e += blockDim.x) {   // 16-byte pieces of q and k
+            const int tt = e / (DK / 4), p = e % (DK / 4), d = p * 4;
+            const float* row = conv_out + size_t(t0 + tt) * channels;
+            float* qd_ = &qs[buf][tt][(d / R) * RP + d % R];
+            float* kd_ = &ks[buf][tt][(d / R) * RP + d % R];
+            cp_async16(qd_, row + q_off + d);
+            cp_async16(kd_, row + k_off + d);
+        }
+        for (int e = threadIdx.x; e < n * 8; e += blockDim.x) {
+            const int tt = e / 8, p = e % 8;
+            cp_async16(&vs[buf][tt][p * 4], conv_out + size_t(t0 + tt) * channels + v_off + p * 4);
+        }
+        if (threadIdx.x < n) {
+            cp_async4(&gs[buf][threadIdx.x], g + size_t(t0 + threadIdx.x) * v_heads + h);
+            cp_async4(&bs[buf][threadIdx.x], beta + size_t(t0 + threadIdx.x) * v_heads + h);
+        }
+        asm volatile("cp.async.commit_group;\n" ::);
+    };
     const float* Si = S_in + size_t(h) * DK * DK;
     float st[R];
 #pragma unroll
@@ -429,51 +460,54 @@ __global__ void __launch_bounds__(128) k_gdn_delta_col(const float* S_in, float*
 #pragma unroll
         for (int jj = 0; jj < R; ++jj) S_bak[size_t(h) * DK * DK + size_t(j0 + jj) * DK + i] = st[jj];
     const float scale = rsqrtf(float(DK));
-    const size_t q_off = size_t(hk) * DK + j0, k_off = size_t(k_heads) * DK + size_t(hk) * DK + j0, v_off = size_t(2 * k_heads) * DK + size_t(h) * DK + i;
-    float4 qn[R / 4], kn[R / 4];
-    auto load = [&](int t) {
-        const float* row = conv_out + size_t(t) * channels;
-#pragma unroll
-        for (int k = 0; k < R / 4; ++k) {
-            qn[k] = reinterpret_cast<const float4*>(row + q_off)[k];
-            kn[k] = reinterpret_cast<const float4*>(row + k_off)[k];
+    const int n_tiles = (T + kGdnTile - 1) / kGdnTile;
+    if (n_tiles > 0) load(0, 0);
+    for (int tile = 0; tile < n_tiles; ++tile) {
+        const int buf = tile & 1, t0 = tile * kGdnTile, n = min(kGdnTile, T - t0);
+        if (tile + 1 < n_tiles) {
+            load(tile + 1, buf ^ 1);
+            asm volatile("cp.async.wait_group 1;\n" ::);
+        } else {
+            asm volatile("cp.async.wait_group 0;\n" ::);
         }
-    };
-    if (T > 0) load(0);
-    for (int t = 0; t < T; ++t) {
-        float qv[R], kv[R];
+        __syncthreads();
+        for (int tt = 0; tt < n; ++tt) {
+            const float* qv = &qs[buf][tt][qd * RP];
+            const float* kv = &ks[buf][tt][qd * RP];
+            const float decay = __expf(gs[buf][tt]), b = bs[buf][tt], vi = vs[buf][tt][ic];
+            float sk0 = 0.0f, sk1 = 0.0f;
 #pragma unroll
-        for (int k = 0; k < R / 4; ++k) {
-            qv[4 * k] = qn[k].x; qv[4 * k + 1] = qn[k].y; qv[4 * k + 2] = qn[k].z; qv[4 * k + 3] = qn[k].w;
-            kv[4 * k] = kn[k].x; kv[4 * k + 1] = kn[k].y; kv[4 * k + 2] = kn[k].z; kv[4 * k + 3] = kn[k].w;
-        }
-        const float vi = conv_out[size_t(t) * channels + v_off];
-        const float decay = __expf(g[t * v_heads + h]), b = beta[t * v_heads + h];
-        if (t + 1 < T) load(t + 1);
-        float sk0 = 0.0f, sk1 = 0.0f;
+            for (int jj = 0; jj < R; jj += 4) {
+                const float4 k4 = *reinterpret_cast<const float4*>(kv + jj);
+                st[jj] *= decay;
+                st[jj + 1] *= decay;
+                st[jj + 2] *= decay;
+                st[jj + 3] *= decay;
+                sk0 += st[jj] * k4.x + st[jj + 2] * k4.z;
+                sk1 += st[jj + 1] * k4.y + st[jj + 3] * k4.w;
+            }
+            float sk = sk0 + sk1;
+            sk += __shfl_xor_sync(~0u, sk, 1);
+            sk += __shfl_xor_sync(~0u, sk, 2);
+            const float d = b * (vi - sk);
+            float o0 = 0.0f, o1 = 0.0f;
 #pragma unroll
-        for (int jj = 0; jj < R; jj += 2) {
-            st[jj] *= decay;
-            st[jj + 1] *= decay;
-            sk0 += st[jj] * kv[jj];
-            sk1 += st[jj + 1] * kv[jj + 1];
+            for (int jj = 0; jj < R; jj += 4) {
+                const float4 k4 = *reinterpret_cast<const float4*>(kv + jj);
+                const float4 q4 = *reinterpret_cast<const float4*>(qv + jj);
+                st[jj] += d * k4.x;
+                st[jj + 1] += d * k4.y;
+                st[jj + 2] += d * k4.z;
+                st[jj + 3] += d * k4.w;
+                o0 += st[jj] * q4.x + st[jj + 2] * q4.z;
+                o1 += st[jj + 1] * q4.y + st[jj + 3] * q4.w;
+            }
+            float oi = o0 + o1;
+            oi += __shfl_xor_sync(~0u, oi, 1);
+            oi += __shfl_xor_sync(~0u, oi, 2);
+            if (qd == 0) o[(size_t(t0 + tt) * v_heads + h) * DK + i] = oi * scale;
         }
-        float sk = sk0 + sk1;
-        sk += __shfl_xor_sync(~0u, sk, 1);
-        sk += __shfl_xor_sync(~0u, sk, 2);
-        const float d = b * (vi - sk);
-        float o0 = 0.0f, o1 = 0.0f;
-#pragma unroll
-        for (int jj = 0; jj < R; jj += 2) {
-            st[jj] += d * kv[jj];
-            st[jj + 1] += d * kv[jj + 1];
-            o0 += st[jj] * qv[jj];
-            o1 += st[jj + 1] * qv[jj + 1];
-        }
-        float oi = o0 + o1;
-        oi += __shfl_xor_sync(~0u, oi, 1);
-        oi += __shfl_xor_sync(~0u, oi, 2);
-        if (qd == 0) o[(size_t(t) * v_heads + h) * DK + i] = oi * scale;
+        __syncthreads();   // the buffer is refilled next iteration
     }
     float* So = S_out + size_t(h) * DK * DK;
 #pragma unroll
