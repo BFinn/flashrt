@@ -150,6 +150,8 @@ if(FLASHRT_CUDA)
   add_test(NAME moe_q COMMAND test_moe_q)
   add_executable(test_gemm tests/test_gemm.cpp)
   target_link_libraries(test_gemm PRIVATE flashrt_gemv flashrt_core flashrt_ggml_stubs)
+  add_executable(test_gdn tests/test_gdn.cpp)
+  target_link_libraries(test_gdn PRIVATE flashrt_qwen4exp_gpu flashrt_gemv flashrt_ggml_stubs)   # stubs last
   add_executable(test_moe_q2 tests/test_moe_q2.cpp)
   target_link_libraries(test_moe_q2 PRIVATE flashrt_gemv flashrt_q2_0 flashrt_core flashrt_ggml_stubs)
   add_executable(test_sample tests/test_sample.cpp)

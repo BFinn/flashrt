@@ -672,68 +672,165 @@ __global__ void __launch_bounds__(32 * kGdnColWarps) k_gdn_delta_col(const float
     for (int jj = 0; jj < R; ++jj) *reinterpret_cast<float2*>(So + size_t(j0 + jj) * DK + i) = make_float2(s0[jj], s1[jj]);
 }
 
-// The delta rule for long calls with a warp per state column (DK / 32 rows per lane): 48 heads x
-// 128 columns give 6,144 warps, so occupancy hides the per-token latency that bounds the column
-// kernel (384 warps). Each lane reads its rows of the token's q and k from global memory (the
-// head's 32 blocks read the same rows: L1 serves them), one token ahead.
+// ---- the chunked (WY) form of the delta rule, for prefill
+// Per chunk of C tokens with cumulative log decay G_t (gamma_t = exp(G_t)) and start state S0:
+//   the new values U solve (I + A) U = beta V - diag(beta gamma) K S0, A[t][s] = beta_t
+//   exp(G_t - G_s) k_t.k_s for s < t; so U = U~ - W S0 with U~ = T diag(beta) V and
+//   W = T diag(beta gamma) K, T = (I + A)^-1 (both free of S0);
+//   O = diag(gamma) Q S0 + P U, P[t][s] = exp(G_t - G_s) q_t.k_s for s <= t;
+//   S0' = gamma_C S0 + K^T diag(exp(G_C - G)) U.
+// k_gdn_chunk_prep does the S0-free part for every (chunk, head) in parallel; k_gdn_chunk_state
+// carries S0 through the chunks, one block per (head, 32 value columns): the columns of S evolve
+// independently. All fp32, same math as the recurrence (a different summation order).
+constexpr int kGdnChunk = 64, kGdnSlab = 16;   // tokens per chunk; chunks per prep/state pass
+
 template <int DK>
-__global__ void __launch_bounds__(128) k_gdn_delta_warp(const float* S_in, float* S_out, float* S_bak, const float* conv_out, const float* g,
-                                                        const float* beta, float* o, int T, int k_heads, int v_heads, int channels) {
-    constexpr int R = DK / 32;
-    const int h = blockIdx.x, warp = threadIdx.x >> 5, lane = threadIdx.x & 31, hk = h % k_heads;
-    const int i = blockIdx.y * (blockDim.x >> 5) + warp;
-    const float* Si = S_in + size_t(h) * DK * DK;
-    float st[R];
-#pragma unroll
-    for (int r = 0; r < R; ++r) st[r] = Si[size_t(r * 32 + lane) * DK + i];
-    if (S_bak)
-#pragma unroll
-        for (int r = 0; r < R; ++r) S_bak[size_t(h) * DK * DK + size_t(r * 32 + lane) * DK + i] = st[r];
-    const float scale = rsqrtf(float(DK));
-    const size_t q_off = size_t(hk) * DK + lane, k_off = size_t(k_heads) * DK + size_t(hk) * DK + lane,
-                 v_off = size_t(2 * k_heads) * DK + size_t(h) * DK + i;
-    float qn[R], kn[R], vn = 0.0f, gn = 0.0f, bn = 0.0f;
-    auto load = [&](int t) {
-        const float* row = conv_out + size_t(t) * channels;
-#pragma unroll
-        for (int r = 0; r < R; ++r) {
-            qn[r] = row[q_off + 32 * r];
-            kn[r] = row[k_off + 32 * r];
-        }
-        vn = row[v_off];
-        gn = g[size_t(t) * v_heads + h];
-        bn = beta[size_t(t) * v_heads + h];
-    };
-    if (T > 0) load(0);
-    for (int t = 0; t < T; ++t) {
-        float qv[R], kv[R];
-#pragma unroll
-        for (int r = 0; r < R; ++r) {
-            qv[r] = qn[r];
-            kv[r] = kn[r];
-        }
-        const float vi = vn, decay = __expf(gn), b = bn;
-        if (t + 1 < T) load(t + 1);
-        float sk = 0.0f;
-#pragma unroll
-        for (int r = 0; r < R; ++r) {
-            st[r] *= decay;
-            sk += st[r] * kv[r];
-        }
-        for (int m = 16; m > 0; m >>= 1) sk += __shfl_xor_sync(~0u, sk, m);
-        const float d = b * (vi - sk);
-        float oi = 0.0f;
-#pragma unroll
-        for (int r = 0; r < R; ++r) {
-            st[r] += d * kv[r];
-            oi += st[r] * qv[r];
-        }
-        for (int m = 16; m > 0; m >>= 1) oi += __shfl_xor_sync(~0u, oi, m);
-        if (lane == 0) o[(size_t(t) * v_heads + h) * DK + i] = oi * scale;
+__global__ void __launch_bounds__(256) k_gdn_chunk_prep(const float* conv, const float* g, const float* beta, int T, int t_base,
+                                                       int k_heads, int v_heads, int channels, float* Ub, float* Wb, float* Pb, float* Gb) {
+    constexpr int C = kGdnChunk, KP = DK + 1;   // padded rows: conflict-free column reads
+    extern __shared__ float gsm[];
+    float* ks = gsm;               // [C][KP]
+    float* qs = ks + C * KP;       // [C][KP]
+    float* As = qs + C * KP;       // [C][C + 1]
+    __shared__ float Gs[C], Bs[C];
+    const int ci = blockIdx.x, h = blockIdx.y, hk = h % k_heads, tid = threadIdx.x;
+    const int t0 = t_base + ci * C, n = min(C, T - t0);
+    const size_t q_off = size_t(hk) * DK, k_off = size_t(k_heads) * DK + size_t(hk) * DK, v_off = size_t(2 * k_heads) * DK + size_t(h) * DK;
+    for (int e = tid; e < C * DK; e += blockDim.x) {
+        const int t = e / DK, d = e % DK;
+        const float* row = conv + size_t(t0 + t) * channels;
+        ks[t * KP + d] = t < n ? row[k_off + d] : 0.0f;
+        qs[t * KP + d] = t < n ? row[q_off + d] : 0.0f;
     }
-    float* So = S_out + size_t(h) * DK * DK;
+    if (tid < C) {
+        Gs[tid] = tid < n ? g[size_t(t0 + tid) * v_heads + h] : 0.0f;   // padding: decay 1, beta 0
+        Bs[tid] = tid < n ? beta[size_t(t0 + tid) * v_heads + h] : 0.0f;
+    }
+    __syncthreads();
+    if (tid == 0) {
+        float run = 0.0f;
+        for (int t = 0; t < C; ++t) {
+            run += Gs[t];
+            Gs[t] = run;
+        }
+    }
+    __syncthreads();
+    const size_t item = size_t(ci) * v_heads + h;   // slab-local (chunk, head)
+    float* P = Pb + item * C * C;
+    for (int e = tid; e < C * C; e += blockDim.x) {
+        const int t = e / C, s = e % C;
+        float a = 0.0f, p = 0.0f;
+        if (s <= t) {
+            float dk = 0.0f, dq = 0.0f;
+            for (int d = 0; d < DK; ++d) {
+                const float kv = ks[s * KP + d];
+                dk += ks[t * KP + d] * kv;
+                dq += qs[t * KP + d] * kv;
+            }
+            const float dec = __expf(Gs[t] - Gs[s]);
+            p = dec * dq;
+            if (s < t) a = Bs[t] * dec * dk;
+        }
+        As[t * (C + 1) + s] = a;
+        P[e] = p;
+    }
+    __syncthreads();
+    // (I + A) X = [beta V | beta gamma K] by forward substitution, one thread per column
+    for (int col = tid; col < 2 * DK; col += blockDim.x) {
+        float x[C];
 #pragma unroll
-    for (int r = 0; r < R; ++r) So[size_t(r * 32 + lane) * DK + i] = st[r];
+        for (int t = 0; t < C; ++t) {
+            float b = col < DK ? (t < n ? Bs[t] * conv[size_t(t0 + t) * channels + v_off + col] : 0.0f)
+                               : Bs[t] * __expf(Gs[t]) * ks[t * KP + col - DK];
+#pragma unroll
+            for (int s = 0; s < t; ++s) b -= As[t * (C + 1) + s] * x[s];
+            x[t] = b;
+        }
+        float* out = (col < DK ? Ub : Wb) + item * C * DK + (col < DK ? col : col - DK);
+#pragma unroll
+        for (int t = 0; t < C; ++t) out[size_t(t) * DK] = x[t];
+    }
+    if (tid < C) Gb[item * C + tid] = Gs[tid];
+}
+
+template <int DK>
+__global__ void __launch_bounds__(256) k_gdn_chunk_state(float* S, const float* conv, const float* Ub, const float* Wb, const float* Pb,
+                                                        const float* Gb, float* o, int T, int t_base, int n_chunks, int k_heads, int v_heads,
+                                                        int channels) {
+    constexpr int C = kGdnChunk, NC = 32, BP = DK + 1;
+    extern __shared__ float gsm[];
+    float* buf = gsm;              // [C][BP]: W, then Q, then diag(exp(G_C - G)) K
+    float* S0 = buf + C * BP;      // [DK][NC]
+    float* Us = S0 + DK * NC;      // [C][NC]
+    float* Ps = Us + C * NC;       // [C][C]
+    __shared__ float Gs[C];
+    const int h = blockIdx.x, i0 = blockIdx.y * NC, hk = h % k_heads, tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
+    const size_t q_off = size_t(hk) * DK, k_off = size_t(k_heads) * DK + size_t(hk) * DK;
+    float* Sh = S + size_t(h) * DK * DK;
+    for (int e = tid; e < DK * NC; e += blockDim.x) S0[e] = Sh[size_t(e / NC) * DK + i0 + e % NC];
+    const float scale = rsqrtf(float(DK));
+    for (int ci = 0; ci < n_chunks; ++ci) {
+        const int t0 = t_base + ci * C, n = min(C, T - t0);
+        const size_t item = size_t(ci) * v_heads + h;
+        __syncthreads();   // the previous chunk is done with buf, Us, Ps and S0's old values
+        for (int e = tid; e < C * DK; e += blockDim.x) buf[(e / DK) * BP + e % DK] = Wb[item * C * DK + e];
+        for (int e = tid; e < C * NC; e += blockDim.x) Us[e] = Ub[item * C * DK + size_t(e / NC) * DK + i0 + e % NC];
+        for (int e = tid; e < C * C; e += blockDim.x) Ps[e] = Pb[item * C * C + e];
+        if (tid < C) Gs[tid] = Gb[item * C + tid];
+        __syncthreads();
+        // 1. U = U~ - W S0: lane = column, warp = rows 8 warp .. + 8
+        {
+            float acc[8] = {};
+            for (int j = 0; j < DK; ++j) {
+                const float sv = S0[j * NC + lane];
+#pragma unroll
+                for (int r = 0; r < 8; ++r) acc[r] += buf[(warp * 8 + r) * BP + j] * sv;
+            }
+#pragma unroll
+            for (int r = 0; r < 8; ++r) Us[(warp * 8 + r) * NC + lane] -= acc[r];
+        }
+        __syncthreads();
+        // 2. O = diag(gamma) Q S0 + P U
+        for (int e = tid; e < C * DK; e += blockDim.x) {
+            const int t = e / DK, d = e % DK;
+            buf[t * BP + d] = t < n ? conv[size_t(t0 + t) * channels + q_off + d] : 0.0f;
+        }
+        __syncthreads();
+        {
+            float acc[8] = {};
+            for (int j = 0; j < DK; ++j) {
+                const float sv = S0[j * NC + lane];
+#pragma unroll
+                for (int r = 0; r < 8; ++r) acc[r] += buf[(warp * 8 + r) * BP + j] * sv;
+            }
+#pragma unroll
+            for (int r = 0; r < 8; ++r) {
+                const int t = warp * 8 + r;
+                float a = __expf(Gs[t]) * acc[r];
+                for (int s = 0; s <= t; ++s) a += Ps[t * C + s] * Us[s * NC + lane];
+                if (t < n) o[(size_t(t0 + t) * v_heads + h) * DK + i0 + lane] = a * scale;
+            }
+        }
+        __syncthreads();
+        // 3. S0 = gamma_C S0 + K^T diag(exp(G_C - G)) U: lane = column, warp = rows 16 warp .. + 16
+        const float GC = Gs[C - 1];
+        for (int e = tid; e < C * DK; e += blockDim.x) {
+            const int t = e / DK, d = e % DK;
+            buf[t * BP + d] = t < n ? __expf(GC - Gs[t]) * conv[size_t(t0 + t) * channels + k_off + d] : 0.0f;
+        }
+        __syncthreads();
+        {
+            const float gc = __expf(GC);
+            for (int r = 0; r < DK / 8; ++r) {
+                const int j = warp * (DK / 8) + r;
+                float a = gc * S0[j * NC + lane];
+                for (int t = 0; t < C; ++t) a += buf[t * BP + j] * Us[t * NC + lane];
+                S0[j * NC + lane] = a;
+            }
+        }
+    }
+    __syncthreads();
+    for (int e = tid; e < DK * NC; e += blockDim.x) Sh[size_t(e / NC) * DK + i0 + e % NC] = S0[e];
 }
 
 // Rewinds a history of H rows (oldest first, C values each) after a call of T inputs to its
@@ -791,6 +888,7 @@ void free_block_scratch(BlockScratch& b) {
     if (b.gemm_ws) cudaFree(b.gemm_ws);
     if (b.q3k_tmp) cudaFree(b.q3k_tmp);
     if (b.q8_tmp) cudaFree(b.q8_tmp);
+    if (b.gdn_ws) cudaFree(b.gdn_ws);
     if (b.hc_bf16) cudaFree(b.hc_bf16);
     if (b.tok_dev) cudaFree(b.tok_dev);
     b = BlockScratch{};
@@ -1083,6 +1181,43 @@ namespace flashrt::qwen4exp {
 
 namespace {
 int gdn_channels(const Spec& s) { return 2 * s.ssm_groups * s.ssm_state + s.ssm_heads * s.ssm_state; }
+
+size_t gdn_chunk_ws_bytes(const Spec& s) {
+    const size_t items = size_t(kGdnSlab) * s.ssm_heads, C = kGdnChunk, dk = s.ssm_state;
+    return items * C * (2 * dk + C + 1) * 4;   // U~, W, P, G
+}
+
+void gdn_delta_prefill(const Spec& s, float* S, const float* conv, const float* g, const float* beta, float* o, int T, bool chunked, void* ws,
+                       cudaStream_t stream) {
+    const int H = s.ssm_heads, dk = s.ssm_state, groups = s.ssm_groups, ch = gdn_channels(s);
+    if (dk != 128) throw std::runtime_error("gdn_delta_prefill: state 128 only");
+    if (!chunked) {
+        k_gdn_delta_col<128><<<dim3(H, 128 / (16 * kGdnColWarps)), 32 * kGdnColWarps, 0, stream>>>(S, S, nullptr, conv, g, beta, o, T, groups,
+                                                                                                    H, ch);
+        ck(cudaGetLastError(), "gdn column");
+        return;
+    }
+    constexpr int C = kGdnChunk, DK = 128;
+    const size_t items = size_t(kGdnSlab) * H;
+    float* Ub = static_cast<float*>(ws);
+    float* Wb = Ub + items * C * DK;
+    float* Pb = Wb + items * C * DK;
+    float* Gb = Pb + items * C * C;
+    const size_t smem_prep = size_t(2 * C * (DK + 1) + C * (C + 1)) * 4;
+    const size_t smem_state = size_t(C * (DK + 1) + DK * 32 + C * 32 + C * C) * 4;
+    static bool attr = false;
+    if (!attr) {
+        ck(cudaFuncSetAttribute(k_gdn_chunk_prep<DK>, cudaFuncAttributeMaxDynamicSharedMemorySize, int(smem_prep)), "gdn prep smem");
+        ck(cudaFuncSetAttribute(k_gdn_chunk_state<DK>, cudaFuncAttributeMaxDynamicSharedMemorySize, int(smem_state)), "gdn state smem");
+        attr = true;
+    }
+    for (int t_base = 0; t_base < T; t_base += kGdnSlab * C) {
+        const int n_chunks = std::min(kGdnSlab, (T - t_base + C - 1) / C);
+        k_gdn_chunk_prep<DK><<<dim3(n_chunks, H), 256, smem_prep, stream>>>(conv, g, beta, T, t_base, groups, H, ch, Ub, Wb, Pb, Gb);
+        k_gdn_chunk_state<DK><<<dim3(H, DK / 32), 256, smem_state, stream>>>(S, conv, Ub, Wb, Pb, Gb, o, T, t_base, n_chunks, groups, H, ch);
+    }
+    ck(cudaGetLastError(), "gdn chunked");
+}
 }
 
 GdnState alloc_gdn_state(const Spec& s) {
@@ -1165,14 +1300,20 @@ void gdn_mixer(const BlockCtx& c, int il, const float* x, int T, GdnState& st, f
         const char* e = std::getenv("FLASHRT_GDN_COL");
         return !(e && e[0] == '0');
     }();
-    static const bool warp_on = [] {   // FLASHRT_GDN_KERNEL=warp: a warp per state column (experiment)
-        const char* e = std::getenv("FLASHRT_GDN_KERNEL");
-        return e && std::string(e) == "warp";
+    static const bool chunk_on = [] {   // FLASHRT_GDN_CHUNK=0: the column kernel for prefill too
+        const char* e = std::getenv("FLASHRT_GDN_CHUNK");
+        return !(e && e[0] == '0');
     }();
-    if (dk == 128 && T >= 16 && col_on && warp_on)
-        k_gdn_delta_warp<128><<<dim3(H, 128 / 4), 128, 0, c.stream>>>(st.S, st.S, win ? win->S_bak : nullptr, conv, alpha, beta, o, T,
-                                                                      s.ssm_groups, H, ch);
-    else if (dk == 128 && T >= 16 && col_on)   // prefill; decode keeps the block kernel
+    if (dk == 128 && T >= kGdnChunk && !win && chunk_on) {   // prefill: the chunked form
+        BlockScratch& bs = c.scratch;
+        const size_t need = gdn_chunk_ws_bytes(s);
+        if (bs.gdn_ws_bytes < need) {
+            if (bs.gdn_ws) cudaFree(bs.gdn_ws);
+            ck(cudaMalloc(&bs.gdn_ws, need), "cudaMalloc gdn chunk workspace");
+            bs.gdn_ws_bytes = need;
+        }
+        gdn_delta_prefill(s, st.S, conv, alpha, beta, o, T, true, bs.gdn_ws, c.stream);
+    } else if (dk == 128 && T >= 16 && col_on)   // prefill; decode keeps the block kernel
         k_gdn_delta_col<128><<<dim3(H, 128 / (16 * kGdnColWarps)), 32 * kGdnColWarps, 0, c.stream>>>(st.S, st.S, win ? win->S_bak : nullptr, conv, alpha, beta, o, T,
                                                                      s.ssm_groups, H, ch);
     else if (dk == 128)

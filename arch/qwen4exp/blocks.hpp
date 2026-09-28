@@ -46,6 +46,8 @@ struct BlockScratch {
     size_t q3k_tmp_bytes = 0;
     void* q8_tmp = nullptr;   // a Q3_K matrix as Q8_0 (lossless), for the faster Q8_0 MMQ
     size_t q8_tmp_bytes = 0;
+    void* gdn_ws = nullptr;   // the chunked delta rule's per-slab products (gdn_chunk_ws_bytes)
+    size_t gdn_ws_bytes = 0;
     // Q8P hc down and up of one mix, dequantized to BF16 for hc_mix outside the fused decode
     // kernels (allocated with the scratch: a window may take that path inside a graph)
     void* hc_bf16 = nullptr;
@@ -137,6 +139,13 @@ void free_gdn_window(GdnWindow& w);
 // (T <= win->max_tokens), the call can be rewound.
 void gdn_mixer(const BlockCtx& c, int il, const float* x, int T, GdnState& st, float* out, float* o_inner = nullptr,
                GdnWindow* win = nullptr);
+// The delta rule of one GDN layer over T tokens (prefill), the state S [heads][128][128] in place.
+// conv [T][channels]: the L2-normed q and k heads, then v; g, beta [T][heads] (g the log decay);
+// o [T][heads][128]. chunked: the chunked (WY) form, with ws of gdn_chunk_ws_bytes(s); otherwise
+// the column kernel (the recurrence token by token).
+size_t gdn_chunk_ws_bytes(const Spec& s);
+void gdn_delta_prefill(const Spec& s, float* S, const float* conv, const float* g, const float* beta, float* o, int T, bool chunked,
+                       void* ws, cudaStream_t stream);
 // Rewinds the last gdn_mixer call (T tokens, with win) to its first n tokens (n < T; n == T is a
 // no-op): the state is replayed from the backup over n tokens, the conv history rebuilt.
 void gdn_rewind(const BlockCtx& c, GdnState& st, const GdnWindow& win, int T, int n);

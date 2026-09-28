@@ -415,6 +415,7 @@ size_t ForwardRef::chunk_bytes(int T, int end_pos) const {
     b += expert_stream_bytes_for(s, *moe_host_.arena, T);
     b += gemm::workspace_bytes(int64_t(hc * n), T);                        // linear(): the widest input is the hc norm's
     b += size_t(s.n_layer) * s.n_expert * 4;                               // routing counts
+    b += gdn_chunk_ws_bytes(s);                                            // the chunked delta rule's slab products
     const int r = s.qsa_block, ldc = (s.idx_top_k + 2 * r - 2) / r * r;
     b += size_t(128) * (end_pos / r) * 8 + size_t(128) * ldc * 8;           // QSA sub-batches: scores, cell lists
     for (int il : s.qsa_layers)
