@@ -24,8 +24,9 @@ size_t workspace_bytes(int T, int K, int n, int ff, int E);
 // the planar layout (q2_0::expert_view). ids [T][K] (device). yd [T * K][n] gets, for slot
 // t * K + k, down(silu(gate x_t) * up x_t) of expert ids[t * K + k]. n and ff: multiples of 128.
 // block64: the activations are quantized in blocks of 64 (the weights' block) instead of 32,
-// which halves the kernels' scale arithmetic.
-void run(const uint8_t* experts, size_t stride, int E, int n, int ff, const float* x, const int32_t* ids, int T, int K, float* yd,
-         void* ws, size_t ws_bytes, cudaStream_t stream, bool block64 = false);
+// which halves the kernels' scale arithmetic. yd_bf16: yd is BF16 instead of float (half the
+// traffic of the per-slot outputs).
+void run(const uint8_t* experts, size_t stride, int E, int n, int ff, const float* x, const int32_t* ids, int T, int K, void* yd,
+         void* ws, size_t ws_bytes, cudaStream_t stream, bool block64 = false, bool yd_bf16 = false);
 
 }  // namespace flashrt::moe_q2

@@ -317,8 +317,11 @@ void hc_fused_launch(const float* x, const float* w_norm, const uint16_t* Wd, co
 }
 
 // k_gated_mean with xn recomputed from x: xn[t][s][i] = x[t][s][i] * inv[t * hc + s] * w[s][i]
-// (the norm's own expression, so the same values), sparing the norm's write of xn
-__global__ void k_gated_mean_x(const float* x, const float* inv, const float* w, const float* gate, float* mixed, int n, int hc, int T) {
+// (the norm's own expression, so the same values), sparing the norm's write of xn; gate float or BF16
+__device__ __forceinline__ float gate_f(float v) { return v; }
+__device__ __forceinline__ float gate_f(__nv_bfloat16 v) { return __bfloat162float(v); }
+template <typename GT>
+__global__ void k_gated_mean_x(const float* x, const float* inv, const float* w, const GT* gate, float* mixed, int n, int hc, int T) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     const int t = blockIdx.y;
     if (i >= n || t >= T) return;
@@ -326,7 +329,7 @@ __global__ void k_gated_mean_x(const float* x, const float* inv, const float* w,
     for (int s = 0; s < hc; ++s) {
         const size_t k = (size_t(t) * hc + s) * n + i;
         const float xn = x[k] * inv[size_t(t) * hc + s] * w[size_t(s) * n + i];
-        acc += xn / (1.0f + __expf(-gate[k]));
+        acc += xn / (1.0f + __expf(-gate_f(gate[k])));
     }
     mixed[size_t(t) * n + i] = acc * (1.0f / hc);
 }
@@ -816,9 +819,20 @@ void hc_mix_impl(const BlockCtx& c, int il, int which, float* x, const float* co
         gemm::gemm_bf16(w_down.dev, xb, lo, hcd, s.hc_rank, T, c.stream);
         if (w_inj && !fuse_inj) gemm::gemm_bf16(w_inj->dev, xb, inject, hcd, w_inj->rows(), T, c.stream);
         k_scale_silu<<<(T * s.hc_rank + 255) / 256, 256, 0, c.stream>>>(lo, T * s.hc_rank, 1.0f / hc);
-        linear(c, w_up, lo, gate, T);
-        if (xn_out) k_gated_mean<<<dim3((n + 255) / 256, T), 256, 0, c.stream>>>(xn, gate, mixed, n, hc, T);
-        else k_gated_mean_x<<<dim3((n + 255) / 256, T), 256, 0, c.stream>>>(x, inv, wn, gate, mixed, n, hc, T);
+        // FLASHRT_HC_GATE16=1: the up product writes the gate in BF16 (half the traffic of gate and gated mean)
+        static const bool gate16 = [] {
+            const char* e = std::getenv("FLASHRT_HC_GATE16");
+            return e && e[0] == '1';
+        }();
+        if (gate16 && !xn_out && w_up.type == kBF16) {
+            gemm::gemm_bf16_out(w_up.dev, lo, gate, s.hc_rank, hcd, T, bs.gemm_ws, bs.gemm_ws_bytes, c.stream);
+            k_gated_mean_x<<<dim3((n + 255) / 256, T), 256, 0, c.stream>>>(x, inv, wn, reinterpret_cast<const __nv_bfloat16*>(gate), mixed, n,
+                                                                         hc, T);
+        } else {
+            linear(c, w_up, lo, gate, T);
+            if (xn_out) k_gated_mean<<<dim3((n + 255) / 256, T), 256, 0, c.stream>>>(xn, gate, mixed, n, hc, T);
+            else k_gated_mean_x<<<dim3((n + 255) / 256, T), 256, 0, c.stream>>>(x, inv, wn, static_cast<const float*>(gate), mixed, n, hc, T);
+        }
         ck(cudaGetLastError(), "hc_mix");
         return;
     }

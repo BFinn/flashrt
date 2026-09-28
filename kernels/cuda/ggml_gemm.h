@@ -33,6 +33,10 @@ void gemm(uint32_t ggml_type, const void* W, const float* x, float* y, int64_t n
 // y = W x for BF16 W with x [T][ncols] already in BF16, so a producer can write the rounded
 // activations itself and several products can share them. Uses no workspace.
 void gemm_bf16(const void* W, const void* x_bf16, float* y, int64_t ncols, int64_t nrows, int64_t T, cudaStream_t stream);
+// y [T][nrows] in BF16 = W x for BF16 W and float x (converted to BF16 in ws, which must hold
+// workspace_bytes(ncols, T)); fp32 accumulation.
+void gemm_bf16_out(const void* W, const float* x, void* y_bf16, int64_t ncols, int64_t nrows, int64_t T, void* ws, size_t ws_bytes,
+                   cudaStream_t stream);
 // Where in a workspace (of at least workspace_bytes(ncols, T)) T x ncols BF16 activations fit:
 // the region gemm() itself converts into, so it is overwritten by the next gemm()/moe call.
 void* bf16_staging(void* ws, size_t ws_bytes, int64_t ncols, int64_t T);

@@ -252,6 +252,20 @@ void gemm_bf16(const void* W, const void* x_bf16, float* y, int64_t ncols, int64
     if (st != CUBLAS_STATUS_SUCCESS) throw std::runtime_error("gemm_bf16: cuBLAS failed (" + std::to_string(int(st)) + ")");
 }
 
+void gemm_bf16_out(const void* W, const float* x, void* y_bf16, int64_t ncols, int64_t nrows, int64_t T, void* ws, size_t ws_bytes,
+                   cudaStream_t stream) {
+    Ws w = carve(ws, ws_bytes, ncols, T, true);
+    const size_t n = size_t(T) * ncols;
+    k_to_bf16<<<unsigned((n + 255) / 256), 256, 0, stream>>>(x, reinterpret_cast<__nv_bfloat16*>(w.act), n);
+    cublasHandle_t h = cublas();
+    cublasSetStream(h, stream);
+    const float one = 1.0f, zero = 0.0f;
+    const cublasStatus_t st = cublasGemmEx(h, CUBLAS_OP_T, CUBLAS_OP_N, int(nrows), int(T), int(ncols), &one, W, CUDA_R_16BF, int(ncols),
+                                           w.act, CUDA_R_16BF, int(ncols), &zero, y_bf16, CUDA_R_16BF, int(nrows), CUBLAS_COMPUTE_32F,
+                                           CUBLAS_GEMM_DEFAULT);
+    if (st != CUBLAS_STATUS_SUCCESS) throw std::runtime_error("gemm_bf16_out: cuBLAS failed (" + std::to_string(int(st)) + ")");
+}
+
 void* bf16_staging(void* ws, size_t ws_bytes, int64_t ncols, int64_t T) { return carve(ws, ws_bytes, ncols, T, true).act; }
 
 MoePlan moe_prepare(uint32_t t, int E, const float* x, bool x_per_slot, const int32_t* ids, int64_t T, int K, int64_t ncols, void* ws,

@@ -172,6 +172,10 @@ void ForwardRef::enqueue_post(const BlockCtx& c, int T, int out_from, float* log
     const int n = s.d_model, hc = s.hc_count;
     if (!s.ple_layers.empty()) ple_upload(c, ple_host_, T, pemb_);
     for (int il = first_ple_layer(); il < s.n_layer; ++il) enqueue_layer(c, il, T);
+    if (combine_pending_) {   // the last layer's
+        hc_combine(c, x_, blk_, inject_, T);
+        combine_pending_ = false;
+    }
     if (out_from < T && logits_dev) {
         const int R = T - out_from;
         hc_mix(c, -1, 2, x_ + size_t(out_from) * hc * n, R, norm_, nullptr);
@@ -179,18 +183,32 @@ void ForwardRef::enqueue_post(const BlockCtx& c, int T, int out_from, float* log
     }
 }
 
+// In a prefill chunk the combine that ends a layer is deferred into the next layer's first mix
+// (hc_combine_mix fuses it into the norm) unless a PLE block comes between.
 void ForwardRef::enqueue_layer(const BlockCtx& c, int il, int T) {
     const Spec& s = s_;
     for (int pl : s.ple_layers)
-        if (pl == il) ple_block(c, il, ple_, pemb_, x_, T, ple_state_[il], in_window_ ? &ple_win_[il] : nullptr);
-    hc_mix(c, il, 0, x_, T, mixed_, inject_);
+        if (pl == il) {
+            if (combine_pending_) {
+                hc_combine(c, x_, blk_, inject_, T);
+                combine_pending_ = false;
+            }
+            ple_block(c, il, ple_, pemb_, x_, T, ple_state_[il], in_window_ ? &ple_win_[il] : nullptr);
+        }
+    if (combine_pending_) {
+        hc_combine_mix(c, il, 0, x_, blk_, inject_, T, mixed_, inject_);
+        combine_pending_ = false;
+    } else {
+        hc_mix(c, il, 0, x_, T, mixed_, inject_);
+    }
     if (s.mixer[il] == Mixer::QSA) qsa_mixer(c, il, mixed_, T, pos_, kv_[il], blk_);
     else gdn_mixer(c, il, mixed_, T, gdn_[il], blk_, nullptr, in_window_ ? &gdn_win_[il] : nullptr);
     hc_combine_mix(c, il, 1, x_, blk_, inject_, T, mixed_, inject_);
     if (in_chunk_) moe_block_stream(c, il, mixed_, T, *estream_, blk_, counts_dev_);
     else if ((T == 1 || in_window_) && fast_cache_) moe_block_fast(c, il, mixed_, *fast_cache_, *fast_host_, blk_, T);
     else moe_block(c, il, mixed_, T, moe_host_, blk_);
-    hc_combine(c, x_, blk_, inject_, T);
+    if (in_chunk_) combine_pending_ = true;
+    else hc_combine(c, x_, blk_, inject_, T);
 }
 
 void ForwardRef::enable_windows(int W) {

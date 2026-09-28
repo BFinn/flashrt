@@ -8,6 +8,7 @@
 #include "kernels/cuda/moe_q2.h"
 #include "quant/q2_0/q2_0.hpp"
 
+#include <cuda_bf16.h>
 #include <cuda_fp16.h>
 
 #include <algorithm>
@@ -31,6 +32,14 @@ bool use_q2mma() {
     static const bool on = [] {
         const char* e = std::getenv("FLASHRT_MOE_Q2MMA");
         return !(e && e[0] == '0');
+    }();
+    return on;
+}
+// FLASHRT_MOE_YD16=1: moe_q2's per-slot outputs in BF16 (half their traffic and memory)
+bool use_yd16() {
+    static const bool on = [] {
+        const char* e = std::getenv("FLASHRT_MOE_YD16");
+        return e && e[0] == '1' && use_q2mma();
     }();
     return on;
 }
@@ -97,12 +106,15 @@ __global__ void k_swiglu_rows(float* g, const float* u, size_t n) {
     if (i < n) g[i] = g[i] / (1.0f + __expf(-g[i])) * u[i];
 }
 
-// out[t][i] = sum_k wts[t][k] * yd[t][k][i] + sh[t][i] * sigmoid(gate[t])
-__global__ void k_stream_combine(float* out, const float* yd, const float* wts, const float* sh, const float* gate, int n, int K) {
+// out[t][i] = sum_k wts[t][k] * yd[t][k][i] + sh[t][i] * sigmoid(gate[t]); yd float or BF16
+__device__ __forceinline__ float to_f(float v) { return v; }
+__device__ __forceinline__ float to_f(__nv_bfloat16 v) { return __bfloat162float(v); }
+template <typename YT>
+__global__ void k_stream_combine(float* out, const YT* yd, const float* wts, const float* sh, const float* gate, int n, int K) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x, t = blockIdx.y;
     if (i >= n) return;
     float acc = 0.0f;
-    for (int k = 0; k < K; ++k) acc += wts[size_t(t) * K + k] * yd[(size_t(t) * K + k) * n + i];
+    for (int k = 0; k < K; ++k) acc += wts[size_t(t) * K + k] * to_f(yd[(size_t(t) * K + k) * n + i]);
     out[size_t(t) * n + i] = acc + sh[size_t(t) * n + i] / (1.0f + __expf(-gate[t]));
 }
 
@@ -126,7 +138,8 @@ struct ExpertStream {
     cudaStream_t copy = nullptr;
     cudaEvent_t uploaded[2] = {nullptr, nullptr}, released[2] = {nullptr, nullptr};
     int max_tokens = 0;
-    float *logits = nullptr, *wts = nullptr, *hg = nullptr, *hu = nullptr, *yd = nullptr, *sg = nullptr, *su = nullptr, *sh = nullptr,
+    void* yd = nullptr;   // [T * K][n], float (BF16 with use_yd16())
+    float *logits = nullptr, *wts = nullptr, *hg = nullptr, *hu = nullptr, *sg = nullptr, *su = nullptr, *sh = nullptr,
           *gate = nullptr;
     int32_t* ids = nullptr;
     void* ws = nullptr;
@@ -137,7 +150,7 @@ struct ExpertStream {
 size_t expert_stream_bytes_for(const Spec& s, const ExpertArena& arena, int max_tokens) {
     const size_t E = s.n_expert, K = s.top_k, n = s.d_model, ff = s.d_ff_expert, ffs = s.d_ff_shared, T = size_t(max_tokens);
     const size_t gu = E * ff * (n / 64) * 18, dn = E * n * (ff / 64) * 18;
-    const size_t common[] = {E * arena.stride, E * arena.stride, T * E * 4, T * K * 4, T * K * 4, T * K * n * 4,
+    const size_t common[] = {E * arena.stride, E * arena.stride, T * E * 4, T * K * 4, T * K * 4, T * K * n * (use_yd16() ? 2 : 4),
                              T * ffs * 4,      T * ffs * 4,      T * n * 4, T * 4};
     size_t tot = 0;
     for (size_t p : common) tot += p + 256;
@@ -163,7 +176,7 @@ ExpertStream* create_expert_stream(const Spec& s, const ExpertArena& arena, int 
     es->logits = dalloc<float>(T * E, tot);
     es->ids = dalloc<int32_t>(T * K, tot);
     es->wts = dalloc<float>(T * K, tot);
-    es->yd = dalloc<float>(T * K * n, tot);
+    es->yd = dalloc<uint8_t>(T * K * n * (use_yd16() ? 2 : 4), tot);
     es->sg = dalloc<float>(T * ffs, tot);
     es->su = dalloc<float>(T * ffs, tot);
     es->sh = dalloc<float>(T * n, tot);
@@ -235,7 +248,7 @@ void moe_block_stream(const BlockCtx& c, int il, const float* x, int T, ExpertSt
         if (il + 1 < s.n_layer) expert_stream_prefetch(&es, il + 1);
         linear(c, c.w.layer(il, "ffn_gate_inp.weight"), x, es.logits, T);
         moe_route_topk(c.stream, es.logits, T, E, K, es.ids, es.wts, counts ? counts + size_t(il) * E : nullptr);
-        moe_q2::run(es.planar[b], es.arena->stride, E, n, ff, x, es.ids, T, K, es.yd, es.ws, es.ws_bytes, c.stream, use_ab64());
+        moe_q2::run(es.planar[b], es.arena->stride, E, n, ff, x, es.ids, T, K, es.yd, es.ws, es.ws_bytes, c.stream, use_ab64(), use_yd16());
         ck(cudaEventRecord(es.released[b], c.stream), "cudaEventRecord");
     } else {
         // convert the slice to ggml's layout (the slice is free after), start the next layer's
@@ -255,7 +268,7 @@ void moe_block_stream(const BlockCtx& c, int il, const float* x, int T, ExpertSt
         const size_t nh = size_t(T) * K * ff;
         k_swiglu_rows<<<unsigned((nh + 255) / 256), 256, 0, c.stream>>>(es.hg, es.hu, nh);
         const gemm::MoePlan pd = gemm::moe_prepare(kQ2_0, E, es.hg, true, es.ids, T, K, ff, es.ws, es.ws_bytes, c.stream);
-        gemm::moe_run(pd, es.g_down, d_stride, es.yd, n, c.stream);
+        gemm::moe_run(pd, es.g_down, d_stride, static_cast<float*>(es.yd), n, c.stream);
     }
     // shared expert, and the sum
     linear(c, c.w.layer(il, "ffn_gate_shexp.weight"), x, es.sg, T);
@@ -264,7 +277,12 @@ void moe_block_stream(const BlockCtx& c, int il, const float* x, int T, ExpertSt
     k_swiglu_rows<<<unsigned((ns + 255) / 256), 256, 0, c.stream>>>(es.sg, es.su, ns);
     linear(c, c.w.layer(il, "ffn_down_shexp.weight"), es.sg, es.sh, T);
     linear(c, c.w.layer(il, "ffn_gate_inp_shexp.weight"), x, es.gate, T);
-    k_stream_combine<<<dim3((n + 255) / 256, T), 256, 0, c.stream>>>(out, es.yd, es.wts, es.sh, es.gate, n, K);
+    if (use_yd16())
+        k_stream_combine<<<dim3((n + 255) / 256, T), 256, 0, c.stream>>>(out, static_cast<const __nv_bfloat16*>(es.yd), es.wts, es.sh,
+                                                                        es.gate, n, K);
+    else
+        k_stream_combine<<<dim3((n + 255) / 256, T), 256, 0, c.stream>>>(out, static_cast<const float*>(es.yd), es.wts, es.sh, es.gate,
+                                                                        n, K);
     ck(cudaGetLastError(), "moe_block_stream");
 }
 

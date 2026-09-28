@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "kernels/cuda/moe_q2.h"
 
+#include <cuda_bf16.h>
 #include <cuda_fp16.h>
 
 #include <algorithm>
@@ -398,15 +399,16 @@ __global__ void __launch_bounds__(kThreads) k_moe_q2(const uint8_t* experts, siz
 // Down: one CTA per tile (kJ tokens of one expert) over all of d_model. The tokens' activations
 // (all of d_ff, by compact row) load into shared memory once, and the weights stream through
 // kDownStages stages, row tile after row tile, so the prologue and the activation loads are paid
-// once per tile, not once per 128 rows (d_ff is short: 10 weight blocks). y by slot.
+// once per tile, not once per 128 rows (d_ff is short: 10 weight blocks). y by slot, as float or
+// BF16 (OutT).
 constexpr int kDownStages = 3;
 size_t down_smem_bytes(int kdim, int AB) {
     return size_t(kJ) * (kdim + 32) + size_t(kJ) * (kdim / AB) * 8 + size_t(kDownStages) * (kKB * kRT * 16 + kRT * 4);
 }
-template <int AB>
+template <int AB, typename OutT>
 __global__ void __launch_bounds__(kThreads) k_moe_q2_down(const uint8_t* experts, size_t stride, size_t off, int rows, int kdim,
                                                           const int8_t* aq, const float* ad, const int32_t* am, const int32_t* bounds,
-                                                          const int2* tiles, const int* n_tiles, float* y, const int32_t* slot_of) {
+                                                          const int2* tiles, const int* n_tiles, OutT* y, const int32_t* slot_of) {
     constexpr int RW = AB, TW = 1024 / AB, MT = RW / 16, NT = TW / 8, RG = kRT / RW, SB = 64 / AB;
     constexpr int WSTAGE = kKB * kRT * 16;   // code bytes per stage
     extern __shared__ __align__(16) uint8_t smem[];
@@ -476,9 +478,12 @@ __global__ void __launch_bounds__(kThreads) k_moe_q2_down(const uint8_t* experts
                 for (int q = 0; q < 4; ++q) {
                     const int j = j0 + wt * TW + 8 * n + 2 * c + (q & 1);
                     if (j >= ne) continue;
-                    float* yr = y + size_t(slot_of[p0 + j]) * rows + r0 + wr * RW + g + 8 * (q >> 1);
+                    OutT* yr = y + size_t(slot_of[p0 + j]) * rows + r0 + wr * RW + g + 8 * (q >> 1);
 #pragma unroll
-                    for (int m = 0; m < MT; ++m) yr[16 * m] = acc[0][m][n][q];
+                    for (int m = 0; m < MT; ++m) {
+                        if constexpr (std::is_same_v<OutT, float>) yr[16 * m] = acc[0][m][n][q];
+                        else yr[16 * m] = __float2bfloat16(acc[0][m][n][q]);
+                    }
                 }
             zero();
         }
@@ -525,8 +530,8 @@ Ws carve(void* base, int T, int K, int n, int ff, int E) {
 
 size_t workspace_bytes(int T, int K, int n, int ff, int E) { return carve(nullptr, T, K, n, ff, E).bytes; }
 
-void run(const uint8_t* experts, size_t stride, int E, int n, int ff, const float* x, const int32_t* ids, int T, int K, float* yd,
-         void* ws, size_t ws_bytes, cudaStream_t stream, bool block64) {
+void run(const uint8_t* experts, size_t stride, int E, int n, int ff, const float* x, const int32_t* ids, int T, int K, void* yd,
+         void* ws, size_t ws_bytes, cudaStream_t stream, bool block64, bool yd_bf16) {
     if (n % kRT || ff % kRT || n % (64 * kKB) || ff % (64 * kKB) || E > kMaxExperts || T < 1)
         throw std::runtime_error("moe_q2::run: unsupported shape");
     const Ws w = carve(ws, T, K, n, ff, E);
@@ -556,9 +561,14 @@ void run(const uint8_t* experts, size_t stride, int E, int n, int ff, const floa
         else if (stages == 3) gate_up(std::integral_constant<int, 3>{});
         else gate_up(std::integral_constant<int, 2>{});
         const size_t smem = down_smem_bytes(ff, AB);   // above the 48 KB default: opt in (cheap; once per layer)
-        ck(cudaFuncSetAttribute(k_moe_q2_down<AB>, cudaFuncAttributeMaxDynamicSharedMemorySize, int(smem)), "moe_q2 down smem");
-        k_moe_q2_down<AB><<<mt, kThreads, smem, stream>>>(experts, stride, 2 * gu, n, ff, w.hq, w.hd, w.hm, w.bounds, w.tiles, w.n_tiles, yd,
-                                                           w.slot_of);
+        auto down = [&](auto* y) {
+            using OutT = std::remove_pointer_t<decltype(y)>;
+            ck(cudaFuncSetAttribute(k_moe_q2_down<AB, OutT>, cudaFuncAttributeMaxDynamicSharedMemorySize, int(smem)), "moe_q2 down smem");
+            k_moe_q2_down<AB, OutT><<<mt, kThreads, smem, stream>>>(experts, stride, 2 * gu, n, ff, w.hq, w.hd, w.hm, w.bounds, w.tiles,
+                                                                   w.n_tiles, y, w.slot_of);
+        };
+        if (yd_bf16) down(static_cast<__nv_bfloat16*>(yd));
+        else down(static_cast<float*>(yd));
     };
     if (block64) go(std::integral_constant<int, 64>{});
     else go(std::integral_constant<int, 32>{});

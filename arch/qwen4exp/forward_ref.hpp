@@ -152,6 +152,7 @@ private:
     ExpertStream* estream_ = nullptr;
     uint32_t* counts_dev_ = nullptr;   // routing counts of chunks, [n_layer][n_expert]
     bool in_chunk_ = false;
+    bool combine_pending_ = false;   // a chunk layer's final combine, fused into the next layer's mix
     // PLE lookahead: the next chunk's rows, read on another thread into their own pinned buffer
     const int32_t* look_seq_ = nullptr;
     int look_n_ = 0;
