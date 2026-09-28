@@ -241,8 +241,12 @@ int main(int argc, char** argv) {
                 mtp_catchup(p + T - 1, 1);
                 break;
             }
+            const auto tc = Clock::now();
             fwd.forward(seq.data(), T, last ? T - 1 : T, last ? logits_dev : nullptr);
             mtp_catchup(p, T);
+            if (chunk > 64 && (p / chunk) % 4 == 0)
+                std::printf("  chunk at %6d: %d tokens in %.2f s (%.0f tok/s)\n", p, T, std::chrono::duration<double>(Clock::now() - tc).count(),
+                            T / std::chrono::duration<double>(Clock::now() - tc).count());
         }
         const double prefill_s = std::chrono::duration<double>(Clock::now() - tp).count();
         std::printf("prefill: %d tokens in %.1f s (%.1f tok/s, %s)\n", n_prompt, prefill_s, n_prompt / prefill_s,
