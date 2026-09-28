@@ -67,16 +67,23 @@ graphs, and the next decode token captures them again (about 0.1 ms).
 
 ### One layer
 
-- **Hyper-connection mix (4 streams, rank 320), two fused kernels:**
-  - `k_hc_down`: RMS norm + BF16 down-projection + inject projection, with per-stream partial
-    sums;
-  - `k_hc_up_mix`: sum of the partials, scale+SiLU, BF16 up-projection, gated mean.
+- **Hyper-connection mix (4 streams, rank 320), two fused kernels (v2, sw75, sw78):**
+  - `k_hc_down2`:
+    - the previous block's combine (x + out * 2 sigmoid(inject / 4));
+    - the RMS norm, with 1/rms applied after the dot products;
+    - the Q8P down-projection and BF16 inject projection, 2 rows per warp, weights loaded
+      before the norm; per-stream partial sums.
+  - `k_hc_up_mix2`, a PDL dependent:
+    - sums the partials, then scale+SiLU;
+    - the BF16 up-projection and the gated mean;
+    - stores the combined residual.
+  - 17.1 µs per mix at one token (590 GB/s), against 20.2 for v1.
 - **Mixer, one of two:**
   - **GDN** (36 layers): conv, L2 norm, a register-resident delta rule (`k_gdn_delta_reg`, the
     state read and written once per call), gated RMS norm.
   - **QSA** (12 layers, `il % 4 == 3`): Q/K/V, norm+rope, the KV write, the indexer (pooled keys,
     scores, select), then split-K flash-decode attention (see QSA below).
-- **Hyper-connection combine,** then the FFN-side hyper-connection mix.
+- **The FFN-side hyper-connection mix** (with the combine folded in, as above).
 - **MoE fast path** (`arch/qwen4exp/moe_fast.cu`):
   1. BF16 router, then `k_route`:
      - softmax;
@@ -231,6 +238,9 @@ cache after, from the prefill's routing counts and the startup prior.
 | **Prefill: every layer's experts streamed, not only the misses** | A 4K-8K chunk touches all 512 experts of a layer; one 676 MB copy per layer overlaps the previous layer, and the cache's VRAM is free for the chunk's buffers. | sw36-sw39 (P3): 136 → 2,135 tok/s at 32K |
 | **A VRAM mirror of host KV during prefill** | Chunk attention reading the host store over PCIe ran 2.6× slower. | sw42, sw43: 245K 738 → 1,940 tok/s |
 | **Tensor-core prefill attention, K/V gathered into fragments** | The FP32 split-K kernel ran at about 7 TFLOPS and wrote 0.8 MB of partials per token-layer. | sw46: 32K 2,193 → 2,644 tok/s; 64K attention 6.1 → 0.95 s |
+| **Decode: work inside the CPU-miss window does not pay** | In a layer with CPU misses, the hits and the shared expert run while the host computes the misses, and `k_moe_combine_db` waits for it. Faster kernels there mostly lengthen the wait. Gains have to come from work outside that window (hc, mixers, dense mat-vecs), or from fewer misses. A CPU miss costs 41-46 µs in decode, near host-DRAM bandwidth. | sw78, sw79 (moe hits v2 reverted) |
+| **Decode hc kernels v2** | v1 ran at ~500 GB/s: shared-memory bound at T >= 2, with a serial norm preamble. v2: 2 rows per warp, weights before the norm, 1/rms after the dot product, up kernel as a PDL dependent in one wave. | sw75 (32K plain +2.7%) |
+| **Doorbell skip for tokens without misses** | 61% of layers at 32K have no CPU miss; they skip the x copy and the mailbox wait and read (the host still serves them, for statistics). | sw77 (`--spec 1` 32K +1.8%) |
 | **Decode launch fusions** (`linear_multi`, `FLASHRT_FUSE_EPI`) | A decode step is hundreds of 2-6 µs kernels. The BF16 projections of one input share a launch (a block of 4 warps per row: a warp per row lost to two MMVF launches), the q/k norm runs in the conv kernel, and SwiGLU and the gated norm write the next mat-vec's q8_1 input. | sw73, sw74 (32K plain 99.8 → 104.1; KLD 0.00891) |
 | **GDN prefill: the chunked form on tensor cores** | fp32 chunked is exact but 5x slower: it needs 2.4x the recurrence's FLOPs, and the fp32 tensor paths are no faster than the CUDA cores (TF32 61, BF16 122 TFLOPS). fp16 mma with an fp32 state is 1.8x the column kernel. Prep is DRAM-bound (about 70 MB per 512-token slab); state is mma-bound. | sw70, sw71 (+3.1-3.5% prefill, KLD 0.0084), sw72 |
 | **GDN: lanes own columns, tokens tiled through shared memory** | The block kernel waited on 4 barriers per token. v1, which prefetched one token into registers, waited on DRAM (slower). v2 was bound by shared-memory reads (24 per lane-token, over 4 addresses). | sw47, sw50: 32K 3,216 → 3,531 tok/s |
@@ -298,6 +308,7 @@ cache after, from the prefill's routing counts and the startup prior.
 | Fast-path KLD (2 × 8K wikitext against the FP16-KV llama.cpp base) | 0.0087-0.0092 | sw17-sw22 |
 | **2K greedy, `--spec 1` / `--spec 2`** (MTP) | 123.1 / 121.0 | `2026-09-28-sw29-fused-hc` |
 | **32K, temperature 1.0: plain / `--spec 1` / `--spec 2`, 6 windows, means** | 97.9 / 114.2 / 115.3 | `2026-09-28-sw31-p2-temp1`, `sw33` |
+| **Teacher-forced (same tokens every arm), 6 windows, means: 32K plain / 32K `--spec 1` / 245K `--spec 1`** | 106.7-107.2 / 112.6-112.9 / 87.4-88.8 | `2026-09-28-sw78-hc-comb` (after sw73-sw77); sw68 had 99.6 / 106.4 / 82.9 |
 | **245K, temperature 1.0: plain / `--spec 1` / `--spec 2`, 6 windows, means** | 78.5 / 90.2 / 83.2 | same |
 | **245K greedy `--spec 2`, fresh prefill with the head, 3 windows** | 83.7 / 94.8 / 92.3 | `2026-09-28-sw30-spec-245k` |
 | Verify window KLD (windows of 3 with rewinds, hot set 512) | 0.009232 | `2026-09-28-sw33-p2-temp1-rerun` |
@@ -399,10 +410,14 @@ cache after, from the prefill's routing counts and the startup prior.
 
 ## Next steps (priority order)
 
-1. **Cheaper verify windows:** the misses dominate. Candidates: PCIe reads for the misses
-   several window tokens share (the grouped hit kernels read each once), a draft length chosen
-   per round from the window's expected misses, and more cache slots (the Q2_0 head frees about
-   500).
+1. **Cheaper verify windows:** the misses dominate. They are host-DRAM bound (sw79), so the
+   levers are fewer misses and a better drafter:
+   - a draft length chosen per round from the window's expected misses;
+   - more cache slots;
+   - drafter acceptance: 45-54% for one draft.
+   GPU work inside the miss window does not pay (sw78, sw79). The grouped window hit kernels
+   take 39 µs at T = 2 against 25 µs at T = 1 for the same 10 experts (`test_moe_hits`), which
+   only matters in layers without misses.
 2. **Prefill** (64K, 10.9 s). Q3_K now multiplies as Q8_0, exactly (sw69, +3%). Left, in order:
    - GDN: the chunked form is in (sw71). Left there:
      - prep traffic: raw Q and K^T per key group, and V read by the state kernel with T in the
