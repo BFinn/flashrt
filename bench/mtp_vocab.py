@@ -13,6 +13,7 @@ file's tokens covered by the top N, for several N.
   mtp_vocab.py --gguf MODEL.gguf --out ranks.txt CORPUS.txt ... [--check FILE ...] [--verify TEXT IDS]
 """
 import argparse
+import os
 import sys
 from collections import Counter
 
@@ -56,12 +57,15 @@ def ids_of(tok, path):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--gguf", required=True)
-    ap.add_argument("--gguf-py", default="$LLAMA_CPP/gguf-py")
+    ap.add_argument("--gguf-py", default=os.environ.get("GGUF_PY", ""),
+                    help="llama.cpp's gguf-py directory (or set GGUF_PY)")
     ap.add_argument("--verify", nargs=2, metavar=("TEXT", "IDS"))
     ap.add_argument("--out", required=True)
     ap.add_argument("--check", nargs="*", default=[])
     ap.add_argument("corpus", nargs="+")
     a = ap.parse_args()
+    if not a.gguf_py:
+        ap.error("--gguf-py (or GGUF_PY) is required: llama.cpp's gguf-py directory")
     tok = gguf_tokenizer(a.gguf, a.gguf_py)
     if a.verify:
         ref = [int(x) for x in open(a.verify[1]).read().split()]
