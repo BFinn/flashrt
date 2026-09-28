@@ -97,7 +97,7 @@ if(FLASHRT_CUDA)
   # dense mat-vec over ggml's vendored CUDA kernels (MIT, third_party/ggml)
   add_library(flashrt_gemv STATIC kernels/cuda/ggml_gemv.cu kernels/cuda/ggml_shim.cu kernels/cuda/q3r.cu
     # prefill: matrix-matrix products (ggml's MMQ, one file per weight type; cuBLAS for BF16)
-    kernels/cuda/ggml_gemm.cu
+    kernels/cuda/ggml_gemm.cu kernels/cuda/moe_q2.cu
     kernels/cuda/mmq_q2_0.cu kernels/cuda/mmq_q4_0.cu kernels/cuda/mmq_q5_0.cu kernels/cuda/mmq_q8_0.cu
     kernels/cuda/mmq_q3_k.cu kernels/cuda/mmq_q4_k.cu kernels/cuda/mmq_q5_k.cu kernels/cuda/mmq_q6_k.cu
     kernels/cuda/mmq_iq4_xs.cu kernels/cuda/mmq_iq4_nl.cu)
@@ -147,6 +147,8 @@ if(FLASHRT_CUDA)
   add_test(NAME moe_q COMMAND test_moe_q)
   add_executable(test_gemm tests/test_gemm.cpp)
   target_link_libraries(test_gemm PRIVATE flashrt_gemv flashrt_core flashrt_ggml_stubs)
+  add_executable(test_moe_q2 tests/test_moe_q2.cpp)
+  target_link_libraries(test_moe_q2 PRIVATE flashrt_gemv flashrt_q2_0 flashrt_core flashrt_ggml_stubs)
   add_executable(test_sample tests/test_sample.cpp)
   target_link_libraries(test_sample PRIVATE flashrt_qwen4exp_gpu flashrt_gemv flashrt_ggml_stubs)   # stubs last
   add_test(NAME sample COMMAND test_sample)

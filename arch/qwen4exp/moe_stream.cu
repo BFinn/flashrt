@@ -5,11 +5,13 @@
 
 #include "kernels/cuda/ggml_gemm.h"
 #include "kernels/cuda/ggml_gemv.h"
+#include "kernels/cuda/moe_q2.h"
 #include "quant/q2_0/q2_0.hpp"
 
 #include <cuda_fp16.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <stdexcept>
 #include <string>
 
@@ -22,6 +24,16 @@ void ck(cudaError_t e, const char* what) {
 }
 
 constexpr uint32_t kQ2_0 = 42;   // GGML_TYPE_Q2_0
+
+// The routed experts run on moe_q2 (planar Q2_0 read directly) unless FLASHRT_MOE_Q2MMA=0, which
+// keeps the conversion to ggml's layout and its MMQ kernels.
+bool use_q2mma() {
+    static const bool on = [] {
+        const char* e = std::getenv("FLASHRT_MOE_Q2MMA");
+        return !(e && e[0] == '0');
+    }();
+    return on;
+}
 
 // The arena's planar Q2_0 (codes [rows][nb][16], element j in byte j % 16 at bits 2 * (j / 16);
 // fp16 scales [rows][nb] after all codes) to ggml's Q2_0 blocks (fp16 d, then element j in byte
@@ -117,24 +129,14 @@ struct ExpertStream {
 size_t expert_stream_bytes_for(const Spec& s, const ExpertArena& arena, int max_tokens) {
     const size_t E = s.n_expert, K = s.top_k, n = s.d_model, ff = s.d_ff_expert, ffs = s.d_ff_shared, T = size_t(max_tokens);
     const size_t gu = E * ff * (n / 64) * 18, dn = E * n * (ff / 64) * 18;
-    const size_t pieces[] = {E * arena.stride,
-                             E * arena.stride,
-                             gu + gemv::kWeightTailPad,
-                             gu + gemv::kWeightTailPad,
-                             dn + gemv::kWeightTailPad,
-                             T * E * 4,
-                             T * K * 4,
-                             T * K * 4,
-                             T * K * ff * 4,
-                             T * K * ff * 4,
-                             T * K * n * 4,
-                             T * ffs * 4,
-                             T * ffs * 4,
-                             T * n * 4,
-                             T * 4,
-                             gemm::workspace_bytes(int64_t(std::max(n, ff)), int64_t(T * K), false)};
+    const size_t common[] = {E * arena.stride, E * arena.stride, T * E * 4, T * K * 4, T * K * 4, T * K * n * 4,
+                             T * ffs * 4,      T * ffs * 4,      T * n * 4, T * 4};
     size_t tot = 0;
-    for (size_t p : pieces) tot += p + 256;
+    for (size_t p : common) tot += p + 256;
+    if (use_q2mma()) return tot + moe_q2::workspace_bytes(int(T), int(K), int(n), int(ff), int(E)) + 256;
+    const size_t mmq[] = {gu + gemv::kWeightTailPad, gu + gemv::kWeightTailPad, dn + gemv::kWeightTailPad, T * K * ff * 4,
+                          T * K * ff * 4, gemm::workspace_bytes(int64_t(std::max(n, ff)), int64_t(T * K), false)};
+    for (size_t p : mmq) tot += p + 256;
     return tot;
 }
 
@@ -149,26 +151,31 @@ ExpertStream* create_expert_stream(const Spec& s, const ExpertArena& arena, int 
     es->slice_bytes = size_t(E) * arena.stride;
     size_t& tot = es->total;
     for (int b = 0; b < 2; ++b) es->planar[b] = dalloc<uint8_t>(es->slice_bytes, tot);
-    const size_t gu = size_t(E) * ff * (n / 64) * 18, dn = size_t(E) * n * (ff / 64) * 18;
-    es->g_gate = dalloc<uint8_t>(gu + gemv::kWeightTailPad, tot);
-    es->g_up = dalloc<uint8_t>(gu + gemv::kWeightTailPad, tot);
-    es->g_down = dalloc<uint8_t>(dn + gemv::kWeightTailPad, tot);
-    ck(cudaMemset(es->g_gate + gu, 0, gemv::kWeightTailPad), "memset");
-    ck(cudaMemset(es->g_up + gu, 0, gemv::kWeightTailPad), "memset");
-    ck(cudaMemset(es->g_down + dn, 0, gemv::kWeightTailPad), "memset");
     const size_t T = size_t(max_tokens);
     es->logits = dalloc<float>(T * E, tot);
     es->ids = dalloc<int32_t>(T * K, tot);
     es->wts = dalloc<float>(T * K, tot);
-    es->hg = dalloc<float>(T * K * ff, tot);
-    es->hu = dalloc<float>(T * K * ff, tot);
     es->yd = dalloc<float>(T * K * n, tot);
     es->sg = dalloc<float>(T * ffs, tot);
     es->su = dalloc<float>(T * ffs, tot);
     es->sh = dalloc<float>(T * n, tot);
     es->gate = dalloc<float>(T, tot);
-    es->ws_bytes = gemm::workspace_bytes(std::max(n, ff), int64_t(T) * K, false);   // Q8_1 activations only
-    es->ws = dalloc<uint8_t>(es->ws_bytes, tot);
+    if (use_q2mma()) {
+        es->ws_bytes = moe_q2::workspace_bytes(max_tokens, K, n, ff, E);
+        es->ws = dalloc<uint8_t>(es->ws_bytes, tot);
+    } else {
+        const size_t gu = size_t(E) * ff * (n / 64) * 18, dn = size_t(E) * n * (ff / 64) * 18;
+        es->g_gate = dalloc<uint8_t>(gu + gemv::kWeightTailPad, tot);
+        es->g_up = dalloc<uint8_t>(gu + gemv::kWeightTailPad, tot);
+        es->g_down = dalloc<uint8_t>(dn + gemv::kWeightTailPad, tot);
+        ck(cudaMemset(es->g_gate + gu, 0, gemv::kWeightTailPad), "memset");
+        ck(cudaMemset(es->g_up + gu, 0, gemv::kWeightTailPad), "memset");
+        ck(cudaMemset(es->g_down + dn, 0, gemv::kWeightTailPad), "memset");
+        es->hg = dalloc<float>(T * K * ff, tot);
+        es->hu = dalloc<float>(T * K * ff, tot);
+        es->ws_bytes = gemm::workspace_bytes(std::max(n, ff), int64_t(T) * K, false);   // Q8_1 activations only
+        es->ws = dalloc<uint8_t>(es->ws_bytes, tot);
+    }
     if (tot != expert_stream_bytes_for(s, arena, max_tokens)) throw std::logic_error("expert_stream_bytes_for is out of date");
     ck(cudaStreamCreateWithFlags(&es->copy, cudaStreamNonBlocking), "cudaStreamCreate expert copy");
     for (int b = 0; b < 2; ++b) {
@@ -211,29 +218,38 @@ void moe_block_stream(const BlockCtx& c, int il, const float* x, int T, ExpertSt
     const Spec& s = c.s;
     const int E = s.n_expert, K = s.top_k, n = s.d_model, ff = s.d_ff_expert, ffs = s.d_ff_shared;
     if (T > es.max_tokens) throw std::runtime_error("moe_block_stream: chunk larger than the stream's buffers");
-    // 1. this layer's experts: wait for the copy, convert, and start the next layer's copy
     const int b = il % 2;
     expert_stream_prefetch(&es, il);
     ck(cudaStreamWaitEvent(c.stream, es.uploaded[b], 0), "wait experts");
-    const int64_t items = std::max(int64_t(ff) * (n / 64), int64_t(n) * (ff / 64));
-    k_planar_to_ggml<<<dim3(unsigned((items + kConvItems - 1) / kConvItems), 3 * E), kConvItems, 0, c.stream>>>(
-        es.planar[b], es.arena->stride, es.g_gate, es.g_up, es.g_down, n, ff);
-    ck(cudaGetLastError(), "planar to ggml");
-    ck(cudaEventRecord(es.released[b], c.stream), "cudaEventRecord");
-    if (il + 1 < s.n_layer) expert_stream_prefetch(&es, il + 1);
-    // 2. routing
-    linear(c, c.w.layer(il, "ffn_gate_inp.weight"), x, es.logits, T);
-    moe_route_topk(c.stream, es.logits, T, E, K, es.ids, es.wts, counts ? counts + size_t(il) * E : nullptr);
-    // 3. routed experts: gate and up, SwiGLU, down
-    const int64_t gu_stride = int64_t(ff) * (n / 64) * 18, d_stride = int64_t(n) * (ff / 64) * 18;
-    const gemm::MoePlan pgu = gemm::moe_prepare(kQ2_0, E, x, false, es.ids, T, K, n, es.ws, es.ws_bytes, c.stream);
-    gemm::moe_run(pgu, es.g_gate, gu_stride, es.hg, ff, c.stream);
-    gemm::moe_run(pgu, es.g_up, gu_stride, es.hu, ff, c.stream);
-    const size_t nh = size_t(T) * K * ff;
-    k_swiglu_rows<<<unsigned((nh + 255) / 256), 256, 0, c.stream>>>(es.hg, es.hu, nh);
-    const gemm::MoePlan pd = gemm::moe_prepare(kQ2_0, E, es.hg, true, es.ids, T, K, ff, es.ws, es.ws_bytes, c.stream);
-    gemm::moe_run(pd, es.g_down, d_stride, es.yd, n, c.stream);
-    // 4. shared expert, and the sum
+    if (use_q2mma()) {
+        // routing, then the experts straight from the planar slice (released after them), and the
+        // next layer's copy into the other buffer meanwhile
+        if (il + 1 < s.n_layer) expert_stream_prefetch(&es, il + 1);
+        linear(c, c.w.layer(il, "ffn_gate_inp.weight"), x, es.logits, T);
+        moe_route_topk(c.stream, es.logits, T, E, K, es.ids, es.wts, counts ? counts + size_t(il) * E : nullptr);
+        moe_q2::run(es.planar[b], es.arena->stride, E, n, ff, x, es.ids, T, K, es.yd, es.ws, es.ws_bytes, c.stream);
+        ck(cudaEventRecord(es.released[b], c.stream), "cudaEventRecord");
+    } else {
+        // convert the slice to ggml's layout (the slice is free after), start the next layer's
+        // copy, routing, then MMQ gate and up, SwiGLU, MMQ down
+        const int64_t items = std::max(int64_t(ff) * (n / 64), int64_t(n) * (ff / 64));
+        k_planar_to_ggml<<<dim3(unsigned((items + kConvItems - 1) / kConvItems), 3 * E), kConvItems, 0, c.stream>>>(
+            es.planar[b], es.arena->stride, es.g_gate, es.g_up, es.g_down, n, ff);
+        ck(cudaGetLastError(), "planar to ggml");
+        ck(cudaEventRecord(es.released[b], c.stream), "cudaEventRecord");
+        if (il + 1 < s.n_layer) expert_stream_prefetch(&es, il + 1);
+        linear(c, c.w.layer(il, "ffn_gate_inp.weight"), x, es.logits, T);
+        moe_route_topk(c.stream, es.logits, T, E, K, es.ids, es.wts, counts ? counts + size_t(il) * E : nullptr);
+        const int64_t gu_stride = int64_t(ff) * (n / 64) * 18, d_stride = int64_t(n) * (ff / 64) * 18;
+        const gemm::MoePlan pgu = gemm::moe_prepare(kQ2_0, E, x, false, es.ids, T, K, n, es.ws, es.ws_bytes, c.stream);
+        gemm::moe_run(pgu, es.g_gate, gu_stride, es.hg, ff, c.stream);
+        gemm::moe_run(pgu, es.g_up, gu_stride, es.hu, ff, c.stream);
+        const size_t nh = size_t(T) * K * ff;
+        k_swiglu_rows<<<unsigned((nh + 255) / 256), 256, 0, c.stream>>>(es.hg, es.hu, nh);
+        const gemm::MoePlan pd = gemm::moe_prepare(kQ2_0, E, es.hg, true, es.ids, T, K, ff, es.ws, es.ws_bytes, c.stream);
+        gemm::moe_run(pd, es.g_down, d_stride, es.yd, n, c.stream);
+    }
+    // shared expert, and the sum
     linear(c, c.w.layer(il, "ffn_gate_shexp.weight"), x, es.sg, T);
     linear(c, c.w.layer(il, "ffn_up_shexp.weight"), x, es.su, T);
     const size_t ns = size_t(T) * ffs;
