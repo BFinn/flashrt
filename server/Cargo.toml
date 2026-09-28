@@ -1,6 +1,6 @@
 [package]
 name = "flashrt-server"
-version = "0.0.1"
+version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
 description = "OpenAI/Anthropic-compatible front end for flashrt-engine"
@@ -10,7 +10,11 @@ anyhow = "1"
 axum = "0.8"
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
+fancy-regex = "0.19"
+minijinja = { version = "2", features = ["json", "preserve_order"] }
+minijinja-contrib = "2"
+tokio-stream = "0.1"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
