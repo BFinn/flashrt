@@ -1,0 +1,5 @@
+T    96 over  24 experts: relative error 8.63e-05 ok
+T  1200 over 512 experts: relative error 1.91e-04 ok
+T  8192 over 512 experts: relative error 1.83e-04 ok
+T 8192: MMQ path 10.44 ms (77 TOPS), moe_q2 6.18 ms (130 TOPS)
+all passed

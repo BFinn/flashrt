@@ -3,7 +3,8 @@
 // (gemm::moe on ggml's layout for gate and up, SwiGLU, gemm::moe for down), on layer 0's real
 // experts with random activations and routing: 96 tokens over 24 experts, 1,200 and 8,192 over
 // all 512. Both quantize the activations to 8 bits per 32, in different orders, so they agree to
-// about 1e-2 relative (tolerance 3e-2). Also times both at 8,192 tokens.
+// about 2e-4 relative; with block64 (activation scales per 64) about 1e-2 (tolerance 3e-2). Also
+// times the paths at 8,192 tokens.
 //
 //   test_moe_q2 MODEL.gguf
 #include "core/gguf.hpp"
@@ -131,21 +132,24 @@ int main(int argc, char** argv) {
         for (size_t i = 0; i < a.size(); ++i) a[i] = a[i] / (1.0f + std::exp(-a[i])) * b[i];
         CK(cudaMemcpy(dhg, a.data(), a.size() * 4, cudaMemcpyHostToDevice));
         gemm::moe(kQ2, Wd, sd, E, dhg, true, dids, T, K, dy1, ff, n, ws1, ws1_bytes, nullptr);
-        moe_q2::run(Wp, stride, E, n, ff, dx, dids, T, K, dy2, ws2, ws2_bytes, nullptr);
-        CK(cudaDeviceSynchronize());
         std::vector<float> y1(S * n), y2(S * n);
         CK(cudaMemcpy(y1.data(), dy1, y1.size() * 4, cudaMemcpyDeviceToHost));
-        CK(cudaMemcpy(y2.data(), dy2, y2.size() * 4, cudaMemcpyDeviceToHost));
-        const double err = rel(y2, y1);
-        const bool ok = std::isfinite(err) && err < 3e-2;
-        fail += !ok;
-        std::printf("T %5d over %3d experts: relative error %.2e %s\n", T, n_used, err, ok ? "ok" : "FAIL");
+        for (const bool b64 : {false, true}) {
+            moe_q2::run(Wp, stride, E, n, ff, dx, dids, T, K, dy2, ws2, ws2_bytes, nullptr, b64);
+            CK(cudaDeviceSynchronize());
+            CK(cudaMemcpy(y2.data(), dy2, y2.size() * 4, cudaMemcpyDeviceToHost));
+            const double err = rel(y2, y1);
+            const bool ok = std::isfinite(err) && err < 3e-2;
+            fail += !ok;
+            std::printf("T %5d over %3d experts, activation blocks of %d: relative error %.2e %s\n", T, n_used, b64 ? 64 : 32, err,
+                        ok ? "ok" : "FAIL");
+        }
         if (T == 8192) {   // timing: the three MMQ products (with their grouping and quantization) against run()
             cudaEvent_t e0, e1;
             CK(cudaEventCreate(&e0));
             CK(cudaEventCreate(&e1));
             const int reps = 10;
-            float ms_ref = 0, ms_new = 0;
+            float ms_ref = 0, ms_new = 0, ms_64 = 0;
             CK(cudaEventRecord(e0));
             for (int r = 0; r < reps; ++r) {
                 gate_up();
@@ -159,9 +163,15 @@ int main(int argc, char** argv) {
             CK(cudaEventRecord(e1));
             CK(cudaEventSynchronize(e1));
             CK(cudaEventElapsedTime(&ms_new, e0, e1));
+            CK(cudaEventRecord(e0));
+            for (int r = 0; r < reps; ++r) moe_q2::run(Wp, stride, E, n, ff, dx, dids, T, K, dy2, ws2, ws2_bytes, nullptr, true);
+            CK(cudaEventRecord(e1));
+            CK(cudaEventSynchronize(e1));
+            CK(cudaEventElapsedTime(&ms_64, e0, e1));
             const double gmac = double(S) * 3 * n * ff / 1e9;
-            std::printf("T 8192: MMQ path %.2f ms (%.0f TOPS), moe_q2 %.2f ms (%.0f TOPS)\n", ms_ref / reps, 2 * gmac / ms_ref * reps,
-                        ms_new / reps, 2 * gmac / ms_new * reps);
+            std::printf("T 8192: MMQ path %.2f ms (%.0f TOPS), moe_q2 %.2f ms (%.0f TOPS), moe_q2 block64 %.2f ms (%.0f TOPS)\n",
+                        ms_ref / reps, 2 * gmac / ms_ref * reps, ms_new / reps, 2 * gmac / ms_new * reps, ms_64 / reps,
+                        2 * gmac / ms_64 * reps);
         }
         for (void* p : {static_cast<void*>(dx), static_cast<void*>(dids), static_cast<void*>(dhg), static_cast<void*>(dhu),
                         static_cast<void*>(dy1), static_cast<void*>(dy2), ws1, ws2})

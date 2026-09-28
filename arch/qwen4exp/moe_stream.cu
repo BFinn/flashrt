@@ -34,6 +34,14 @@ bool use_q2mma() {
     }();
     return on;
 }
+// FLASHRT_MOE_AB64=1: activations quantized per 64 for moe_q2 (moe_q2::run's block64)
+bool use_ab64() {
+    static const bool on = [] {
+        const char* e = std::getenv("FLASHRT_MOE_AB64");
+        return e && e[0] == '1';
+    }();
+    return on;
+}
 
 // The arena's planar Q2_0 (codes [rows][nb][16], element j in byte j % 16 at bits 2 * (j / 16);
 // fp16 scales [rows][nb] after all codes) to ggml's Q2_0 blocks (fp16 d, then element j in byte
@@ -227,7 +235,7 @@ void moe_block_stream(const BlockCtx& c, int il, const float* x, int T, ExpertSt
         if (il + 1 < s.n_layer) expert_stream_prefetch(&es, il + 1);
         linear(c, c.w.layer(il, "ffn_gate_inp.weight"), x, es.logits, T);
         moe_route_topk(c.stream, es.logits, T, E, K, es.ids, es.wts, counts ? counts + size_t(il) * E : nullptr);
-        moe_q2::run(es.planar[b], es.arena->stride, E, n, ff, x, es.ids, T, K, es.yd, es.ws, es.ws_bytes, c.stream);
+        moe_q2::run(es.planar[b], es.arena->stride, E, n, ff, x, es.ids, T, K, es.yd, es.ws, es.ws_bytes, c.stream, use_ab64());
         ck(cudaEventRecord(es.released[b], c.stream), "cudaEventRecord");
     } else {
         // convert the slice to ggml's layout (the slice is free after), start the next layer's
