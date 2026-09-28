@@ -363,6 +363,7 @@ pub async fn start(st: Arc<AppState>, req: ChatRequest) -> Result<(mpsc::Receive
                 _ => {}
             }
         }
+        let _ = gone;
     });
     Ok((out, n_prompt))
 }
