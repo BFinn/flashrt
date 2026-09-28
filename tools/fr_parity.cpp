@@ -60,7 +60,7 @@ double rel_l2(const std::vector<float>& a, const std::vector<float>& ref) {
 }
 
 struct Checker {
-    double tol;
+    double tol = 2e-3;
     int fails = 0, checks = 0;
     double worst = 0;
     std::string worst_what;
@@ -480,7 +480,8 @@ int main(int argc, char** argv) {
     cudaStreamCreate(&stream);
     const BlockCtx c{s, w, scratch, stream};
 
-    Checker ck{2e-3};
+    Checker ck;
+    ck.tol = 2e-3;
     for (const std::string& t : tests) {
         if (t == "hc") test_hc(c, ref, steps, ck);
         else if (t == "gdn") test_gdn(c, ref, steps, ck);
