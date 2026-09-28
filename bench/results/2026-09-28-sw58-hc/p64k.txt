@@ -1,0 +1,36 @@
+WARNING: Device-side CUDA Event completion trace is currently enabled.
+         This may increase runtime overhead and the likelihood of false
+         dependencies across CUDA Streams. If you wish to avoid this, please
+         disable the feature with --cuda-event-trace=false.
+WARNING: CPU IP/backtrace sampling not supported, disabling.
+Try the 'nsys status --environment' command to learn more.
+
+WARNING: CPU context switch tracing not supported, disabling.
+Try the 'nsys status --environment' command to learn more.
+
+expert arena registered in 1.8 s
+KV cache: q8_0
+VRAM before prefill: 10963 MiB free
+prefill chunk: 16384 tokens (auto; estimated 8881 MiB)
+  chunk at      0: 16384 tokens in 3.14 s (5217 tok/s)
+prefill: 65536 tokens in 12.1 s (5406.5 tok/s, chunks of 16384, experts streamed to the GPU)
+VRAM after prefill: 13330 MiB used, 2509 MiB free (chunk buffers 8206 MiB)
+expert cache: 7509 slots (30.6% of experts), filled in 0.2 s from 10924 MiB free
+adaptive cache: decayed LFU, swap budget 8 (set up in 0.0 s)
+decode: 1 tokens at depth 65536 in 0.02 s: 42.02 tok/s (fast path, doorbell), swaps 0
+expert cache hit rate 75.62% (363 hits, 117 misses: 117 on the CPU, 0 read over PCIe)
+host per token: 17.88 ms waiting for routing, 5.18 ms running misses
+misses per layer: count (share of layers) and mean host miss time
+   0 :  10.4%     0.4 us
+   1 :   6.2%    55.2 us
+   2 :  39.6%   100.6 us
+   3 :  22.9%   123.6 us
+   4 :  14.6%   168.3 us
+   5 :   6.2%   188.7 us
+CUDA graphs: on (1 capture(s))
+tokens: 445 56030
+Collecting data...
+Generating '/tmp/nsys-report-88a0.qdstrm'
+[1/1] [0%                          ] p64k.nsys-rep[1/1] [0%                          ] p64k.nsys-rep[1/1] [===23%                      ] p64k.nsys-rep[1/1] [=17%                        ] p64k.nsys-rep[1/1] [======34%                   ] p64k.nsys-rep[1/1] [====27%                     ] p64k.nsys-rep[1/1] [===23%                      ] p64k.nsys-rep[1/1] [===22%                      ] p64k.nsys-rep[1/1] [===23%                      ] p64k.nsys-rep[1/1] [===24%                      ] p64k.nsys-rep[1/1] [====25%                     ] p64k.nsys-rep[1/1] [=======36%                  ] p64k.nsys-rep[1/1] [==========47%               ] p64k.nsys-rep[1/1] [=============58%            ] p64k.nsys-rep[1/1] [================68%         ] p64k.nsys-rep[1/1] [================70%         ] p64k.nsys-rep[1/1] [========================100%] p64k.nsys-rep[1/1] [========================100%] p64k.nsys-rep
+Generated:
+	$BENCH/sw58/p64k.nsys-rep

@@ -35,11 +35,11 @@ bool use_q2mma() {
     }();
     return on;
 }
-// FLASHRT_MOE_YD16=1: moe_q2's per-slot outputs in BF16 (half their traffic and memory)
+// moe_q2's per-slot outputs in BF16 (half their traffic and memory; FLASHRT_MOE_YD16=0: float)
 bool use_yd16() {
     static const bool on = [] {
         const char* e = std::getenv("FLASHRT_MOE_YD16");
-        return e && e[0] == '1' && use_q2mma();
+        return !(e && e[0] == '0') && use_q2mma();
     }();
     return on;
 }

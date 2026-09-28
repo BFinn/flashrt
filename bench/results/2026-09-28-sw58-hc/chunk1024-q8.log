@@ -1,0 +1,14 @@
+KV cache: q8_0, hot set 0 blocks per layer
+chunk 0 pos  5120: 1024 scored, mean KLD 0.01054, same top 96.97%, 787.0 tok/s
+chunk 0 pos  6144: 2048 scored, mean KLD 0.01170, same top 96.78%, 715.3 tok/s
+chunk 0 pos  7168: 3072 scored, mean KLD 0.01276, same top 96.13%, 670.5 tok/s
+chunk 0 pos  8192: 4095 scored, mean KLD 0.01167, same top 96.24%, 639.0 tok/s
+chunk 1 pos  5120: 5119 scored, mean KLD 0.01046, same top 96.37%, 752.2 tok/s
+chunk 1 pos  6144: 6143 scored, mean KLD 0.00946, same top 96.70%, 724.5 tok/s
+chunk 1 pos  7168: 7167 scored, mean KLD 0.00893, same top 96.79%, 702.7 tok/s
+chunk 1 pos  8192: 8190 scored, mean KLD 0.00869, same top 96.68%, 684.4 tok/s
+
+fr_kld: 8190 tokens over 2 chunk(s) of 8192
+  PPL flashrt 2.5268, base 2.5238, ratio 1.00117
+  KLD mean 0.008685, median 0.001200, p99 0.105871, p99.9 0.269971, max 0.628547
+  same top token 96.679%
