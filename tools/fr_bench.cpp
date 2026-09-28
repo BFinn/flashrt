@@ -211,6 +211,11 @@ int main(int argc, char** argv) {
     };
 
     // prefill
+    {
+        size_t fr = 0, tot = 0;
+        cudaMemGetInfo(&fr, &tot);
+        std::printf("VRAM before prefill: %zu MiB free\n", fr >> 20);
+    }
     const auto tp = Clock::now();
     if (!load_state.empty()) {
         // the state holds positions 0 .. n_prompt-2; the last prompt token runs now, for its logits
@@ -256,6 +261,12 @@ int main(int argc, char** argv) {
         const double prefill_s = std::chrono::duration<double>(Clock::now() - tp).count();
         std::printf("prefill: %d tokens in %.1f s (%.1f tok/s, %s)\n", n_prompt, prefill_s, n_prompt / prefill_s,
                     chunk > 64 ? ("chunks of " + std::to_string(chunk) + ", experts streamed to the GPU").c_str() : "reference path");
+    }
+    if (chunk > 64) {   // what the chunk path held at its peak (sizes the chunk for a depth)
+        size_t fr = 0, tot = 0;
+        cudaMemGetInfo(&fr, &tot);
+        std::printf("VRAM after prefill: %zu MiB used, %zu MiB free (chunk buffers %zu MiB)\n", (tot - fr) >> 20, fr >> 20,
+                    fwd.chunk_buffer_bytes() >> 20);
     }
     fwd.release_chunk_buffers();   // the expert cache takes that VRAM
     if (!save_counts.empty()) {   // the prefill's routing counts, a cache prior for flashrt-engine --cache-prior
