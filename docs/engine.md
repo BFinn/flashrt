@@ -13,9 +13,10 @@ per-experiment evidence is in `bench/results/2026-09-2*`, each folder with a REA
   tok/s, 245K 82-101 tok/s over 6 windows (gates ≥ 80 / ≥ 72). The distribution test and the
   window KLD gate pass.
 - **The engine process serves the fast path** (`flashrt-engine`, JSON lines): prefix reuse,
-  checkpoints, sampling, speculation, cancellation. The Rust server does not use it yet.
-- **Next:** the server end to end (tokenizer, chat template, OpenAI API over the engine), then
-  P3 prefill.
+  checkpoints, sampling, speculation, cancellation.
+- **The Rust server works end to end (2026-09-28):** OpenAI and Anthropic APIs with streaming,
+  reasoning, tool calls and stop strings over the engine (`bench/results/2026-09-28-sw35-server`).
+- **Next:** cheaper verify windows, then P3 prefill.
 
 ## One decode token (fast path)
 
@@ -228,8 +229,14 @@ window's cost.
   Sampling: `--temp 1.0 --top-k 20 --top-p 0.95 [--seed S]`. `--dist-test N` runs the
   distribution test. States with the head: `$BENCH/state-32k-q8-mtp.bin` and
   `state-245k-q8-mtp.bin` (each with a `.mtp`), for `--kv-hot 4096`.
-- **Engine:** `build/flashrt-engine $M [--mtp $D --spec K --draft-vocab RANKS] [--ctx N]`, then
-  JSON lines on stdin (`bench/engine_smoke.py` drives it).
+- **Engine:** `build/flashrt-engine $M [--mtp $D --spec K --draft-vocab RANKS] [--ctx N] [--cache-prior FILE]`,
+  then JSON lines on stdin (`bench/engine_smoke.py` drives it). The prior:
+  `$BENCH/cache-prior-calib32k.bin` (also in `bench/results/2026-09-28-sw35-server`).
+- **Server:** `cargo build --release --manifest-path server/Cargo.toml`, then
+  `server/target/release/flashrt-server --model $M --port 8090 --engine build/flashrt-engine --engine-arg $M --engine-arg --mtp --engine-arg $D --engine-arg --spec --engine-arg 1 --engine-arg --draft-vocab --engine-arg RANKS --engine-arg --cache-prior --engine-arg PRIOR`
+  (`--api-key KEY` to require one). Checks: `--check-tokenizer TEXT IDS`, `--render REQUEST.json`,
+  and `bench/server_smoke.py --url ...` against a running server. Only as a test unit: no
+  service stays up on the box.
 - **Kernel profile:**
   `/usr/local/cuda-12.9/bin/nsys profile --capture-range=cudaProfilerApi --cuda-graph-trace=node --trace=cuda build/fr_bench ... --gen 64`.
   Without `--cuda-graph-trace=node`, graphs appear as single launches.
@@ -248,9 +255,11 @@ window's cost.
   about 30 µs per layer at steady state. Both have room to improve.
 - **`k_idx_select`** still spends about 70 µs per layer at 245K in 4 single-CTA histogram passes.
   A multi-CTA histogram would roughly halve it (estimate).
-- **The Rust server** (`server/`) predates the engine: it only probes the pipe. It needs the
-  tokenizer (the GGUF's vocabulary and merges), the chat template and the OpenAI API mapped to
-  the engine protocol.
+- **Server limits:** text only (no images); tool_choice "required" or a named tool is not
+  enforced (the model decides); Anthropic thinking blocks carry an empty signature; without a
+  `thinking` field the model still reasons, and the reasoning is not returned.
+- **Prefix reuse keeps one sequence and one checkpoint** (before the last prompt's last token).
+  Two conversations interleaved on one server re-prefill each time.
 - **The engine refills the expert cache from the prefill's routing counts** after the first
   prompt and after any prompt that adds 4,096 or more tokens. For short prompts the adaptive
   policy alone moves it.
@@ -260,11 +269,10 @@ window's cost.
 
 ## Next steps (priority order)
 
-1. **The server end to end:** tokenizer from the GGUF (as `bench/mtp_vocab.py` builds it, checked
-   against llama.cpp), the chat template, OpenAI and Anthropic APIs over the engine protocol.
-2. **Cheaper verify windows:** the misses dominate. Candidates: PCIe reads for the misses
+1. **Cheaper verify windows:** the misses dominate. Candidates: PCIe reads for the misses
    several window tokens share (the grouped hit kernels read each once), a draft length chosen
    per round from the window's expected misses, and more cache slots (the Q2_0 head frees about
    500).
-3. **P3 prefill** (the reference path runs 109-123 tok/s: 38 minutes for 245K).
-4. **Tuning:** multi-CTA select, a parallel hot-set CLOCK, an adaptive swap budget.
+2. **P3 prefill** (the reference path runs 109-123 tok/s: 38 minutes for 245K). It is now the
+   first thing a server user waits for: 17 s for a 2K prompt.
+3. **Tuning:** multi-CTA select, a parallel hot-set CLOCK, an adaptive swap budget.

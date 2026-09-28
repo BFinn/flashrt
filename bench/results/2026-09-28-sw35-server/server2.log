@@ -1,0 +1,18 @@
+flashrt: expert cache filled from $BENCH/cache-prior-calib32k.bin (32768 tokens)
+flashrt: qwen4exp, 48 layers, expert cache 6791 slots (27.6%), MTP drafts 1 per round
+2026-09-28T02:44:31.701196Z  INFO flashrt_server: engine ready version=0.1.0 arch=qwen4exp max_context=65536
+2026-09-28T02:44:31.701257Z  INFO flashrt_server: listening on 127.0.0.1:8090
+2026-09-28T02:44:52.707752Z  INFO flashrt_server::chat: r0: prompt 2035 (reused 0) in 16680 ms, 256 tokens in 2914 ms, Length
+2026-09-28T02:44:55.278634Z  INFO flashrt_server::chat: r1: prompt 2035 (reused 2034) in 15 ms, 256 tokens in 2555 ms, Length
+2026-09-28T02:44:57.463709Z  INFO flashrt_server::chat: r2: prompt 2035 (reused 2034) in 14 ms, 256 tokens in 2170 ms, Length
+2026-09-28T02:44:59.665488Z  INFO flashrt_server::chat: r3: prompt 2035 (reused 2034) in 13 ms, 256 tokens in 2187 ms, Length
+2026-09-28T02:45:00.050470Z  INFO flashrt_server::chat: r4: prompt 28 (reused 0) in 278 ms, 3 tokens in 60 ms, Stop
+2026-09-28T02:45:01.693007Z  INFO flashrt_server::chat: r5: prompt 59 (reused 0) in 510 ms, 78 tokens in 1131 ms, Stop
+2026-09-28T02:45:05.107053Z  INFO flashrt_server::chat: r6: prompt 327 (reused 0) in 2798 ms, 44 tokens in 615 ms, ToolCalls
+2026-09-28T02:45:05.896194Z  INFO flashrt_server::chat: r7: prompt 402 (reused 372) in 314 ms, 42 tokens in 472 ms, Stop
+2026-09-28T02:45:06.422682Z  INFO flashrt_server::chat: r8: prompt 24 (reused 0) in 247 ms, 21 tokens in 279 ms, StopSequence
+2026-09-28T02:45:06.530057Z  INFO flashrt_server::chat: r9: prompt 5 (reused 0) in 83 ms, 2 tokens in 24 ms, Stop
+2026-09-28T02:45:07.854945Z  INFO flashrt_server::chat: r10: prompt 62 (reused 0) in 550 ms, 65 tokens in 774 ms, Stop
+2026-09-28T02:45:11.010057Z  INFO flashrt_server::chat: r11: prompt 322 (reused 0) in 2702 ms, 40 tokens in 453 ms, ToolCalls
+2026-09-28T02:45:11.746175Z  INFO flashrt_server::chat: r12: prompt 60 (reused 0) in 508 ms, 26 tokens in 227 ms, Cancelled
+2026-09-28T02:45:11.931614Z  INFO flashrt_server::chat: r13: prompt 15 (reused 0) in 160 ms, 1 tokens in 26 ms, Stop

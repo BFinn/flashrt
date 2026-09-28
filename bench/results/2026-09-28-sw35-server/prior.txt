@@ -1,0 +1,20 @@
+KV cache: fp16
+prefill: 32768 tokens in 269.3 s (121.7 tok/s, reference path)
+routing counts: saved to $BENCH/cache-prior-calib32k.bin
+expert cache: 7680 slots (31.2% of experts), filled in 0.7 s from 11150 MiB free
+adaptive cache: decayed LFU, swap budget 8 (arena registered in 1.7 s)
+decode: 1 tokens at depth 32768 in 0.03 s: 31.59 tok/s (fast path, doorbell), swaps 0
+expert cache hit rate 67.92% (326 hits, 154 misses: 154 on the CPU, 0 read over PCIe)
+host per token: 24.40 ms waiting for routing, 6.48 ms running misses
+misses per layer: count (share of layers) and mean host miss time
+   0 :   6.2%     0.9 us
+   1 :  16.7%    48.8 us
+   2 :  14.6%    85.6 us
+   3 :  16.7%   140.7 us
+   4 :  20.8%   167.9 us
+   5 :  14.6%   195.2 us
+   6 :   6.2%   249.2 us
+   7 :   2.1%   267.6 us
+   8 :   2.1%   298.9 us
+CUDA graphs: on (1 capture(s))
+tokens: 23856 13
