@@ -40,6 +40,12 @@ struct BlockScratch {
     size_t attn_part_elems = 0;
 };
 BlockScratch alloc_block_scratch(const Spec& s, int max_tokens);
+// The addresses a captured graph bakes in: a graph is stale once any of them changes (a
+// scratch that grows is reallocated).
+inline bool same_buffers(const BlockScratch& a, const BlockScratch& b) {
+    return a.f32 == b.f32 && a.q8 == b.q8 && a.idx_scores == b.idx_scores && a.idx_cells == b.idx_cells && a.idx_counts == b.idx_counts &&
+           a.attn_part == b.attn_part;
+}
 void free_block_scratch(BlockScratch& b);
 
 struct BlockCtx {

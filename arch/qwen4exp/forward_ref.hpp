@@ -136,6 +136,7 @@ private:
         float* logits = nullptr;
         const void* ple_pinned = nullptr;
         const void* ple_dev = nullptr;
+        BlockScratch scratch;   // the buffers it was captured with
     };
     Graphs graphs_[kMaxGraphTokens + 1][2];
     long graph_captures_ = 0;

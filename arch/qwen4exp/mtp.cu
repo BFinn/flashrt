@@ -391,6 +391,10 @@ std::vector<int32_t> MtpHead::draft_chain(int row, int pos, int k) {
     k_chain_next<<<1, 1, 0, stream_>>>(amax_dev_, chain_dp_, chain_drafts_);
     ck(cudaMemcpyAsync(h_in_, x_ + size_t(row) * hc * n, size_t(hc) * n * 4, cudaMemcpyDeviceToDevice, stream_), "chain h");
     if (k > 1) {
+        if (chain_graph_ && !same_buffers(chain_scratch_, scratch_)) {   // an eager call grew the scratch
+            cudaGraphExecDestroy(chain_graph_);
+            chain_graph_ = nullptr;
+        }
         if (!chain_graph_) {   // one chained step: forward at (dp[0], dp[1]), its draft, the bookkeeping, h for the next
             qsa_scratch_reserve(s_, scratch_, 1, kv_.capacity / s_.qsa_block);
             cudaGraph_t g = nullptr;
@@ -403,6 +407,7 @@ std::vector<int32_t> MtpHead::draft_chain(int row, int pos, int k) {
             ck(cudaStreamEndCapture(stream_, &g), "end MTP capture");
             ck(cudaGraphInstantiate(&chain_graph_, g, 0), "instantiate MTP graph");
             cudaGraphDestroy(g);
+            chain_scratch_ = scratch_;
         }
         for (int j = 1; j < k; ++j) ck(cudaGraphLaunch(chain_graph_, stream_), "launch MTP graph");
     }

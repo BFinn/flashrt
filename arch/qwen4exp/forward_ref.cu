@@ -293,6 +293,7 @@ ForwardRef::Graphs& ForwardRef::capture_graphs(int T, float* logits_dev) {
     gs.logits = logits_dev;
     gs.ple_pinned = ple_host_.raw_pinned;
     gs.ple_dev = ple_host_.raw_dev;
+    gs.scratch = scratch_;
     ++graph_captures_;
     return gs;
 }
@@ -321,6 +322,10 @@ void ForwardRef::forward(const int32_t* seq, int T, int out_from, float* logits_
         params_host_[2] = int32_t(fast_host_->seq);
         for (int t = 1; t < T; ++t) params_host_[2 + t] = seq[pos_ + t];
         Graphs* gs = &graphs_[T][in_window_ ? 1 : 0];
+        if (gs->pre && !same_buffers(gs->scratch, scratch_)) {   // another length's capture grew the scratch
+            drop_graphs();
+            gs = &graphs_[T][in_window_ ? 1 : 0];
+        }
         if (!gs->pre || gs->logits != logits_dev) {
             if (ple_rows.valid()) ple_rows.wait();   // the PLE buffers must exist before capture
             if (!s.ple_layers.empty() && ple_host_.raw_dev_bytes < ple_host_.raw_pinned_bytes) {   // grow the device side too
@@ -335,6 +340,15 @@ void ForwardRef::forward(const int32_t* seq, int T, int out_from, float* logits_
                         }
             }
             gs = &capture_graphs(T, logits_dev);
+            // capturing may have grown the scratch under the other lengths' graphs
+            for (auto& row : graphs_)
+                for (Graphs& g : row)
+                    if (&g != gs && g.pre && !same_buffers(g.scratch, scratch_))
+                        for (cudaGraphExec_t* e : {&g.pre, &g.post})
+                            if (*e) {
+                                cudaGraphExecDestroy(*e);
+                                *e = nullptr;
+                            }
         }
         ck(cudaGraphLaunch(gs->pre, stream_), "launch graph (pre)");
         if (ple_rows.valid()) ple_rows.get();

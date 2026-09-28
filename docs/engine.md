@@ -71,6 +71,43 @@ graphs, and the next decode token captures them again (about 0.1 ms).
   4. log the layer's routing into `access` (read by the cache manager).
 - **Thread placement:** the enqueue thread sits on CPU 8, and helper threads unpin themselves.
 
+## Speculative decoding with the MTP head (P2)
+
+A round, in `fr_bench --spec K` (the engine binary does not run it yet):
+
+1. **Draft** (`MtpHead`, `arch/qwen4exp/mtp.cu`): the head runs over the rows the target kept in
+   the last round (its catch-up, with the target's final streams as h), and the last row's
+   logits give draft 1. Drafts 2..K come from `draft_chain`: one captured graph per step, fed its
+   token and position on the device by the previous step's argmax. One host sync per round.
+2. **Verify** (`ForwardRef::forward_window`): the target runs the window `x_p, d_1 .. d_K` (T =
+   K + 1 tokens) in one doorbell step on the fast path, captured as a graph pair per T.
+3. **Accept:** every row is sampled (`kernels/cuda/sample.cu`; greedy is argmax). Drafts are kept
+   while the sampled token equals the draft; the emitted tokens are the samples y_0 .. y_a. The
+   draft is deterministic, so this is exact speculative sampling.
+4. **Commit** (`ForwardRef::commit(a + 1)`): the recurrent states are rewound to the kept tokens.
+
+**The head** is the NextN block of the draft GGUF (`-noembd`: the target's embedding and LM head
+are borrowed). Its input at position p is the target's final hyper-connection streams at p - 1
+and the token at p (llama.cpp's graph_mtp semantics); its attention is a QSA layer with its own
+KV cache and indexer. Its 512 experts live in VRAM, requantized Q8_0 → Q4_0 at load (1,449 MiB
+in all). Its head is a gathered copy of the target's LM-head rows for the top 32,768 tokens of a
+frequency ranking (`bench/mtp_vocab.py`) plus the prompt's distinct tokens.
+
+**Rewinding a window** (what `commit` needs):
+- **GDN:** the delta-rule kernel saves the state before the window (one 113 MB backup per
+  window, not one per token); a partial accept replays the kept tokens from the saved per-token
+  inputs. The conv history is rebuilt from the saved old history plus the window's inputs.
+- **PLE:** the n-gram conv history, the same way.
+- **KV caches (target and head):** nothing: rejected positions are rewritten before anything
+  reads them. The indexer's raw-key ring holds 2 blocks of positions for this, so a rewind never
+  finds an older position's key overwritten.
+
+**The MoE in a window:** routing per token (one `k_route` block each), the GPU hits grouped by
+expert (each distinct expert read once for all its tokens), and the CPU misses grouped by expert
+too (`moe_cpu` takes up to 4 tokens per expert). Each missed expert is read once per window, but
+the union of a window's misses grows almost linearly with its length: the CPU misses dominate a
+window's cost.
+
 ## Why it is shaped like this (with the evidence)
 
 | Decision | Why | Evidence |
@@ -91,6 +128,11 @@ graphs, and the next decode token captures them again (about 0.1 ms).
 | **Host KV + GPU hot set** (`--kv-hot 4096`) | QSA reads only 2,052 cells per layer per token. Promoting the selected blocks *before* attention keeps attention on GPU memory. | sw19-20 (v1 read misses zero-copy inside attention: slower), sw22 |
 | **Token embedding in host memory** | Decode reads one 1.1 KB row per token, so its 260 MB of VRAM is better spent on the expert cache. | sw22 |
 | **Graph-mode QSA always runs the selection path** | It keeps the graph valid at every position; the select kernel falls back to dense below the width. | sw17 |
+| **MTP head experts at Q4_0, head over 32K ranked + prompt tokens** | Q4_0 halves the head's VRAM (more expert slots), the trimmed head halves the draft step, and neither costs measurable acceptance. | sw26 |
+| **GDN backup + replay for rewinds** | One state copy per window instead of one per token; a partial accept replays only the kept tokens. | sw25 (KLD with rewinds 0.0087) |
+| **Fused hc kernels for windows, each weight read once** | The generic path read the BF16 hc weights at 300 GB/s: 4.6 ms of a 3-token window. | sw28, sw29 |
+| **Window graphs, one pair per length** | Eager windows paid about 1.4 ms of launches per round. | sw27 |
+| **Sampling draws keyed by (seed, position)** | A position's sample is the same in a plain step and in a verify window, so speculative output can be checked against plain output token for token. | test_sample, sw31 |
 
 ## Tried and rejected, or parked
 
@@ -107,6 +149,10 @@ graphs, and the next decode token captures them again (about 0.1 ms).
 - **Q4 KV with a Hadamard rotation** (planned for P4): not done. With the hot set, KV VRAM is
   about 0.2 GB, so it matters little now.
 - **Fewer experts per token** (from P0): rejected at 2-bit, because the KLD cost is too high.
+- **Gating drafts on the head's own probability** (`--draft-pmin`): no better than a fixed K at
+  2K (sw29). The probability over the trimmed vocabulary is not calibrated enough.
+- **Token-id prefix as the drafter's vocabulary:** the first 40K ids cover only 92.7% of wiki
+  tokens. A frequency ranking is used instead.
 
 ## Current numbers (all exact within the KLD gate)
 

@@ -109,6 +109,7 @@ private:
     int32_t *chain_dp_ = nullptr, *chain_drafts_ = nullptr;
     float *h_in_ = nullptr, *chain_logits_ = nullptr;
     cudaGraphExec_t chain_graph_ = nullptr;
+    BlockScratch chain_scratch_;   // the buffers the chain graph was captured with
 };
 
 }  // namespace flashrt::qwen4exp
