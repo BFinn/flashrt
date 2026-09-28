@@ -225,7 +225,11 @@ MtpHead::MtpHead(const Gguf& g, const Spec& target, const GpuWeights& target_w, 
     if (exps_[0].dims != std::vector<int64_t>{s_.d_model, s_.d_ff_expert, s_.n_expert} || s_.n_expert > 1024 || s_.top_k > 32)
         throw std::runtime_error("MTP: unexpected expert shape");
     ck(cudaMalloc(&amax_dev_, 16), "cudaMalloc MTP argmax");
-    ck(cudaHostAlloc(&amax_host_, 16, cudaHostAllocDefault), "cudaHostAlloc MTP argmax");
+    ck(cudaHostAlloc(&amax_host_, 64, cudaHostAllocDefault), "cudaHostAlloc MTP argmax");
+    ck(cudaMalloc(&chain_dp_, 16 * 4), "cudaMalloc MTP chain");
+    ck(cudaMalloc(&chain_drafts_, 16 * 4), "cudaMalloc MTP chain");
+    ck(cudaMalloc(&h_in_, size_t(s_.hc_count) * s_.d_model * 4), "cudaMalloc MTP chain");
+    ck(cudaMalloc(&chain_logits_, size_t(ts_.n_vocab) * 4), "cudaMalloc MTP chain");
 
     scratch_ = alloc_block_scratch(s_, max_batch);
     kv_ = alloc_qsa_cache(s_, max_ctx, kv_q8, kv_hot_blocks);
@@ -303,6 +307,10 @@ void MtpHead::load_experts_q4(const Gguf& g, bool q2) {
 }
 
 void MtpHead::set_vocab(const std::vector<int32_t>& ids) {
+    if (chain_graph_) {
+        cudaGraphExecDestroy(chain_graph_);
+        chain_graph_ = nullptr;
+    }
     if (head_.dev) cudaFree(head_.dev);
     head_ = GpuTensor{};
     head_bytes_ = 0;
@@ -356,6 +364,53 @@ int MtpHead::load_state(const std::string& path, float* h_carry_dev) {
     return pos;
 }
 
+namespace {
+// the chain's bookkeeping after a step: the drafted token becomes the next step's input
+// (dp[0]), the position advances, and the token is recorded
+__global__ void k_chain_next(const int32_t* v, int32_t* dp, int32_t* drafts) {
+    const int j = dp[3];
+    drafts[j] = v[1];
+    dp[0] = v[1];
+    dp[1] += 1;
+    dp[3] = j + 1;
+}
+}  // namespace
+
+std::vector<int32_t> MtpHead::draft_chain(int row, int pos, int k) {
+    if (k < 1 || k > 8) throw std::runtime_error("draft_chain: 1..8 drafts");
+    const int n = s_.d_model, hc = s_.hc_count;
+    const int32_t* ids_dev =
+        vocab_ids_.empty() ? nullptr
+                           : reinterpret_cast<const int32_t*>(static_cast<const uint8_t*>(head_.dev) + head_.bytes + gemv::kWeightTailPad);
+    // the first draft: from the logits of the last forward() row (mtp_logits_ must hold it)
+    argmax_dev(stream_, chain_logits_, vocab(), amax_dev_);
+    k_draft_top<<<1, 1024, 0, stream_>>>(chain_logits_, vocab(), ids_dev, amax_dev_, false);
+    // the chain's parameters: [token, position, -, step]; the input streams are row `row` of x_
+    const int32_t init[4] = {0, pos - 1, 0, 0};   // k_chain_next advances it to pos
+    ck(cudaMemcpyAsync(chain_dp_, init, sizeof(init), cudaMemcpyHostToDevice, stream_), "chain params");
+    k_chain_next<<<1, 1, 0, stream_>>>(amax_dev_, chain_dp_, chain_drafts_);
+    ck(cudaMemcpyAsync(h_in_, x_ + size_t(row) * hc * n, size_t(hc) * n * 4, cudaMemcpyDeviceToDevice, stream_), "chain h");
+    if (k > 1) {
+        if (!chain_graph_) {   // one chained step: forward at (dp[0], dp[1]), its draft, the bookkeeping, h for the next
+            qsa_scratch_reserve(s_, scratch_, 1, kv_.capacity / s_.qsa_block);
+            cudaGraph_t g = nullptr;
+            ck(cudaStreamBeginCapture(stream_, cudaStreamCaptureModeThreadLocal), "begin MTP capture");
+            enqueue(h_in_, nullptr, 1, 0, 0, chain_logits_, chain_dp_);
+            argmax_dev(stream_, chain_logits_, vocab(), amax_dev_);
+            k_draft_top<<<1, 1024, 0, stream_>>>(chain_logits_, vocab(), ids_dev, amax_dev_, false);
+            k_chain_next<<<1, 1, 0, stream_>>>(amax_dev_, chain_dp_, chain_drafts_);
+            ck(cudaMemcpyAsync(h_in_, x_, size_t(hc) * n * 4, cudaMemcpyDeviceToDevice, stream_), "chain h");
+            ck(cudaStreamEndCapture(stream_, &g), "end MTP capture");
+            ck(cudaGraphInstantiate(&chain_graph_, g, 0), "instantiate MTP graph");
+            cudaGraphDestroy(g);
+        }
+        for (int j = 1; j < k; ++j) ck(cudaGraphLaunch(chain_graph_, stream_), "launch MTP graph");
+    }
+    ck(cudaMemcpyAsync(amax_host_, chain_drafts_, size_t(k) * 4, cudaMemcpyDeviceToHost, stream_), "drafts to host");
+    ck(cudaStreamSynchronize(stream_), "draft chain");
+    return std::vector<int32_t>(amax_host_, amax_host_ + k);
+}
+
 int32_t MtpHead::argmax(const float* logits_row_dev, float* p_top) {
     argmax_dev(stream_, logits_row_dev, vocab(), amax_dev_);
     const int32_t* ids_dev =
@@ -369,6 +424,9 @@ int32_t MtpHead::argmax(const float* logits_row_dev, float* p_top) {
 }
 
 MtpHead::~MtpHead() {
+    if (chain_graph_) cudaGraphExecDestroy(chain_graph_);
+    for (void* p : {static_cast<void*>(chain_dp_), static_cast<void*>(chain_drafts_), static_cast<void*>(h_in_), static_cast<void*>(chain_logits_)})
+        if (p) cudaFree(p);
     if (exp_dev_) cudaFree(exp_dev_);
     if (head_.dev) cudaFree(head_.dev);
     if (amax_dev_) cudaFree(amax_dev_);
@@ -416,10 +474,14 @@ void MtpHead::moe(const BlockCtx& c, const float* x, int T, float* out) {
 }
 
 void MtpHead::forward(const float* h_prev, const int32_t* tokens, int T, int pos0, int out_from, float* logits_dev) {
+    enqueue(h_prev, tokens, T, pos0, out_from, logits_dev, nullptr);
+}
+
+void MtpHead::enqueue(const float* h_prev, const int32_t* tokens, int T, int pos0, int out_from, float* logits_dev, const int32_t* dp) {
     if (T < 1 || T > max_batch_) throw std::runtime_error("MtpHead: bad batch size");
     const int n = s_.d_model, hc = s_.hc_count, il = il_;
-    const BlockCtx c{s_, w_, scratch_, stream_};
-    const BlockCtx ct{ts_, tw_, scratch_, stream_};   // the target's embedding and head
+    const BlockCtx c{s_, w_, scratch_, stream_, dp};
+    const BlockCtx ct{ts_, tw_, scratch_, stream_, dp};   // the target's embedding and head
     // input: per stream, eh_proj([enorm(embed(x)) | hnorm(h_prev)]); h_prev is read before x_ is written
     rms_norm_rows(c, h_prev, static_cast<const float*>(w_.layer(il, "nextn.hnorm.weight").dev), hn_, n, hc, T * hc);
     embed(ct, tokens, T, emb_);

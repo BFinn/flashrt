@@ -381,14 +381,20 @@ int main(int argc, char** argv) {
             const auto t0 = Clock::now();
             const int p = int(seq.size()) - 1;
             std::vector<int32_t> win(seq.end() - 1, seq.end());   // x_p, d1 .. dK
-            mtp->forward(h_buf, seq.data() + p - pend + 1, pend, p - pend + 1, pend - 1, mtp_logits);
-            float pd = 1.0f;
-            int32_t d = mtp->argmax(mtp_logits, draft_pmin > 0 ? &pd : nullptr);
-            if (pd >= draft_pmin) win.push_back(d);
-            for (int j = 1; j < spec_k && pd >= draft_pmin; ++j) {
-                mtp->forward(mtp->h_out() + size_t(j == 1 ? pend - 1 : 0) * hrow, &d, 1, p + j, 0, mtp_logits);
-                d = mtp->argmax(mtp_logits, draft_pmin > 0 ? &pd : nullptr);
+            if (draft_pmin > 0) {   // step by step, checking each draft's probability
+                mtp->forward(h_buf, seq.data() + p - pend + 1, pend, p - pend + 1, pend - 1, mtp_logits);
+                float pd = 1.0f;
+                int32_t d = mtp->argmax(mtp_logits, &pd);
                 if (pd >= draft_pmin) win.push_back(d);
+                for (int j = 1; j < spec_k && pd >= draft_pmin; ++j) {
+                    mtp->forward(mtp->h_out() + size_t(j == 1 ? pend - 1 : 0) * hrow, &d, 1, p + j, 0, mtp_logits);
+                    d = mtp->argmax(mtp_logits, &pd);
+                    if (pd >= draft_pmin) win.push_back(d);
+                }
+            } else {   // the catch-up rows, then the chain in one sync
+                mtp->forward(h_buf, seq.data() + p - pend + 1, pend, p - pend + 1, pend - 1, mtp->chain_logits());
+                const std::vector<int32_t> dr = mtp->draft_chain(pend - 1, p + 1, spec_k);
+                win.insert(win.end(), dr.begin(), dr.end());
             }
             const int kd = int(win.size()) - 1;   // drafts this round
             // 2. verify the window x_p, d1 .. dK

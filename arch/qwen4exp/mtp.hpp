@@ -52,6 +52,13 @@ public:
     void forward(const float* h_prev, const int32_t* tokens, int T, int pos0, int out_from, float* logits_dev);
     const float* h_out() const { return x_; }
 
+    // The drafts of one round, k of them (<= 8), in one host sync: the first from chain_logits()
+    // (the logits of the last forward() row, which must be row `row` of h_out(), at position
+    // pos - 1), then k - 1 chained steps at positions pos .., each replaying one captured graph
+    // that feeds its own draft and streams to the next.
+    std::vector<int32_t> draft_chain(int row, int pos, int k);
+    float* chain_logits() { return chain_logits_; }
+
     // Restricts the head to these token ids (empty: the full vocabulary again).
     void set_vocab(const std::vector<int32_t>& ids);
     int vocab() const { return vocab_ids_.empty() ? ts_.n_vocab : int(vocab_ids_.size()); }
@@ -68,6 +75,7 @@ public:
     int layer() const { return il_; }
 
 private:
+    void enqueue(const float* h_prev, const int32_t* tokens, int T, int pos0, int out_from, float* logits_dev, const int32_t* dp);
     void moe(const BlockCtx& c, const float* x, int T, float* out);
     void load_experts_q4(const Gguf& g, bool q2);   // Q4_0, or Q2_0 when q2
 
@@ -97,6 +105,10 @@ private:
     GpuTensor head_;
     size_t head_bytes_ = 0;
     int32_t *amax_dev_ = nullptr, *amax_host_ = nullptr;   // [index, token, p as float bits]
+    // draft chain (graph mode): params [token, position, -, step], drafts, the step's input streams
+    int32_t *chain_dp_ = nullptr, *chain_drafts_ = nullptr;
+    float *h_in_ = nullptr, *chain_logits_ = nullptr;
+    cudaGraphExec_t chain_graph_ = nullptr;
 };
 
 }  // namespace flashrt::qwen4exp
