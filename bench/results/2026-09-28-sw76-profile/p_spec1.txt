@@ -1,0 +1,43 @@
+WARNING: Device-side CUDA Event completion trace is currently enabled.
+         This may increase runtime overhead and the likelihood of false
+         dependencies across CUDA Streams. If you wish to avoid this, please
+         disable the feature with --cuda-event-trace=false.
+WARNING: CPU IP/backtrace sampling not supported, disabling.
+Try the 'nsys status --environment' command to learn more.
+
+WARNING: CPU context switch tracing not supported, disabling.
+Try the 'nsys status --environment' command to learn more.
+
+expert arena registered in 1.8 s
+KV cache: q8_0, host-resident, hot set of 4096 blocks per layer
+MTP draft head: layer 48, 774 MiB of weights in VRAM, 1 drafts per verify round
+VRAM before prefill: 10991 MiB free
+state: MTP head state loaded
+state: loaded $BENCH/state-32k-q8-mtp.bin (32767 positions) in 0.2 s
+MTP draft vocabulary: 33692 tokens (32768 ranked, 924 from the prompt)
+expert cache: 8096 slots (32.9% of experts), filled in 0.3 s from 10930 MiB free
+adaptive cache: decayed LFU, swap budget 8 (set up in 0.0 s)
+decode: 128 tokens at depth 32768 in 1.17 s: 109.12 tok/s (speculative, MTP drafts), swaps 245
+expert cache hit rate 93.10% (74185 hits, 5495 misses: 5495 on the CPU, 0 read over PCIe)
+host per token: 6.17 ms waiting for routing, 1.65 ms running misses
+misses per layer: count (share of layers) and mean host miss time
+   0 :  36.9%     1.0 us
+   1 :  29.7%    53.5 us
+   2 :  17.7%    83.9 us
+   3 :   8.6%   114.9 us
+   4 :   3.9%   147.2 us
+   5 :   1.9%   177.1 us
+   6 :   0.8%   214.0 us
+   7 :   0.4%   251.0 us
+   8 :   0.1%   266.9 us
+   9 :   0.0%   317.3 us
+  11 :   0.0%   398.4 us
+CUDA graphs: on (1 capture(s))
+speculative: 83 rounds, 1.542 tokens per round, 1.00 drafts verified per round; accepted drafts: 0:45.8% 1:54.2%
+  per round: draft 1.04 ms, verify 12.85 ms, commit 0.22 ms
+tokens: 945 35166 383 264 40143 1496 13907 55893 10663 1550 9393 383 4855 22950 359 82 44798 321 8308 22120 2980 6121 641 561
+Collecting data...
+Generating '/tmp/nsys-report-15ba.qdstrm'
+[1/1] [0%                          ] p_spec1.nsys-rep[1/1] [0%                          ] p_spec1.nsys-rep[1/1] [5%                          ] p_spec1.nsys-rep[1/1] [6%                          ] p_spec1.nsys-rep[1/1] [7%                          ] p_spec1.nsys-rep[1/1] [8%                          ] p_spec1.nsys-rep[1/1] [===23%                      ] p_spec1.nsys-rep[1/1] [===24%                      ] p_spec1.nsys-rep[1/1] [==20%                       ] p_spec1.nsys-rep[1/1] [==21%                       ] p_spec1.nsys-rep[1/1] [===22%                      ] p_spec1.nsys-rep[1/1] [===23%                      ] p_spec1.nsys-rep[1/1] [===24%                      ] p_spec1.nsys-rep[1/1] [====25%                     ] p_spec1.nsys-rep[1/1] [====26%                     ] p_spec1.nsys-rep[1/1] [===22%                      ] p_spec1.nsys-rep[1/1] [===23%                      ] p_spec1.nsys-rep[1/1] [===24%                      ] p_spec1.nsys-rep[1/1] [==21%                       ] p_spec1.nsys-rep[1/1] [==19%                       ] p_spec1.nsys-rep[1/1] [====27%                     ] p_spec1.nsys-rep[1/1] [===24%                      ] p_spec1.nsys-rep[1/1] [===22%                      ] p_spec1.nsys-rep[1/1] [====28%                     ] p_spec1.nsys-rep[1/1] [======33%                   ] p_spec1.nsys-rep[1/1] [=======38%                  ] p_spec1.nsys-rep[1/1] [=========43%                ] p_spec1.nsys-rep[1/1] [==========48%               ] p_spec1.nsys-rep[1/1] [===========53%              ] p_spec1.nsys-rep[1/1] [=============58%            ] p_spec1.nsys-rep[1/1] [==============62%           ] p_spec1.nsys-rep[1/1] [========================100%] p_spec1.nsys-rep[1/1] [========================100%] p_spec1.nsys-rep
+Generated:
+	$BENCH/sw76/p_spec1.nsys-rep

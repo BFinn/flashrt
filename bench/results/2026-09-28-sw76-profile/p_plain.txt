@@ -1,0 +1,35 @@
+WARNING: Device-side CUDA Event completion trace is currently enabled.
+         This may increase runtime overhead and the likelihood of false
+         dependencies across CUDA Streams. If you wish to avoid this, please
+         disable the feature with --cuda-event-trace=false.
+WARNING: CPU IP/backtrace sampling not supported, disabling.
+Try the 'nsys status --environment' command to learn more.
+
+WARNING: CPU context switch tracing not supported, disabling.
+Try the 'nsys status --environment' command to learn more.
+
+expert arena registered in 1.8 s
+KV cache: q8_0, host-resident, hot set of 4096 blocks per layer
+VRAM before prefill: 12001 MiB free
+state: loaded $BENCH/state-32k-q8-mtp.bin (32767 positions) in 0.2 s
+expert cache: 8907 slots (36.2% of experts), filled in 0.3 s from 12000 MiB free
+adaptive cache: decayed LFU, swap budget 8 (set up in 0.0 s)
+decode: 128 tokens at depth 32768 in 1.46 s: 87.89 tok/s (fast path, doorbell), swaps 277
+expert cache hit rate 94.34% (57963 hits, 3477 misses: 3477 on the CPU, 0 read over PCIe)
+host per token: 8.71 ms waiting for routing, 1.88 ms running misses
+misses per layer: count (share of layers) and mean host miss time
+   0 :  61.1%     0.6 us
+   1 :  26.6%    97.6 us
+   2 :   8.1%    95.0 us
+   3 :   3.1%   113.9 us
+   4 :   0.7%   147.3 us
+   5 :   0.2%   186.3 us
+   6 :   0.1%   220.7 us
+  10 :   0.0%   420.8 us
+CUDA graphs: on (1 capture(s))
+tokens: 945 35166 383 264 40143 1496 13907 55893 10663 1550 9393 383 4855 22950 359 82 44798 321 8308 22120 2980 6121 641 561
+Collecting data...
+Generating '/tmp/nsys-report-7ee5.qdstrm'
+[1/1] [0%                          ] p_plain.nsys-rep[1/1] [0%                          ] p_plain.nsys-rep[1/1] [===23%                      ] p_plain.nsys-rep[1/1] [==18%                       ] p_plain.nsys-rep[1/1] [=====31%                    ] p_plain.nsys-rep[1/1] [====26%                     ] p_plain.nsys-rep[1/1] [===22%                      ] p_plain.nsys-rep[1/1] [==20%                       ] p_plain.nsys-rep[1/1] [=17%                        ] p_plain.nsys-rep[1/1] [=16%                        ] p_plain.nsys-rep[1/1] [14%                         ] p_plain.nsys-rep[1/1] [13%                         ] p_plain.nsys-rep[1/1] [==18%                       ] p_plain.nsys-rep[1/1] [===23%                      ] p_plain.nsys-rep[1/1] [====27%                     ] p_plain.nsys-rep[1/1] [=====31%                    ] p_plain.nsys-rep[1/1] [======35%                   ] p_plain.nsys-rep[1/1] [========40%                 ] p_plain.nsys-rep[1/1] [=========44%                ] p_plain.nsys-rep[1/1] [==========48%               ] p_plain.nsys-rep[1/1] [===========53%              ] p_plain.nsys-rep[1/1] [============55%             ] p_plain.nsys-rep[1/1] [========================100%] p_plain.nsys-rep[1/1] [========================100%] p_plain.nsys-rep
+Generated:
+	$BENCH/sw76/p_plain.nsys-rep
