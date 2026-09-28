@@ -459,7 +459,7 @@ __global__ void k_hc_up_mix(WU W, const float* part, int n_inject, float scale, 
 // k_hc_down2, it loads its weights while the down kernel runs, then waits for the partials
 // (cudaGridDependencySynchronize; a no-op without the launch attribute). The partials and xn are
 // read with plain loads after the wait.
-template <int TT, typename WU, int NCH>
+template <int TT, typename WU, int NCH, bool LATE = false>
 __global__ void __launch_bounds__(256) k_hc_up_mix2(WU W, const float* part, int n_inject, float scale, const float* xn, float* mixed,
                                                     float* inject, int n) {
     constexpr int HC = 4, rank = 64 * NCH;
@@ -470,8 +470,9 @@ __global__ void __launch_bounds__(256) k_hc_up_mix2(WU W, const float* part, int
     const int st = grp >> 3, il = grp & 7, i = min(blockIdx.x * 8 + il, n - 1);
     typename WU::Raw raw[NCH];
     const size_t e0 = (size_t(st) * n + i) * rank;
+    if (!LATE)
 #pragma unroll
-    for (int k = 0; k < NCH; ++k) raw[k] = W.load(e0 + 8 * size_t(l8 + 8 * k));
+        for (int k = 0; k < NCH; ++k) raw[k] = W.load(e0 + 8 * size_t(l8 + 8 * k));
 #if __CUDA_ARCH__ >= 900
     cudaGridDependencySynchronize();
 #endif
@@ -491,6 +492,9 @@ __global__ void __launch_bounds__(256) k_hc_up_mix2(WU W, const float* part, int
         inject[t * n_inject + k] = a;
     }
     __syncthreads();
+    if (LATE)
+#pragma unroll
+        for (int k = 0; k < NCH; ++k) raw[k] = W.load(e0 + 8 * size_t(l8 + 8 * k));
     float acc[TT] = {};
 #pragma unroll
     for (int k = 0; k < NCH; ++k) {
@@ -553,7 +557,7 @@ void hc_fused_launch(const float* x, const float* w_norm, WD Wd, const uint16_t*
         const char* e = std::getenv("FLASHRT_HC_UP2");
         return e ? std::atoi(e) : 2;
     }();
-    if (up_mode > 0 && rank == 320 && hc == 4) {
+    if (up_mode > 0 && rank == 320 && hc == 4) {   // 3: loads after the preamble (experiment)
         cudaLaunchConfig_t cfg{};
         cfg.gridDim = dim3((n + 7) / 8);
         cfg.blockDim = dim3(256);
@@ -563,8 +567,8 @@ void hc_fused_launch(const float* x, const float* w_norm, WD Wd, const uint16_t*
         attr[0].id = cudaLaunchAttributeProgrammaticStreamSerialization;
         attr[0].val.programmaticStreamSerializationAllowed = 1;
         cfg.attrs = attr;
-        cfg.numAttrs = up_mode == 2 ? 1 : 0;
-        ck(cudaLaunchKernelEx(&cfg, k_hc_up_mix2<TT, WU, 5>, Wu, static_cast<const float*>(part), n_inj, 1.0f / hc,
+        cfg.numAttrs = up_mode >= 2 ? 1 : 0;
+        ck(cudaLaunchKernelEx(&cfg, up_mode == 3 ? k_hc_up_mix2<TT, WU, 5, true> : k_hc_up_mix2<TT, WU, 5>, Wu, static_cast<const float*>(part), n_inj, 1.0f / hc,
                               static_cast<const float*>(xn), mixed, inject, n),
            "hc_up_mix2");
     } else
