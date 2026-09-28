@@ -9,6 +9,7 @@
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -119,6 +120,48 @@ int main() {
         const bool ok = std::isfinite(rel) && rel < 3e-2;
         fail += !ok;
         std::printf("expert %d (slot %2d): rel L2 %.2e %s\n", k, slot_of[k], rel, ok ? "ok" : "FAIL");
+    }
+
+    // a window of 3 tokens with overlapping hit lists (grouped by expert inside moe_hits) must
+    // give each (token, entry) exactly what a one-token call gives
+    {
+        const int T = 3;
+        const int32_t win_slot[T][K] = {{3, 11, 0, 7, 15, 5, 9, 2, 13, 3},
+                                        {11, 3, 6, 7, 1, 5, 9, 12, 14, 8},
+                                        {0, 11, 4, 10, 15, 2, 6, 3, 13, 1}};
+        const int32_t win_n[T] = {9, 10, 7};
+        std::vector<float> xw(size_t(T) * n);
+        for (auto& v : xw) v = nd(rng);
+        std::vector<const uint8_t*> wptr(size_t(T) * K);
+        for (int t = 0; t < T; ++t)
+            for (int k = 0; k < K; ++k) wptr[size_t(t) * K + k] = d_slots + eb * win_slot[t][k];
+        float *d_xw, *d_yw, *d_y1;
+        const uint8_t** d_wptr;
+        int32_t* d_wn;
+        void* d_wscr;
+        CK(cudaMalloc(&d_xw, xw.size() * 4));
+        CK(cudaMemcpy(d_xw, xw.data(), xw.size() * 4, cudaMemcpyHostToDevice));
+        CK(cudaMalloc(&d_yw, size_t(T) * K * n * 4));
+        CK(cudaMalloc(&d_y1, size_t(K) * n * 4));
+        CK(cudaMalloc(&d_wptr, wptr.size() * sizeof(void*)));
+        CK(cudaMemcpy(d_wptr, wptr.data(), wptr.size() * sizeof(void*), cudaMemcpyHostToDevice));
+        CK(cudaMalloc(&d_wn, T * 4));
+        CK(cudaMemcpy(d_wn, win_n, T * 4, cudaMemcpyHostToDevice));
+        CK(cudaMalloc(&d_wscr, qwen4exp::moe_hits_scratch_bytes(K, ff, T)));
+        qwen4exp::moe_hits(d_wptr, d_wn, K, d_xw, n, ff, d_wscr, d_yw, nullptr, T);
+        std::vector<float> yw(size_t(T) * K * n), y1(size_t(K) * n);
+        CK(cudaMemcpy(yw.data(), d_yw, yw.size() * 4, cudaMemcpyDeviceToHost));
+        double worst = 0;
+        for (int t = 0; t < T; ++t) {
+            qwen4exp::moe_hits(d_wptr + size_t(t) * K, d_wn + t, K, d_xw + size_t(t) * n, n, ff, d_scr, d_y1, nullptr);
+            CK(cudaMemcpy(y1.data(), d_y1, y1.size() * 4, cudaMemcpyDeviceToHost));
+            for (int k = 0; k < win_n[t]; ++k)
+                for (int r = 0; r < n; ++r)
+                    worst = std::max(worst, double(std::fabs(yw[(size_t(t) * K + k) * n + r] - y1[size_t(k) * n + r])));
+        }
+        const bool ok = worst == 0.0;
+        fail += !ok;
+        std::printf("window of %d tokens, grouped by expert: max difference to one-token calls %.3g %s\n", T, worst, ok ? "ok" : "FAIL");
     }
     std::printf("%s\n", fail ? "FAILED" : "all passed");
     return fail ? 1 : 0;

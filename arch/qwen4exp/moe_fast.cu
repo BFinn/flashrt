@@ -186,6 +186,154 @@ __global__ void k_moe_down(const uint8_t* const* hit_ptr, const int32_t* hit_n, 
     if (l4 == 0) yh[size_t(k) * n + r] = acc;
 }
 
+// ---- windows: the hits grouped by expert, so an expert several tokens hit is read once
+constexpr int kGroupTok = 4;   // tokens per window the grouped kernels take
+
+// One block of 64 threads, one per (token, k) entry of the window's hit lists (at most 64):
+// the distinct experts g_ptr[u] (u < *g_n, in order of first appearance) and, per expert and
+// token, the entry's k (g_slot[u][t], -1 if the token did not select it).
+__global__ void k_moe_group(const uint8_t* const* hit_ptr, const int32_t* hit_n, int K, int T, const uint8_t** g_ptr, int8_t* g_slot,
+                            int32_t* g_n) {
+    __shared__ const uint8_t* ptr[64];
+    __shared__ int u_of[64];
+    const int i = threadIdx.x;
+    int t = -1, k = -1, N = 0;
+    for (int tt = 0; tt < T; ++tt) {
+        const int h = hit_n[tt];
+        if (i >= N && i < N + h) {
+            t = tt;
+            k = i - N;
+        }
+        N += h;
+    }
+    const bool live = i < N;
+    ptr[i] = live ? hit_ptr[t * K + k] : nullptr;
+    __syncthreads();
+    int f = i;   // the first entry with this expert
+    if (live)
+        for (int j = 0; j < i; ++j)
+            if (ptr[j] == ptr[i]) {
+                f = j;
+                break;
+            }
+    int total;
+    const int u = block_scan_flags(live && f == i, &total);
+    if (live && f == i) {
+        u_of[i] = u;
+        g_ptr[u] = ptr[i];
+        for (int tt = 0; tt < kGroupTok; ++tt) g_slot[u * kGroupTok + tt] = -1;
+    }
+    __syncthreads();
+    if (live) g_slot[u_of[f] * kGroupTok + t] = int8_t(k);
+    if (i == 0) *g_n = total;
+}
+
+// Gate and up of grouped expert u (blockIdx.y < *g_n) for 64 rows (blockIdx.x), for every token
+// of the window that selected it; the hidden rows go where k_moe_gate_up puts them (entry
+// t * K + k), so k_moe_down's layout and the combine are unchanged.
+__global__ void k_moe_gate_up_g(const uint8_t* const* g_ptr, const int8_t* g_slot, const int32_t* g_n, const float* x, int T, int n,
+                                int ff, int K, uint32_t* hq, float* hscale, int32_t* hsum) {
+    const int u = blockIdx.y;
+    if (u >= *g_n) return;
+    extern __shared__ __align__(16) uint32_t xw[];   // [T][16][nb] words, then scale [T][nb], sum [T][nb]
+    __shared__ float hrow[kGroupTok][kQB];
+    const int nb = n / kQB, warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+    float* xscale = reinterpret_cast<float*>(xw + size_t(T) * 16 * nb);
+    int* xsum = reinterpret_cast<int*>(xscale + size_t(T) * nb);
+    int8_t slot[kGroupTok];
+#pragma unroll
+    for (int t = 0; t < kGroupTok; ++t) slot[t] = t < T ? g_slot[u * kGroupTok + t] : int8_t(-1);
+    for (int t = 0; t < T; ++t) {
+        if (slot[t] < 0) continue;
+        for (int b = warp; b < nb; b += blockDim.x >> 5)
+            quant_block64(x[size_t(t) * n + b * kQB + lane], x[size_t(t) * n + b * kQB + 32 + lane],
+                          reinterpret_cast<int8_t*>(xw + size_t(t) * 16 * nb), nb, b, xscale + t * nb + b, xsum + t * nb + b);
+    }
+    __syncthreads();
+    const int rsub = lane >> 3, l8 = lane & 7, rl = warp * 4 + rsub, r = blockIdx.x * kQB + rl;
+    const uint8_t* base = g_ptr[u];
+    const size_t mb = size_t(ff) * nb * 18;
+    const uint4* cg = reinterpret_cast<const uint4*>(base) + size_t(r) * nb;
+    const __half* sg = reinterpret_cast<const __half*>(base + size_t(ff) * nb * 16) + size_t(r) * nb;
+    const uint4* cu = reinterpret_cast<const uint4*>(base + mb) + size_t(r) * nb;
+    const __half* su = reinterpret_cast<const __half*>(base + mb + size_t(ff) * nb * 16) + size_t(r) * nb;
+    float ag[kGroupTok] = {}, au[kGroupTok] = {};
+    for (int b = l8; b < nb; b += 8) {
+        const uint4 wg = cg[b], wu = cu[b];
+        const float dg = __half2float(sg[b]), du = __half2float(su[b]);
+#pragma unroll
+        for (int t = 0; t < kGroupTok; ++t) {
+            if (slot[t] < 0) continue;
+            const uint32_t* xt = xw + size_t(t) * 16 * nb;
+            const float xs = xscale[t * nb + b];
+            const int xm = xsum[t * nb + b];
+            ag[t] += dg * xs * float(dot_block64(wg, xt, nb, b) - xm);
+            au[t] += du * xs * float(dot_block64(wu, xt, nb, b) - xm);
+        }
+    }
+#pragma unroll
+    for (int t = 0; t < kGroupTok; ++t) {
+        if (slot[t] < 0) continue;
+        float a = ag[t], c = au[t];
+        for (int o = 4; o > 0; o >>= 1) {
+            a += __shfl_xor_sync(0xffffffff, a, o);
+            c += __shfl_xor_sync(0xffffffff, c, o);
+        }
+        if (l8 == 0) hrow[t][rl] = a / (1.0f + __expf(-a)) * c;
+    }
+    __syncthreads();
+    if (warp < T && slot[warp] >= 0) {
+        const int nbh = ff / kQB, e = warp * K + slot[warp];
+        quant_block64(hrow[warp][lane], hrow[warp][lane + 32], reinterpret_cast<int8_t*>(hq + size_t(e) * 16 * nbh), nbh, blockIdx.x,
+                      hscale + e * nbh + blockIdx.x, hsum + e * nbh + blockIdx.x);
+    }
+}
+
+// Down of grouped expert u for 128 rows, for every token that selected it: yh[t * K + k][r].
+__global__ void k_moe_down_g(const uint8_t* const* g_ptr, const int8_t* g_slot, const int32_t* g_n, const uint32_t* hq,
+                             const float* hscale, const int32_t* hsum, float* yh, int T, int n, int ff, int K) {
+    const int u = blockIdx.y;
+    if (u >= *g_n) return;
+    __shared__ uint32_t hw[kGroupTok][16 * 64];
+    __shared__ float hs[kGroupTok][64];
+    __shared__ int hm[kGroupTok][64];
+    const int nbh = ff / kQB;
+    int8_t slot[kGroupTok];
+#pragma unroll
+    for (int t = 0; t < kGroupTok; ++t) slot[t] = t < T ? g_slot[u * kGroupTok + t] : int8_t(-1);
+    for (int t = 0; t < T; ++t) {
+        if (slot[t] < 0) continue;
+        const int e = t * K + slot[t];
+        for (int i = threadIdx.x; i < 16 * nbh; i += blockDim.x) hw[t][i] = hq[size_t(e) * 16 * nbh + i];
+        for (int i = threadIdx.x; i < nbh; i += blockDim.x) {
+            hs[t][i] = hscale[e * nbh + i];
+            hm[t][i] = hsum[e * nbh + i];
+        }
+    }
+    __syncthreads();
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, l4 = lane & 3;
+    const int r = blockIdx.x * 128 + warp * 8 + (lane >> 2);
+    const uint8_t* base = g_ptr[u] + 2 * size_t(ff) * (n / kQB) * 18;
+    const uint4* cd = reinterpret_cast<const uint4*>(base) + size_t(r) * nbh;
+    const __half* sd = reinterpret_cast<const __half*>(base + size_t(n) * nbh * 16) + size_t(r) * nbh;
+    float acc[kGroupTok] = {};
+    for (int b = l4; b < nbh; b += 4) {
+        const uint4 w = cd[b];
+        const float d = __half2float(sd[b]);
+#pragma unroll
+        for (int t = 0; t < kGroupTok; ++t)
+            if (slot[t] >= 0) acc[t] += d * hs[t][b] * float(dot_block64(w, hw[t], nbh, b) - hm[t][b]);
+    }
+#pragma unroll
+    for (int t = 0; t < kGroupTok; ++t) {
+        if (slot[t] < 0) continue;
+        float a = acc[t];
+        a += __shfl_xor_sync(0xffffffff, a, 2);
+        a += __shfl_xor_sync(0xffffffff, a, 1);
+        if (l4 == 0) yh[size_t(t * K + slot[t]) * n + r] = a;
+    }
+}
+
 // One block of E threads (E <= 1024): softmax over the router logits, top-k by probability,
 // weights renormalised (sum clamped at 6.1e-5, as llama.cpp). Hits get their slot; the hit list
 // is padded to k with a real slot (or slot 0) at weight 0 so the grouped launches have a fixed
@@ -384,7 +532,9 @@ __global__ void k_swiglu_1(float* g, const float* u, int n) {   // any number of
 
 }  // namespace
 
-size_t moe_hits_scratch_bytes(int K, int ff, int T) { return size_t(T) * K * (ff / kQB) * (8 + 64) + 256; }
+size_t moe_hits_scratch_bytes(int K, int ff, int T) {
+    return size_t(T) * K * (ff / kQB) * (8 + 64) + 256 + size_t(T) * K * (8 + kGroupTok) + 64;   // + the grouped lists
+}
 
 void moe_hits(const uint8_t* const* hit_ptr, const int32_t* hit_n, int K, const float* x, int n, int ff, void* scratch, float* yh,
               cudaStream_t stream, int T) {
@@ -394,6 +544,16 @@ void moe_hits(const uint8_t* const* hit_ptr, const int32_t* hit_n, int K, const 
     int32_t* hsum = reinterpret_cast<int32_t*>(hscale + size_t(TK) * nbh);      // [T*K][ff/64]
     uint32_t* hq = reinterpret_cast<uint32_t*>(hsum + size_t(TK) * nbh);        // [T*K][16][ff/64]
     const size_t smem_gu = size_t(n / kQB) * (16 * 4 + 8);
+    if (T > 1 && T <= kGroupTok && TK <= 64) {   // a window: each distinct expert read once
+        const uint8_t** g_ptr = reinterpret_cast<const uint8_t**>((reinterpret_cast<uintptr_t>(hq + size_t(TK) * 16 * nbh) + 15) & ~uintptr_t(15));
+        int8_t* g_slot = reinterpret_cast<int8_t*>(g_ptr + TK);
+        int32_t* g_n = reinterpret_cast<int32_t*>((reinterpret_cast<uintptr_t>(g_slot + size_t(TK) * kGroupTok) + 3) & ~uintptr_t(3));
+        k_moe_group<<<1, 64, 0, stream>>>(hit_ptr, hit_n, K, T, g_ptr, g_slot, g_n);
+        k_moe_gate_up_g<<<dim3(ff / kQB, TK), 512, smem_gu * T, stream>>>(g_ptr, g_slot, g_n, x, T, n, ff, K, hq, hscale, hsum);
+        k_moe_down_g<<<dim3(n / 128, TK), 512, 0, stream>>>(g_ptr, g_slot, g_n, hq, hscale, hsum, yh, T, n, ff, K);
+        ck(cudaGetLastError(), "moe_hits (grouped)");
+        return;
+    }
     k_moe_gate_up<<<dim3(ff / kQB, TK), 512, smem_gu, stream>>>(hit_ptr, hit_n, x, n, ff, hq, hscale, hsum, K);
     k_moe_down<<<dim3(n / 128, TK), 512, 0, stream>>>(hit_ptr, hit_n, hq, hscale, hsum, yh, n, ff, K);
     ck(cudaGetLastError(), "moe_hits");
