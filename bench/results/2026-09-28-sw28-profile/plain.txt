@@ -1,0 +1,22 @@
+WARNING: Device-side CUDA Event completion trace is currently enabled.
+         This may increase runtime overhead and the likelihood of false
+         dependencies across CUDA Streams. If you wish to avoid this, please
+         disable the feature with --cuda-event-trace=false.
+WARNING: CPU IP/backtrace sampling not supported, disabling.
+Try the 'nsys status --environment' command to learn more.
+
+WARNING: CPU context switch tracing not supported, disabling.
+Try the 'nsys status --environment' command to learn more.
+
+KV cache: fp16
+prefill: 2048 tokens in 16.6 s (123.6 tok/s, reference path)
+expert cache: 8270 slots (33.7% of experts), filled in 0.8 s from 11928 MiB free
+adaptive cache: decayed LFU, swap budget 8 (arena registered in 1.6 s)
+decode: 128 tokens at depth 2048 in 1.35 s: 94.52 tok/s (fast path, doorbell), swaps 397
+Capture range started in the application.
+Capture range ended in the application.
+Generating '/tmp/nsys-report-5382.qdstrm'
+[1/1] [0%                          ] plain.nsys-repProcessing events...
+[1/1] [0%                          ] plain.nsys-rep[1/1] [====25%                     ] plain.nsys-rep[1/1] [==18%                       ] plain.nsys-rep[1/1] [=====31%                    ] plain.nsys-rep[1/1] [====25%                     ] plain.nsys-rep[1/1] [==20%                       ] plain.nsys-rep[1/1] [==18%                       ] plain.nsys-rep[1/1] [=15%                        ] plain.nsys-rep[1/1] [14%                         ] plain.nsys-rep[1/1] [12%                         ] plain.nsys-rep[1/1] [11%                         ] plain.nsys-rep[1/1] [10%                         ] plain.nsys-rep[1/1] [=15%                        ] plain.nsys-rep[1/1] [==19%                       ] plain.nsys-rep[1/1] [===23%                      ] plain.nsys-rep[1/1] [====27%                     ] plain.nsys-rep[1/1] [=====32%                    ] plain.nsys-rep[1/1] [=======36%                  ] plain.nsys-rep[1/1] [========40%                 ] plain.nsys-rep[1/1] [=========44%                ] plain.nsys-rep[1/1] [==========49%               ] plain.nsys-rep[1/1] [===========52%              ] plain.nsys-rep[1/1] [========================100%] plain.nsys-rep[1/1] [========================100%] plain.nsys-rep
+Generated:
+	$BENCH/sw28/plain.nsys-rep

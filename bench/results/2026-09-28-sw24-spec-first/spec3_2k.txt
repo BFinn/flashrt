@@ -1,0 +1,30 @@
+KV cache: fp16
+MTP draft head: layer 48, 2649 MiB of weights in VRAM, 3 drafts per verify round
+prefill: 2048 tokens in 16.7 s (122.9 tok/s, reference path)
+expert cache: 6072 slots (24.7% of experts), filled in 0.5 s from 9030 MiB free
+adaptive cache: decayed LFU, swap budget 8 (arena registered in 1.6 s)
+decode: 256 tokens at depth 2048 in 3.42 s: 74.84 tok/s (speculative, MTP drafts), swaps 792
+expert cache hit rate 82.70% (196896 hits, 41184 misses: 41184 on the CPU, 0 read over PCIe)
+host per token: 6.10 ms waiting for routing, 5.14 ms running misses
+misses per layer: count (share of layers) and mean host miss time
+   0 :   2.7%     1.9 us
+   1 :   6.4%    73.2 us
+   2 :  10.3%   107.4 us
+   3 :  12.8%   140.7 us
+   4 :  12.8%   175.7 us
+   5 :  12.1%   211.6 us
+   6 :  10.4%   240.3 us
+   7 :   9.6%   276.2 us
+   8 :   6.9%   319.1 us
+   9 :   6.0%   355.0 us
+  10 :   4.0%   390.9 us
+  11 :   2.4%   407.0 us
+  12 :   1.6%   464.6 us
+  13 :   0.8%   482.9 us
+  14 :   0.5%   515.3 us
+  15 :   0.4%   542.8 us
+  16+:   0.5%   739.0 us
+CUDA graphs: on (0 capture(s))
+speculative: 124 rounds, 2.065 tokens per round; accepted drafts: 0:37.9% 1:31.5% 2:16.9% 3:13.7%
+  per round: draft 2.89 ms, verify 24.28 ms, commit 0.41 ms
+tokens: 279 58773 26183 593 243693 2982 1116 321 303 220 22 18 18 551 2197 14094 81980 318 14094 13412 847 1116 2843 310
