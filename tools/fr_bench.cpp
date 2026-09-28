@@ -33,6 +33,9 @@
 // --prefill-chunk C prefills C tokens per call (default 64: the CPU reference path; above 64 the
 // chunk path with the experts streamed to the GPU); "auto" picks the longest chunk the free VRAM
 // holds (up to 16,384), as flashrt-engine does.
+// --teacher decodes the ids file's own continuation instead of the sampled tokens (speculation:
+// a draft is kept when it equals the file's token), so configurations can be compared on the
+// same routing: the generated text otherwise moves the hit rate more than most changes do.
 // --save-counts FILE writes the prefill's routing counts (use --count-half-life 0 for a whole
 // corpus): a cache prior for flashrt-engine --cache-prior.
 // --temp T [--top-k K] [--top-p P] [--min-p M] [--seed S] samples instead of greedy decoding
@@ -86,6 +89,7 @@ int main(int argc, char** argv) {
     int dist_test = 0;
     int mtp_bits = 4;
     int n_prompt = 1024, gen = 128, slots = 0, reserve_mib = 1024, workers = 8, windows = 1;
+    bool teacher = false;
     bool reference = false, doorbell = true, adaptive = true;
     int swap_budget = 8;
     float pcie_frac = 0.0f;
@@ -129,6 +133,7 @@ int main(int argc, char** argv) {
         else if (a == "--min-p") sp.min_p = float(std::atof(next()));
         else if (a == "--seed") seed = std::strtoull(next(), nullptr, 10);
         else if (a == "--dist-test") dist_test = std::atoi(next());
+        else if (a == "--teacher") teacher = true;
         else if (a == "--save-counts") save_counts = next();
         else if (a == "--prefill-chunk") {   // a length, or "auto": the longest that fits the free VRAM (ForwardRef::pick_chunk)
             const std::string v = next();
@@ -136,13 +141,18 @@ int main(int argc, char** argv) {
         }
         else { std::fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
     }
-    std::vector<int32_t> seq;
+    std::vector<int32_t> seq, text;   // text: the whole ids file (--teacher forces its tokens after the prompt)
     {
         std::ifstream f(ids_path);
         long v;
-        while (f >> v && int(seq.size()) < n_prompt) seq.push_back(int32_t(v));
+        while (f >> v) text.push_back(int32_t(v));
+        seq.assign(text.begin(), text.begin() + std::min<size_t>(text.size(), size_t(n_prompt)));
     }
     if (int(seq.size()) < n_prompt) { std::fprintf(stderr, "prompt file has only %zu tokens\n", seq.size()); return 1; }
+    if (teacher && text.size() < size_t(n_prompt) + size_t(windows) * gen + 64) {
+        std::fprintf(stderr, "--teacher: the ids file has no %d tokens after the prompt\n", windows * gen + 64);
+        return 1;
+    }
 
     const Gguf g = Gguf::open(argv[1]);
     const Spec s = parse(g);
@@ -173,13 +183,23 @@ int main(int argc, char** argv) {
     cudaMalloc(&tok_dev, 64 * 4);
     cudaHostAlloc(&tok_host, 64 * 4, cudaHostAllocDefault);
     // the tokens of rows [0, R) of logits, rows at positions pos0 .. (greedy: argmax)
+    // (--teacher: the ids file's own tokens at those positions instead, so every run routes alike)
     auto pick = [&](const float* lg, int R, int64_t pos0) {
         sample::sample_rows(lg, R, s.n_vocab, sp, seed, pos0, tok_dev, fwd.stream());
         cudaMemcpyAsync(tok_host, tok_dev, size_t(R) * 4, cudaMemcpyDeviceToHost, fwd.stream());
         cudaStreamSynchronize(fwd.stream());
-        return std::vector<int32_t>(tok_host, tok_host + R);
+        std::vector<int32_t> y(tok_host, tok_host + R);
+        if (teacher)
+            for (int j = 0; j < R; ++j) y[j] = text[size_t(pos0) + j];
+        return y;
     };
-    auto argmax = [&]() { return sp.temperature > 0 ? pick(logits_dev, 1, int64_t(seq.size()))[0] : fwd.argmax(logits_dev); };
+    auto argmax = [&]() {
+        if (teacher) {
+            fwd.argmax(logits_dev);   // same work as a greedy step
+            return text[seq.size()];
+        }
+        return sp.temperature > 0 ? pick(logits_dev, 1, int64_t(seq.size()))[0] : fwd.argmax(logits_dev);
+    };
 
     // MTP draft head: it runs over every prompt batch after the target, taking the target's
     // streams shifted by one position (h_{p-1} with x_p)
