@@ -375,6 +375,8 @@ void ForwardRef::release_chunk_buffers() {
     look_seq_ = nullptr;
     look_n_ = 0;
     if (x_ == chunk_.x) use_bufs(dec_);
+    cudaStreamSynchronize(stream_);
+    for (int il : s_.qsa_layers) qsa_mirror_end(kv_[il]);
     free_bufs(chunk_);
     destroy_expert_stream(estream_);
     estream_ = nullptr;
@@ -404,6 +406,7 @@ void ForwardRef::forward(const int32_t* seq, int T, int out_from, float* logits_
             ck(cudaMemset(counts_dev_, 0, counts_.size() * 4), "memset routing counts");
         }
         use_bufs(chunk_);
+        for (int il : s.qsa_layers) qsa_mirror_begin(s, kv_[il], pos_, stream_);   // host KV: chunks attend from a VRAM mirror
         expert_stream_prefetch(estream_, 0);   // layer 0's experts copy while the embedding and PLE run
     } else {
         use_bufs(dec_);

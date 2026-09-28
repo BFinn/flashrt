@@ -781,8 +781,10 @@ __global__ void k_copy_h(const float* src, __half* dst, int n, int pos0, size_t 
 // src [n_rows][dim] float -> dst + position * pos_stride_rows rows; one warp per block of 32.
 // With a hot set (hdst set): the row goes to the host store, and to the block's GPU slot when
 // the block is resident (rows are cell * kvh + head; slots hold r cells).
+// With a prefill mirror (mdst set): the row also goes to the full-size VRAM mirror.
 __global__ void k_quant_q8(const float* src, int8_t* dst, __half* dsc, int n_rows, int dim, int pos0, size_t pos_stride_rows,
-                           const int32_t* dp, int8_t* hdst, __half* hdsc, const int32_t* slot_of_block, int r, int kvh) {
+                           const int32_t* dp, int8_t* hdst, __half* hdsc, const int32_t* slot_of_block, int r, int kvh,
+                           int8_t* mdst = nullptr, __half* mdsc = nullptr) {
     if (dp) pos0 = dp[1];
     const int lane = threadIdx.x & 31;
     const long g = (long(blockIdx.x) * blockDim.x + threadIdx.x) >> 5;   // block of 32
@@ -801,6 +803,10 @@ __global__ void k_quant_q8(const float* src, int8_t* dst, __half* dsc, int n_row
     }
     hdst[orow * dim + b * 32 + lane] = qv;
     if (lane == 0) hdsc[orow * (dim / 32) + b] = __float2half(d);
+    if (mdst) {
+        mdst[orow * dim + b * 32 + lane] = qv;
+        if (lane == 0) mdsc[orow * (dim / 32) + b] = __float2half(d);
+    }
     const long cell = long(orow) / kvh, head = long(orow) % kvh;
     const int slot = slot_of_block[cell / r];
     if (slot >= 0) {
@@ -1389,6 +1395,29 @@ size_t qsa_cell_bytes(const Spec& s, bool q8) {
     return q8 ? n + n / 32 * 2 : n * 2;
 }
 
+void qsa_mirror_begin(const Spec& s, QsaCache& kv, int pos, cudaStream_t stream) {
+    if (!kv.hot_blocks || kv.mK) return;
+    const size_t n = size_t(kv.capacity) * s.n_head_kv * s.head_dim_k;
+    ck(cudaMalloc(&kv.mK, n), "cudaMalloc KV mirror");
+    ck(cudaMalloc(&kv.mV, n), "cudaMalloc KV mirror");
+    ck(cudaMalloc(&kv.mKs, n / 32 * 2), "cudaMalloc KV mirror");
+    ck(cudaMalloc(&kv.mVs, n / 32 * 2), "cudaMalloc KV mirror");
+    const size_t have = size_t(pos) * s.n_head_kv * s.head_dim_k;   // what the host store holds so far
+    if (have) {
+        ck(cudaMemcpyAsync(kv.mK, kv.hK, have, cudaMemcpyDefault, stream), "KV mirror fill");
+        ck(cudaMemcpyAsync(kv.mV, kv.hV, have, cudaMemcpyDefault, stream), "KV mirror fill");
+        ck(cudaMemcpyAsync(kv.mKs, kv.hKs, have / 32 * 2, cudaMemcpyDefault, stream), "KV mirror fill");
+        ck(cudaMemcpyAsync(kv.mVs, kv.hVs, have / 32 * 2, cudaMemcpyDefault, stream), "KV mirror fill");
+    }
+}
+
+void qsa_mirror_end(QsaCache& kv) {
+    for (void* p : {kv.mK, kv.mV, static_cast<void*>(kv.mKs), static_cast<void*>(kv.mVs)})
+        if (p) cudaFree(p);
+    kv.mK = kv.mV = nullptr;
+    kv.mKs = kv.mVs = nullptr;
+}
+
 void reset_qsa_hot(const Spec& s, QsaCache& kv, cudaStream_t stream) {
     if (!kv.hot_blocks) return;
     ck(cudaMemsetAsync(kv.slot_of_block, 0xff, size_t(kv.capacity / s.qsa_block) * 4, stream), "reset hot table");
@@ -1440,6 +1469,7 @@ QsaCache alloc_qsa_cache(const Spec& s, int capacity, bool q8, int hot_blocks) {
 }
 
 void free_qsa_cache(QsaCache& kv) {
+    qsa_mirror_end(kv);
     if (kv.K) cudaFree(kv.K);
     if (kv.V) cudaFree(kv.V);
     if (kv.Ks) cudaFree(kv.Ks);
@@ -1511,10 +1541,12 @@ void qsa_mixer(const BlockCtx& c, int il, const float* x, int T, int pos0, QsaCa
         const int groups = T * KH * D / 32;
         k_quant_q8<<<(groups * 32 + 255) / 256, 256, 0, c.stream>>>(kraw, static_cast<int8_t*>(kv.K), reinterpret_cast<__half*>(kv.Ks),
                                                                    T * KH, D, pos0, size_t(KH), c.dparams, static_cast<int8_t*>(kv.hK),
-                                                                   reinterpret_cast<__half*>(kv.hKs), kv.slot_of_block, r, KH);
+                                                                   reinterpret_cast<__half*>(kv.hKs), kv.slot_of_block, r, KH,
+                                                                   static_cast<int8_t*>(kv.mK), reinterpret_cast<__half*>(kv.mKs));
         k_quant_q8<<<(groups * 32 + 255) / 256, 256, 0, c.stream>>>(vraw, static_cast<int8_t*>(kv.V), reinterpret_cast<__half*>(kv.Vs),
                                                                    T * KH, D, pos0, size_t(KH), c.dparams, static_cast<int8_t*>(kv.hV),
-                                                                   reinterpret_cast<__half*>(kv.hVs), kv.slot_of_block, r, KH);
+                                                                   reinterpret_cast<__half*>(kv.hVs), kv.slot_of_block, r, KH,
+                                                                   static_cast<int8_t*>(kv.mV), reinterpret_cast<__half*>(kv.mVs));
     } else {
         k_norm_rope<__half><<<T * KH, 128, 0, c.stream>>>(kraw, KH * D, D, static_cast<const float*>(c.w.layer(il, "attn_k_norm.weight").dev),
                                                          Kc, KH, D, s.rope_dims, pos0, theta_scale, eps, size_t(KH) * D, c.dparams);
@@ -1575,7 +1607,7 @@ void qsa_mixer(const BlockCtx& c, int il, const float* x, int T, int pos0, QsaCa
         }
         // split-K flash decode: partials per (token, head, 64-cell split), then a combine
         qsa_scratch_reserve(c.s, c.scratch, Ts, 0, n_splits);
-        if (kv.hot_blocks) {   // bring the selected blocks into the hot set first
+        if (kv.hot_blocks && !kv.mK) {   // bring the selected blocks into the hot set first (not with a prefill mirror)
             k_hot_select<<<1, 1024, 0, c.stream>>>(kv.slot_of_block, kv.block_of_slot, kv.refbit, kv.pinned, kv.clock_hand, kv.promo, cells,
                                                    counts, ldc, Ts, p0, c.dparams, r, kv.hot_blocks);
             k_hot_copy<<<kHotPromote, 256, 0, c.stream>>>(static_cast<int8_t*>(kv.K), static_cast<int8_t*>(kv.V),
@@ -1597,7 +1629,10 @@ void qsa_mixer(const BlockCtx& c, int il, const float* x, int T, int pos0, QsaCa
         };
         const KvQ8 g8{static_cast<const int8_t*>(kv.K), static_cast<const int8_t*>(kv.V), reinterpret_cast<const __half*>(kv.Ks),
                       reinterpret_cast<const __half*>(kv.Vs), KH};
-        if (kv.hot_blocks) {
+        if (kv.mK) {   // prefill: the whole cache is mirrored in VRAM
+            launch(KvQ8{static_cast<const int8_t*>(kv.mK), static_cast<const int8_t*>(kv.mV), reinterpret_cast<const __half*>(kv.mKs),
+                        reinterpret_cast<const __half*>(kv.mVs), KH});
+        } else if (kv.hot_blocks) {
             const KvQ8 h8{static_cast<const int8_t*>(kv.hK), static_cast<const int8_t*>(kv.hV), reinterpret_cast<const __half*>(kv.hKs),
                           reinterpret_cast<const __half*>(kv.hVs), KH};
             launch(KvQ8Hot{g8, h8, kv.slot_of_block, r, KH});
