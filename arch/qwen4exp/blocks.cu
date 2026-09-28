@@ -524,14 +524,13 @@ __global__ void k_gdn_delta_reg(const float* S_in, float* S_out, float* S_bak, c
     for (int jj = 0; jj < JPT; ++jj) So[size_t(ty * JPT + jj) * DK + i] = st[jj];
 }
 
-// The same delta rule for long calls (prefill). LPC lanes share two columns of S, DK / LPC rows
-// each, so a token's column sums are shuffles, with no block barrier. The tokens' q, k, v, gate
-// and beta come through shared memory in tiles of 8, three tiles in flight (cp.async), as the
-// recurrence can not wait for DRAM once per token. Each lane reads the token's q and k once for
-// both its columns, from a layout where a warp's LPC addresses are adjacent (step s of lane qd
-// at s * 4 LPC + qd * 4). The per-token chain is what bounds it (few warps: 48 heads x 128
-// columns), so the sums use 4 accumulators each, and LPC = 8 doubles the warps and halves the
-// chain for one more shuffle. Two warps per block.
+// The same delta rule for long calls (prefill). Four lanes share two columns of S, 32 rows each,
+// so a token's column sums are shuffles, with no block barrier. The tokens' q, k, v, gate and beta
+// come through shared memory in tiles of 8, three tiles in flight (cp.async), as the recurrence
+// can not wait for DRAM once per token. Shared-memory reads bound it: a warp's q and k reads
+// have 4 distinct addresses, so each lane reads them once per token for two columns, from a
+// layout where those addresses are adjacent (step s of quarter qd at s * 16 + qd * 4). Two warps
+// (32 columns) per block: the 192 blocks spread evenly over the SMs.
 constexpr int kGdnTile = 8, kGdnStages = 3, kGdnColWarps = 2;
 __device__ __forceinline__ void cp_async16(void* dst, const void* src) {
     asm volatile("cp.async.cg.shared.global [%0], [%1], 16;\n" ::"r"(uint32_t(__cvta_generic_to_shared(dst))), "l"(src));
@@ -539,15 +538,15 @@ __device__ __forceinline__ void cp_async16(void* dst, const void* src) {
 __device__ __forceinline__ void cp_async4(void* dst, const void* src) {
     asm volatile("cp.async.ca.shared.global [%0], [%1], 4;\n" ::"r"(uint32_t(__cvta_generic_to_shared(dst))), "l"(src));
 }
-template <int DK, int LPC>
+template <int DK>
 __global__ void __launch_bounds__(32 * kGdnColWarps) k_gdn_delta_col(const float* S_in, float* S_out, float* S_bak, const float* conv_out,
                                                                     const float* g, const float* beta, float* o, int T, int k_heads,
                                                                     int v_heads, int channels) {
-    constexpr int R = DK / LPC, CW = 64 / LPC, NC = CW * kGdnColWarps;   // rows per lane, columns per warp and per block
+    constexpr int R = DK / 4, NC = 16 * kGdnColWarps;   // rows per lane, columns per block
     __shared__ __align__(16) float qs[kGdnStages][kGdnTile][DK], ks[kGdnStages][kGdnTile][DK], vs[kGdnStages][kGdnTile][NC];
     __shared__ float gs[kGdnStages][kGdnTile], bs[kGdnStages][kGdnTile];
     const int h = blockIdx.x, lane = threadIdx.x & 31, warp = threadIdx.x >> 5, hk = h % k_heads;
-    const int qd = lane % LPC, ic = warp * CW + (lane / LPC) * 2, i = blockIdx.y * NC + ic, j0 = qd * R;
+    const int qd = lane & 3, ic = warp * 16 + (lane >> 2) * 2, i = blockIdx.y * NC + ic, j0 = qd * R;
     const size_t q_off = size_t(hk) * DK, k_off = size_t(k_heads) * DK + size_t(hk) * DK,
                  v_off = size_t(2 * k_heads) * DK + size_t(h) * DK + size_t(blockIdx.y) * NC;
     const int n_tiles = (T + kGdnTile - 1) / kGdnTile;
@@ -555,7 +554,7 @@ __global__ void __launch_bounds__(32 * kGdnColWarps) k_gdn_delta_col(const float
         if (tile < n_tiles) {
             const int t0 = tile * kGdnTile, n = min(kGdnTile, T - t0), buf = tile % kGdnStages;
             for (int e = threadIdx.x; e < n * (DK / 4); e += blockDim.x) {   // 16-byte pieces: dims d .. d + 3
-                const int tt = e / (DK / 4), d = (e % (DK / 4)) * 4, at = ((d % R) / 4) * (4 * LPC) + (d / R) * 4;
+                const int tt = e / (DK / 4), d = (e % (DK / 4)) * 4, at = ((d % R) / 4) * 16 + (d / R) * 4;
                 const float* row = conv_out + size_t(t0 + tt) * channels;
                 cp_async16(&qs[buf][tt][at], row + q_off + d);
                 cp_async16(&ks[buf][tt][at], row + k_off + d);
@@ -593,43 +592,48 @@ __global__ void __launch_bounds__(32 * kGdnColWarps) k_gdn_delta_col(const float
             float kv[R], qv[R];
 #pragma unroll
             for (int s = 0; s < R / 4; ++s) {
-                const float4 k4 = *reinterpret_cast<const float4*>(&ks[buf][tt][s * (4 * LPC) + qd * 4]);
-                const float4 q4 = *reinterpret_cast<const float4*>(&qs[buf][tt][s * (4 * LPC) + qd * 4]);
+                const float4 k4 = *reinterpret_cast<const float4*>(&ks[buf][tt][s * 16 + qd * 4]);
+                const float4 q4 = *reinterpret_cast<const float4*>(&qs[buf][tt][s * 16 + qd * 4]);
                 kv[4 * s] = k4.x; kv[4 * s + 1] = k4.y; kv[4 * s + 2] = k4.z; kv[4 * s + 3] = k4.w;
                 qv[4 * s] = q4.x; qv[4 * s + 1] = q4.y; qv[4 * s + 2] = q4.z; qv[4 * s + 3] = q4.w;
             }
             const float decay = __expf(gs[buf][tt]), b = bs[buf][tt];
             const float2 vi = *reinterpret_cast<const float2*>(&vs[buf][tt][ic]);
-            float a[4] = {0.0f, 0.0f, 0.0f, 0.0f}, e[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+            float a0 = 0.0f, a1 = 0.0f, c0 = 0.0f, c1 = 0.0f;
 #pragma unroll
-            for (int jj = 0; jj < R; ++jj) {
+            for (int jj = 0; jj < R; jj += 2) {
                 s0[jj] *= decay;
+                s0[jj + 1] *= decay;
                 s1[jj] *= decay;
-                a[jj & 3] += s0[jj] * kv[jj];
-                e[jj & 3] += s1[jj] * kv[jj];
+                s1[jj + 1] *= decay;
+                a0 += s0[jj] * kv[jj];
+                a1 += s0[jj + 1] * kv[jj + 1];
+                c0 += s1[jj] * kv[jj];
+                c1 += s1[jj + 1] * kv[jj + 1];
             }
-            float sk0 = (a[0] + a[1]) + (a[2] + a[3]), sk1 = (e[0] + e[1]) + (e[2] + e[3]);
-#pragma unroll
-            for (int m = 1; m < LPC; m <<= 1) {
-                sk0 += __shfl_xor_sync(~0u, sk0, m);
-                sk1 += __shfl_xor_sync(~0u, sk1, m);
-            }
+            float sk0 = a0 + a1, sk1 = c0 + c1;
+            sk0 += __shfl_xor_sync(~0u, sk0, 1);
+            sk1 += __shfl_xor_sync(~0u, sk1, 1);
+            sk0 += __shfl_xor_sync(~0u, sk0, 2);
+            sk1 += __shfl_xor_sync(~0u, sk1, 2);
             const float d0 = b * (vi.x - sk0), d1 = b * (vi.y - sk1);
+            a0 = a1 = c0 = c1 = 0.0f;
 #pragma unroll
-            for (int q = 0; q < 4; ++q) a[q] = e[q] = 0.0f;
-#pragma unroll
-            for (int jj = 0; jj < R; ++jj) {
+            for (int jj = 0; jj < R; jj += 2) {
                 s0[jj] += d0 * kv[jj];
+                s0[jj + 1] += d0 * kv[jj + 1];
                 s1[jj] += d1 * kv[jj];
-                a[jj & 3] += s0[jj] * qv[jj];
-                e[jj & 3] += s1[jj] * qv[jj];
+                s1[jj + 1] += d1 * kv[jj + 1];
+                a0 += s0[jj] * qv[jj];
+                a1 += s0[jj + 1] * qv[jj + 1];
+                c0 += s1[jj] * qv[jj];
+                c1 += s1[jj + 1] * qv[jj + 1];
             }
-            float o0 = (a[0] + a[1]) + (a[2] + a[3]), o1 = (e[0] + e[1]) + (e[2] + e[3]);
-#pragma unroll
-            for (int m = 1; m < LPC; m <<= 1) {
-                o0 += __shfl_xor_sync(~0u, o0, m);
-                o1 += __shfl_xor_sync(~0u, o1, m);
-            }
+            float o0 = a0 + a1, o1 = c0 + c1;
+            o0 += __shfl_xor_sync(~0u, o0, 1);
+            o1 += __shfl_xor_sync(~0u, o1, 1);
+            o0 += __shfl_xor_sync(~0u, o0, 2);
+            o1 += __shfl_xor_sync(~0u, o1, 2);
             if (qd == 0) *reinterpret_cast<float2*>(o + (size_t(t0 + tt) * v_heads + h) * DK + i) = make_float2(o0 * scale, o1 * scale);
         }
     }
@@ -1012,16 +1016,9 @@ void gdn_mixer(const BlockCtx& c, int il, const float* x, int T, GdnState& st, f
         const char* e = std::getenv("FLASHRT_GDN_COL");
         return !(e && e[0] == '0');
     }();
-    static const int lpc = [] {   // lanes per state column in the prefill kernel: 4 or 8 (FLASHRT_GDN_LPC)
-        const char* e = std::getenv("FLASHRT_GDN_LPC");
-        return e && std::atoi(e) == 8 ? 8 : 4;
-    }();
-    if (dk == 128 && T >= 16 && col_on && lpc == 8)   // prefill; decode keeps the block kernel
-        k_gdn_delta_col<128, 8><<<dim3(H, 128 / (8 * kGdnColWarps)), 32 * kGdnColWarps, 0, c.stream>>>(
-            st.S, st.S, win ? win->S_bak : nullptr, conv, alpha, beta, o, T, s.ssm_groups, H, ch);
-    else if (dk == 128 && T >= 16 && col_on)
-        k_gdn_delta_col<128, 4><<<dim3(H, 128 / (16 * kGdnColWarps)), 32 * kGdnColWarps, 0, c.stream>>>(
-            st.S, st.S, win ? win->S_bak : nullptr, conv, alpha, beta, o, T, s.ssm_groups, H, ch);
+    if (dk == 128 && T >= 16 && col_on)   // prefill; decode keeps the block kernel
+        k_gdn_delta_col<128><<<dim3(H, 128 / (16 * kGdnColWarps)), 32 * kGdnColWarps, 0, c.stream>>>(st.S, st.S, win ? win->S_bak : nullptr, conv, alpha, beta, o, T,
+                                                                     s.ssm_groups, H, ch);
     else if (dk == 128)
         k_gdn_delta_reg<128><<<dim3(H, 128 / 32), dim3(32, 8), 0, c.stream>>>(st.S, st.S, win ? win->S_bak : nullptr, conv, alpha, beta, o, T,
                                                                           s.ssm_groups, H, ch);
