@@ -3,7 +3,7 @@
 // file (the P1 correctness gate), on the same tokens and chunks.
 //
 //   fr_kld MODEL.gguf BASE.bin [--ctx N] [--chunks K] [--batch B] [--fast] [--reserve-mib R] [--static-cache]
-//          [--pcie-frac F] [--kv q8] [--kv-hot BLOCKS] [--window W]
+//          [--pcie-frac F] [--kv q8] [--kv-hot BLOCKS] [--window W] [--prefill-chunk C]
 //
 // The base file holds: the magic "_logits_", int32 ctx, int32 n_vocab, int32 n_chunk, the
 // tokens of all chunks (n_chunk * ctx int32), then for every chunk the scored positions ctx/2 .. ctx-2, each as a float scale and a
@@ -20,6 +20,9 @@
 // in one window, of which only the first j (random, 1..W) are the chunk's and the rest random
 // tokens (rejected drafts), scores the j real rows and commits them, so every rewind path
 // (GDN state, conv and PLE histories, the KV caches and indexer ring) is exercised.
+//
+// --prefill-chunk C runs the prefill steps in chunks of C tokens (above the batch: the chunk path,
+// experts streamed to the GPU); without --fast every scored logit then comes from a chunk.
 #include "arch/qwen4exp/experts.hpp"
 #include "arch/qwen4exp/forward_ref.hpp"
 #include "arch/qwen4exp/gpu_weights.hpp"
@@ -54,7 +57,7 @@ int main(int argc, char** argv) {
     bool fast = false, adaptive = true;
     float pcie_frac = 0.0f;
     bool kv_q8 = false;
-    int kv_hot = 0, window = 0;
+    int kv_hot = 0, window = 0, pchunk = 0;
     for (int i = 3; i < argc; ++i) {
         auto next = [&]() -> const char* { return i + 1 < argc ? argv[++i] : "0"; };
         if (!std::strcmp(argv[i], "--ctx")) ctx = std::atoi(next());
@@ -67,6 +70,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--kv")) kv_q8 = !std::strcmp(next(), "q8");
         else if (!std::strcmp(argv[i], "--kv-hot")) kv_hot = std::atoi(next());
         else if (!std::strcmp(argv[i], "--window")) window = std::atoi(next());
+        else if (!std::strcmp(argv[i], "--prefill-chunk")) pchunk = std::atoi(next());
         else { std::fprintf(stderr, "unknown argument %s\n", argv[i]); return 2; }
     }
 
@@ -105,8 +109,9 @@ int main(int argc, char** argv) {
     std::printf("KV cache: %s, hot set %d blocks per layer\n", kv_q8 || kv_hot > 0 ? "q8_0" : "fp16", kv_hot);
 
     float* logits_dev = nullptr;
-    cudaMalloc(&logits_dev, size_t(batch) * n_vocab * 4);
-    std::vector<float> logits(size_t(batch) * n_vocab);
+    const int pstep = pchunk > 0 ? pchunk : batch;   // prefill step
+    cudaMalloc(&logits_dev, size_t(std::max(batch, pstep)) * n_vocab * 4);
+    std::vector<float> logits(size_t(std::max(batch, pstep)) * n_vocab);
     std::vector<uint16_t> base(nv);
     std::vector<double> klds;
     double sum_nll = 0, sum_nll_base = 0;
@@ -123,7 +128,7 @@ int main(int argc, char** argv) {
         fwd.reset();
         // steps (p0, T): batches, or in --fast mode batches up to `first` and then single tokens
         std::vector<std::pair<int, int>> steps;
-        for (int p0 = 0; p0 < (fast ? first : ctx); p0 += batch) steps.push_back({p0, std::min(batch, (fast ? first : ctx) - p0)});
+        for (int p0 = 0; p0 < (fast ? first : ctx); p0 += pstep) steps.push_back({p0, std::min(pstep, (fast ? first : ctx) - p0)});
         if (fast && window == 0)
             for (int p0 = first; p0 < ctx - 1; ++p0) steps.push_back({p0, 1});
         if (fast && window > 0)   // windows: (p0, -j), j real tokens, the step's length is `window`
@@ -137,6 +142,7 @@ int main(int argc, char** argv) {
             const int p0 = steps[si].first, j_real = steps[si].second < 0 ? -steps[si].second : 0;
             const int T = j_real ? j_real : steps[si].second;
             if (fast && p0 == first && !host.doorbell) {   // chunk 0's prefill is done: fill the cache, start the fast path
+                fwd.release_chunk_buffers();   // the expert cache takes that VRAM
                 size_t free_b = 0, total_b = 0;
                 cudaMemGetInfo(&free_b, &total_b);
                 const size_t eb = q2_0::expert_bytes({s.d_model, s.d_ff_expert});
@@ -212,7 +218,7 @@ int main(int argc, char** argv) {
                 same_top += imax == imax_b;
                 ++count;
             }
-            if ((fast && (T == 1 || j_real)) ? ((p0 + T) / 1024 != p0 / 1024 || p0 + T + 1 >= ctx) : ((p0 / batch) % 16 == 15 || p0 + T >= ctx)) {
+            if ((fast && (T == 1 || j_real)) ? ((p0 + T) / 1024 != p0 / 1024 || p0 + T + 1 >= ctx) : ((p0 / pstep) % 16 == 15 || p0 + T >= ctx || pstep > 256)) {
                 const double el = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
                 double m = 0;
                 for (double k : klds) m += k;
