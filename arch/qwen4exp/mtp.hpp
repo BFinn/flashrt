@@ -25,6 +25,7 @@
 #include <cuda_runtime.h>
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace flashrt {
@@ -59,6 +60,10 @@ public:
     int32_t argmax(const float* logits_row_dev, float* p_top = nullptr);
 
     void reset();   // a new sequence
+    // The head's state after a prefill of pos positions (its KV cache, and the target's streams
+    // at pos - 1, h_carry_dev [hc][n]), in a file of its own; load returns pos.
+    void save_state(const std::string& path, int pos, const float* h_carry_dev);
+    int load_state(const std::string& path, float* h_carry_dev);
     size_t weight_bytes() const { return w_.device_bytes() + exp_bytes_ + head_bytes_; }
     int layer() const { return il_; }
 

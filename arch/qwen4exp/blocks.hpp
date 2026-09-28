@@ -18,6 +18,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <vector>
 
 namespace flashrt::qwen4exp {
@@ -146,6 +147,11 @@ QsaCache alloc_qsa_cache(const Spec& s, int capacity, bool q8 = false, int hot_b
 void reset_qsa_hot(const Spec& s, QsaCache& kv, cudaStream_t stream);
 // fp16 rows -> Q8_0 rows (values [n_rows][dim], scales [n_rows][dim / 32]), on the GPU.
 void qsa_h2q8_rows(const void* src_f16, void* dst_q8, void* dst_scales, long n_rows, int dim, cudaStream_t stream);
+// One QSA layer's cache for positions [0, pos) to (save) or from a state file: K and V (with
+// scales when q8), pooled indexer keys, and the ring of the last qsa_block raw keys (stored at
+// slot position % qsa_block). file_q8 is the file's KV format; an fp16 file loads into a q8
+// cache (converted on the GPU), not the other way.
+void qsa_state_io(FILE* f, const Spec& s, QsaCache& kv, int pos, bool save, bool file_q8, cudaStream_t stream);
 // Bytes of one cell's K (or V) over all KV heads, values plus scales.
 size_t qsa_cell_bytes(const Spec& s, bool q8);
 void free_qsa_cache(QsaCache& kv);

@@ -125,60 +125,12 @@ void ForwardRef::state_file(const std::string& path, bool save) {
         }
     }
     std::vector<uint8_t> bounce;
-    const size_t kvn = size_t(s.n_head_kv) * s.head_dim_k;   // K or V values of one cell
     const int gch = 2 * s.ssm_groups * s.ssm_state + s.ssm_heads * s.ssm_state;
     for (int il : s.gdn_layers) {
         state_io(f, gdn_[il].S, size_t(s.ssm_heads) * s.ssm_state * s.ssm_state * 4, save, bounce);
         state_io(f, gdn_[il].conv, size_t(s.ssm_conv - 1) * gch * 4, save, bounce);
     }
-    for (int il : s.qsa_layers) {
-        QsaCache& kv = kv_[il];
-        void* K = kv.hot_blocks ? kv.hK : kv.K;
-        void* V = kv.hot_blocks ? kv.hV : kv.V;
-        uint16_t* Ks = kv.hot_blocks ? kv.hKs : kv.Ks;
-        uint16_t* Vs = kv.hot_blocks ? kv.hVs : kv.Vs;
-        if (kv.hot_blocks) reset_qsa_hot(s, kv, stream_);
-        if (!q8) {
-            state_io(f, kv.K, size_t(pos_) * kvn * 2, save, bounce);
-            state_io(f, kv.V, size_t(pos_) * kvn * 2, save, bounce);
-        } else if (file_q8) {
-            state_io(f, K, size_t(pos_) * kvn, save, bounce);
-            state_io(f, Ks, size_t(pos_) * kvn / 32 * 2, save, bounce);
-            state_io(f, V, size_t(pos_) * kvn, save, bounce);
-            state_io(f, Vs, size_t(pos_) * kvn / 32 * 2, save, bounce);
-        } else {   // fp16 file into a q8 cache: convert in chunks on the GPU
-            const long rows = long(pos_) * s.n_head_kv, chunk = 1L << 16;
-            void* tmp = nullptr;
-            ck(cudaMalloc(&tmp, size_t(chunk) * s.head_dim_k * 2), "cudaMalloc state conversion");
-            for (int which = 0; which < 2; ++which) {
-                int8_t* dst = static_cast<int8_t*>(which ? V : K);
-                uint16_t* dsc = which ? Vs : Ks;
-                for (long r0 = 0; r0 < rows; r0 += chunk) {
-                    const long nr = std::min(chunk, rows - r0);
-                    state_io(f, tmp, size_t(nr) * s.head_dim_k * 2, false, bounce);
-                    qsa_h2q8_rows(tmp, dst + size_t(r0) * s.head_dim_k, dsc + size_t(r0) * (s.head_dim_k / 32), nr, s.head_dim_k, stream_);
-                    ck(cudaStreamSynchronize(stream_), "state conversion");
-                }
-            }
-            cudaFree(tmp);
-        }
-        state_io(f, kv_[il].idx_pooled, size_t(pos_ / s.qsa_block + 1) * s.idx_dim * 4, save, bounce);
-        // the file keeps the ring of the last `block` positions at slot position % block (its format
-        // before the ring grew to qsa_ring_slots); positions before 0 stay zero
-        {
-            const int r = s.qsa_block, R = qsa_ring_slots(s);
-            const size_t row = size_t(s.idx_dim) * 4;
-            std::vector<uint8_t> ring(size_t(R) * row, 0), file(size_t(r) * row, 0);
-            if (save) ck(cudaMemcpy(ring.data(), kv_[il].idx_ring, ring.size(), cudaMemcpyDeviceToHost), "ring to host");
-            for (int p = std::max(0, pos_ - r); p < pos_ && save; ++p) std::memcpy(&file[size_t(p % r) * row], &ring[size_t(p % R) * row], row);
-            if (save ? std::fwrite(file.data(), 1, file.size(), f) != file.size() : std::fread(file.data(), 1, file.size(), f) != file.size())
-                throw std::runtime_error("state file ring i/o failed");
-            if (!save) {
-                for (int p = std::max(0, pos_ - r); p < pos_; ++p) std::memcpy(&ring[size_t(p % R) * row], &file[size_t(p % r) * row], row);
-                ck(cudaMemcpy(kv_[il].idx_ring, ring.data(), ring.size(), cudaMemcpyHostToDevice), "ring to device");
-            }
-        }
-    }
+    for (int il : s.qsa_layers) qsa_state_io(f, s, kv_[il], pos_, save, file_q8, stream_);
     for (int il : s.ple_layers) state_io(f, ple_state_[il].hist, size_t(ple_.ngram) * 3 * size_t(s.hc_count) * s.d_model * 4 + 4, save, bounce);
     if (save) {
         std::fwrite(counts_.data(), 4, counts_.size(), f);

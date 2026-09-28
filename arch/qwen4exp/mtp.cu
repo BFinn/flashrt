@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <regex>
 #include <stdexcept>
@@ -281,6 +282,38 @@ void MtpHead::set_vocab(const std::vector<int32_t>& ids) {
     head_.type = full.type;
     head_.dims = {full.cols(), int64_t(ids.size())};
     head_.bytes = rb * ids.size();
+}
+
+void MtpHead::save_state(const std::string& path, int pos, const float* h_carry_dev) {
+    ck(cudaStreamSynchronize(stream_), "MTP state");
+    FILE* f = std::fopen(path.c_str(), "wb");
+    if (!f) throw std::runtime_error("cannot open " + path);
+    const int64_t hdr[3] = {0x544d5246 /* "FRMT" */, pos, kv_.q8 ? 1 : 0};
+    std::fwrite(hdr, sizeof(hdr), 1, f);
+    qsa_state_io(f, s_, kv_, pos, true, kv_.q8, stream_);
+    std::vector<float> h(size_t(s_.hc_count) * s_.d_model);
+    ck(cudaMemcpy(h.data(), h_carry_dev, h.size() * 4, cudaMemcpyDeviceToHost), "MTP h to host");
+    const bool ok = std::fwrite(h.data(), 4, h.size(), f) == h.size();
+    std::fclose(f);
+    if (!ok) throw std::runtime_error("MTP state write failed");
+}
+
+int MtpHead::load_state(const std::string& path, float* h_carry_dev) {
+    FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) throw std::runtime_error("cannot open " + path);
+    int64_t hdr[3] = {0, 0, 0};
+    if (std::fread(hdr, sizeof(hdr), 1, f) != 1 || hdr[0] != 0x544d5246 || hdr[1] > kv_.capacity) {
+        std::fclose(f);
+        throw std::runtime_error("not an MTP state file, or longer than the KV capacity: " + path);
+    }
+    const int pos = int(hdr[1]);
+    qsa_state_io(f, s_, kv_, pos, false, hdr[2] == 1, stream_);
+    std::vector<float> h(size_t(s_.hc_count) * s_.d_model);
+    const bool ok = std::fread(h.data(), 4, h.size(), f) == h.size();
+    std::fclose(f);
+    if (!ok) throw std::runtime_error("MTP state file truncated");
+    ck(cudaMemcpy(h_carry_dev, h.data(), h.size() * 4, cudaMemcpyHostToDevice), "MTP h to device");
+    return pos;
 }
 
 int32_t MtpHead::argmax(const float* logits_row_dev, float* p_top) {

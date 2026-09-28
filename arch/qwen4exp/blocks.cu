@@ -11,9 +11,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
+#include <vector>
 
 namespace flashrt::qwen4exp {
 
@@ -1191,6 +1193,70 @@ void qsa_h2q8_rows(const void* src_f16, void* dst_q8, void* dst_scales, long n_r
     k_h2q8<<<unsigned((groups * 32 + 255) / 256), 256, 0, stream>>>(static_cast<const __half*>(src_f16), static_cast<int8_t*>(dst_q8),
                                                                    static_cast<__half*>(dst_scales), n_rows, dim);
     ck(cudaGetLastError(), "h2q8");
+}
+
+namespace {
+// one device buffer to or from the file, through a host bounce buffer
+void state_bytes(FILE* f, void* dev, size_t bytes, bool save, std::vector<uint8_t>& bounce) {
+    bounce.resize(bytes);
+    if (save) {
+        ck(cudaMemcpy(bounce.data(), dev, bytes, cudaMemcpyDefault), "state to host");
+        if (std::fwrite(bounce.data(), 1, bytes, f) != bytes) throw std::runtime_error("state file write failed");
+    } else {
+        if (std::fread(bounce.data(), 1, bytes, f) != bytes) throw std::runtime_error("state file truncated");
+        ck(cudaMemcpy(dev, bounce.data(), bytes, cudaMemcpyDefault), "state to device");
+    }
+}
+}  // namespace
+
+void qsa_state_io(FILE* f, const Spec& s, QsaCache& kv, int pos, bool save, bool file_q8, cudaStream_t stream) {
+    std::vector<uint8_t> bounce;
+    const size_t kvn = size_t(s.n_head_kv) * s.head_dim_k;   // K or V values of one cell
+    const bool q8 = kv.q8;
+    if (file_q8 && !q8) throw std::runtime_error("state file has a q8 KV cache; this cache is fp16");
+    void* K = kv.hot_blocks ? kv.hK : kv.K;
+    void* V = kv.hot_blocks ? kv.hV : kv.V;
+    uint16_t* Ks = kv.hot_blocks ? kv.hKs : kv.Ks;
+    uint16_t* Vs = kv.hot_blocks ? kv.hVs : kv.Vs;
+    if (kv.hot_blocks) reset_qsa_hot(s, kv, stream);
+    if (!q8) {
+        state_bytes(f, kv.K, size_t(pos) * kvn * 2, save, bounce);
+        state_bytes(f, kv.V, size_t(pos) * kvn * 2, save, bounce);
+    } else if (file_q8 || save) {
+        state_bytes(f, K, size_t(pos) * kvn, save, bounce);
+        state_bytes(f, Ks, size_t(pos) * kvn / 32 * 2, save, bounce);
+        state_bytes(f, V, size_t(pos) * kvn, save, bounce);
+        state_bytes(f, Vs, size_t(pos) * kvn / 32 * 2, save, bounce);
+    } else {   // fp16 file into a q8 cache: convert in chunks on the GPU
+        const long rows = long(pos) * s.n_head_kv, chunk = 1L << 16;
+        void* tmp = nullptr;
+        ck(cudaMalloc(&tmp, size_t(chunk) * s.head_dim_k * 2), "cudaMalloc state conversion");
+        for (int which = 0; which < 2; ++which) {
+            int8_t* dst = static_cast<int8_t*>(which ? V : K);
+            uint16_t* dsc = which ? Vs : Ks;
+            for (long r0 = 0; r0 < rows; r0 += chunk) {
+                const long nr = std::min(chunk, rows - r0);
+                state_bytes(f, tmp, size_t(nr) * s.head_dim_k * 2, false, bounce);
+                qsa_h2q8_rows(tmp, dst + size_t(r0) * s.head_dim_k, dsc + size_t(r0) * (s.head_dim_k / 32), nr, s.head_dim_k, stream);
+                ck(cudaStreamSynchronize(stream), "state conversion");
+            }
+        }
+        cudaFree(tmp);
+    }
+    state_bytes(f, kv.idx_pooled, size_t(pos / s.qsa_block + 1) * s.idx_dim * 4, save, bounce);
+    // the file keeps the ring of the last `block` positions at slot position % block (its format
+    // before the ring grew to qsa_ring_slots); positions before 0 stay zero
+    const int r = s.qsa_block, R = qsa_ring_slots(s);
+    const size_t row = size_t(s.idx_dim) * 4;
+    std::vector<uint8_t> ring(size_t(R) * row, 0), file(size_t(r) * row, 0);
+    if (save) ck(cudaMemcpy(ring.data(), kv.idx_ring, ring.size(), cudaMemcpyDeviceToHost), "ring to host");
+    for (int p = std::max(0, pos - r); p < pos && save; ++p) std::memcpy(&file[size_t(p % r) * row], &ring[size_t(p % R) * row], row);
+    if (save ? std::fwrite(file.data(), 1, file.size(), f) != file.size() : std::fread(file.data(), 1, file.size(), f) != file.size())
+        throw std::runtime_error("state file ring i/o failed");
+    if (!save) {
+        for (int p = std::max(0, pos - r); p < pos; ++p) std::memcpy(&ring[size_t(p % R) * row], &file[size_t(p % r) * row], row);
+        ck(cudaMemcpy(kv.idx_ring, ring.data(), ring.size(), cudaMemcpyHostToDevice), "ring to device");
+    }
 }
 
 size_t qsa_cell_bytes(const Spec& s, bool q8) {

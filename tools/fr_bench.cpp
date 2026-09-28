@@ -169,8 +169,18 @@ int main(int argc, char** argv) {
         // the state holds positions 0 .. n_prompt-2; the last prompt token runs now, for its logits
         fwd.load_state(load_state);
         if (fwd.pos() != n_prompt - 1) { std::fprintf(stderr, "state holds %d positions, expected %d\n", fwd.pos(), n_prompt - 1); return 1; }
+        if (mtp) {   // the head's own state, if saved with the target's
+            std::FILE* mf = std::fopen((load_state + ".mtp").c_str(), "rb");
+            if (mf) {
+                std::fclose(mf);
+                const int mp = mtp->load_state(load_state + ".mtp", h_carry);
+                if (mp != n_prompt - 1) { std::fprintf(stderr, "MTP state holds %d positions, expected %d\n", mp, n_prompt - 1); return 1; }
+                std::printf("state: MTP head state loaded\n");
+            } else {
+                std::printf("state: warning: no %s.mtp; the MTP head has no KV for the loaded positions\n", load_state.c_str());
+            }
+        }
         fwd.forward(seq.data(), 1, 0, logits_dev);
-        if (mtp) std::printf("state: warning: the MTP head has no KV for the loaded positions\n");
         mtp_catchup(n_prompt - 1, 1);
         std::printf("state: loaded %s (%d positions) in %.1f s\n", load_state.c_str(), n_prompt - 1,
                     std::chrono::duration<double>(Clock::now() - tp).count());
@@ -182,7 +192,8 @@ int main(int argc, char** argv) {
                 if (T > 1) fwd.forward(seq.data(), T - 1, T - 1, nullptr);
                 if (T > 1) mtp_catchup(p, T - 1);
                 fwd.save_state(save_state);
-                std::printf("state: saved %s (%d positions)\n", save_state.c_str(), fwd.pos());
+                if (mtp) mtp->save_state(save_state + ".mtp", fwd.pos(), h_carry);
+                std::printf("state: saved %s%s (%d positions)\n", save_state.c_str(), mtp ? " and .mtp" : "", fwd.pos());
                 fwd.forward(seq.data(), 1, 0, logits_dev);
                 mtp_catchup(p + T - 1, 1);
                 break;
