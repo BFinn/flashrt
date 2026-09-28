@@ -174,6 +174,49 @@ void ck(cudaError_t e, const char* what) {
 
 }  // namespace
 
+namespace {
+// Q3R back to ggml Q3_K: one thread per (row, 256-value super-block) writes its 110 bytes
+// (hmask[32], qs[64], scales[12], d)
+__global__ void k_unpack(Planes q, uint8_t* dst, int64_t rows, int64_t K) {
+    const int64_t nsb = K / kQK;
+    const int64_t g = int64_t(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (g >= rows * nsb) return;
+    const int64_t r = g / nsb, s = g % nsb, nb = K / 64;
+    uint8_t out[kBlockBytes] = {};
+    for (int e = 0; e < kQK; ++e) {
+        const int64_t b = s * 4 + e / 64;   // 64-block within the row
+        const int j = e % 64;
+        const int lo = (q.lo[(r * nb + b) * 16 + j % 16] >> (2 * (j / 16))) & 3;
+        const int hi = (q.hi[(r * (nb / 2) + b / 2) * 16 + j % 16] >> ((b % 2) * 4 + j / 16)) & 1;
+        const int n = e / 128, jj = (e % 128) / 32, l = e % 32;
+        out[32 + 32 * n + l] |= uint8_t(lo << (2 * jj));
+        out[l] |= uint8_t(hi << (4 * n + jj));
+    }
+    for (int is = 0; is < 16; ++is) {
+        const int us = int(q.sc[r * (K / 16) + s * 16 + is]) + 32;   // 6-bit scale
+        uint8_t* sc = out + 96;
+        if (is < 8) sc[is] |= uint8_t(us & 0xF);
+        else sc[is - 8] |= uint8_t((us & 0xF) << 4);
+        sc[8 + is % 4] |= uint8_t(((us >> 4) & 3) << (2 * (is / 4)));
+    }
+    const __half d = q.d[r * nsb + s];
+    const uint16_t db = __half_as_ushort(d);
+    out[108] = uint8_t(db & 0xff);
+    out[109] = uint8_t(db >> 8);
+    uint8_t* o = dst + g * kBlockBytes;
+    for (int i = 0; i < kBlockBytes; ++i) o[i] = out[i];
+}
+}  // namespace
+
+void unpack(const void* q3r, void* q3k, int64_t rows, int64_t K, cudaStream_t stream) {
+    if (K % kQK) throw std::runtime_error("q3r::unpack: K must be a multiple of 256");
+    const Planes q = planes(const_cast<void*>(q3r), rows, K);
+    const int64_t n = rows * (K / kQK);
+    k_unpack<<<unsigned((n + 127) / 128), 128, 0, stream>>>(q, static_cast<uint8_t*>(q3k), rows, K);
+    const cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) throw std::runtime_error(std::string("q3r::unpack: ") + cudaGetErrorString(e));
+}
+
 size_t bytes(int64_t rows, int64_t K) {
     return up256(size_t(rows) * K / 4) + up256(size_t(rows) * K / 8) + up256(size_t(rows) * K / 16) +
            up256(size_t(rows) * (K / kQK) * 2);

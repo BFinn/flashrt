@@ -9,9 +9,14 @@ They are the include closure of four kernel files:
 - src/ggml-cuda/mmvf.cu      F32 / F16 / BF16-weight mat-vec
 - src/ggml-cuda/quantize.cu  F32 -> Q8_1 activation quantization
 - src/ggml-cuda/convert.cu   dequantization to F32 (embedding and PLE rows); adds dequantize.cuh
+- src/ggml-cuda/mmq.cuh      quantized matrix-matrix products (int8 tensor cores), for prefill; with
+                             its configs, mma.cuh, mmq-load-tiles.cuh and mmq-vec-dot.cuh
+- src/ggml-cuda/mmid.cu      the expert grouping (ids -> per-expert token lists) for MMQ's MoE path;
+                             compiled on its own (added 2026-09-28, same commit)
 
 These .cu files are not compiled on their own. flashrt's wrapper, kernels/cuda/ggml_gemv.cu,
-includes them into one translation unit and calls their raw-pointer dispatchers
+includes them into one translation unit and calls their raw-pointer dispatchers; the MMQ
+kernels are launched by kernels/cuda/mmq_launch.cuh (one translation unit per weight type)
 (mul_mat_vec_q_switch_type, mul_mat_vec_f_cuda, quantize_row_q8_1_cuda, ggml_get_to_fp32_cuda). The ggml runtime
 symbols they reference but flashrt does not use are stubbed in kernels/cuda/ggml_shim.cu.
 

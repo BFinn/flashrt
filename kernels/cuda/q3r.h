@@ -26,6 +26,10 @@ size_t bytes(int64_t rows, int64_t K);
 // must not overlap.
 void repack(const void* q3k, void* q3r, int64_t rows, int64_t K, cudaStream_t stream);
 
+// The inverse of repack: Q3R back to ggml Q3_K rows (rows * K/256 blocks of 110 bytes), on the
+// GPU (prefill runs ggml's Q3_K matrix-matrix kernel on the result).
+void unpack(const void* q3r, void* q3k, int64_t rows, int64_t K, cudaStream_t stream);
+
 // y[T][rows] = W x[T][K]. K <= 8192.
 void matvec(const void* q3r, const float* x, float* y, int64_t rows, int64_t K, int T, cudaStream_t stream);
 

@@ -95,7 +95,12 @@ if(FLASHRT_CUDA)
   target_link_libraries(h2dbw PRIVATE flashrt_core CUDA::cudart)
 
   # dense mat-vec over ggml's vendored CUDA kernels (MIT, third_party/ggml)
-  add_library(flashrt_gemv STATIC kernels/cuda/ggml_gemv.cu kernels/cuda/ggml_shim.cu kernels/cuda/q3r.cu)
+  add_library(flashrt_gemv STATIC kernels/cuda/ggml_gemv.cu kernels/cuda/ggml_shim.cu kernels/cuda/q3r.cu
+    # prefill: matrix-matrix products (ggml's MMQ, one file per weight type; cuBLAS for BF16)
+    kernels/cuda/ggml_gemm.cu third_party/ggml/src/ggml-cuda/mmid.cu
+    kernels/cuda/mmq_q2_0.cu kernels/cuda/mmq_q4_0.cu kernels/cuda/mmq_q5_0.cu kernels/cuda/mmq_q8_0.cu
+    kernels/cuda/mmq_q3_k.cu kernels/cuda/mmq_q4_k.cu kernels/cuda/mmq_q5_k.cu kernels/cuda/mmq_q6_k.cu
+    kernels/cuda/mmq_iq4_xs.cu kernels/cuda/mmq_iq4_nl.cu)
   target_include_directories(flashrt_gemv PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ggml
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ggml/include
@@ -103,7 +108,7 @@ if(FLASHRT_CUDA)
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ggml/src/ggml-cuda)
   target_include_directories(flashrt_gemv PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
   target_compile_options(flashrt_gemv PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--use_fast_math --extended-lambda --expt-relaxed-constexpr -Xcudafe=--diag_suppress=177>)
-  target_link_libraries(flashrt_gemv PUBLIC CUDA::cudart)
+  target_link_libraries(flashrt_gemv PUBLIC CUDA::cudart CUDA::cublas)
 
   if(FLASHRT_LLAMA_DIR)
     add_executable(test_gemv tests/test_gemv.cpp)
@@ -140,6 +145,8 @@ if(FLASHRT_CUDA)
   add_executable(test_moe_q tests/test_moe_q.cpp)
   target_link_libraries(test_moe_q PRIVATE flashrt_gemv flashrt_ggml_stubs)
   add_test(NAME moe_q COMMAND test_moe_q)
+  add_executable(test_gemm tests/test_gemm.cpp)
+  target_link_libraries(test_gemm PRIVATE flashrt_gemv flashrt_core flashrt_ggml_stubs)
   add_executable(test_sample tests/test_sample.cpp)
   target_link_libraries(test_sample PRIVATE flashrt_qwen4exp_gpu flashrt_gemv flashrt_ggml_stubs)   # stubs last
   add_test(NAME sample COMMAND test_sample)
