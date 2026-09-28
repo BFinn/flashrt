@@ -39,21 +39,26 @@ bool q3r_eligible(const GgufTensor& t) {
 bool host_resident(const GgufTensor& t) { return t.name == "token_embd.weight"; }
 
 // The layers' hyper-connection down and up matrices (BF16, 1.26 GB in all) are read in full every
-// decode token; as Q8P they take half the bytes and half the VRAM (FLASHRT_HC_Q8=0: kept BF16).
-bool hc_q8_on() {
-    static const bool on = [] {
+// decode token; as Q8P they take half the bytes and half the VRAM. FLASHRT_HC_Q8: 1 both, down or
+// up one kind, 0 (or unset) neither.
+int hc_q8_mode() {   // bit 0: down, bit 1: up
+    static const int m = [] {
         const char* e = std::getenv("FLASHRT_HC_Q8");
-        return !(e && e[0] == '0');
+        if (!e) return 0;
+        const std::string v(e);
+        return v == "1" ? 3 : v == "down" ? 1 : v == "up" ? 2 : 0;
     }();
-    return on;
+    return m;
 }
 bool hc_q8_eligible(const GgufTensor& t) {
     auto ends = [&](const char* suf) {
         const std::string sfx(suf);
         return t.name.size() > sfx.size() && t.name.compare(t.name.size() - sfx.size(), sfx.size(), sfx) == 0;
     };
-    return hc_q8_on() && t.type == 30 /* GGML_TYPE_BF16 */ && t.dims.size() == 2 && t.dims[0] % 32 == 0 && t.name.rfind("blk.", 0) == 0 &&
-           (ends(".hc_attn_down.weight") || ends(".hc_attn_up.weight") || ends(".hc_ffn_down.weight") || ends(".hc_ffn_up.weight"));
+    const int m = hc_q8_mode();
+    return m && t.type == 30 /* GGML_TYPE_BF16 */ && t.dims.size() == 2 && t.dims[0] % 32 == 0 && t.name.rfind("blk.", 0) == 0 &&
+           (((m & 1) && (ends(".hc_attn_down.weight") || ends(".hc_ffn_down.weight"))) ||
+            ((m & 2) && (ends(".hc_attn_up.weight") || ends(".hc_ffn_up.weight"))));
 }
 size_t q8p_bytes(const GgufTensor& t) { return size_t(t.dims[0]) * t.dims[1] * 17 / 16; }   // int8 values + an fp16 scale per 32
 

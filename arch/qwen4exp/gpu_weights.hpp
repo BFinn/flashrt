@@ -46,8 +46,9 @@ public:
 
     // Uploads all VramDense tensors of the plan. Throws on CUDA or I/O errors. With q3r, Q3_K
     // matrices (not the token embedding) are converted in place to Q3R (type kTypeQ3R). The layers'
-    // hyper-connection down and up matrices (BF16) become Q8P (kTypeQ8P): half the bytes the
-    // decode reads each token and the VRAM they take (FLASHRT_HC_Q8=0 keeps BF16).
+    // hyper-connection down and up matrices (BF16) can become Q8P (kTypeQ8P): half the bytes the
+    // decode reads each token and the VRAM they take, at a KLD cost (FLASHRT_HC_Q8=1|down|up; off
+    // by default, sw66).
     void load(const Gguf& g, const WeightPlan& plan, bool q3r = true);
 
     const GpuTensor& get(const std::string& name) const;         // throws if absent
