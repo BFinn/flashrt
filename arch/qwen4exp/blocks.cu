@@ -3,6 +3,7 @@
 // are written for flashrt.
 #include "arch/qwen4exp/blocks.hpp"
 
+#include "kernels/cuda/ggml_gemm.h"
 #include "kernels/cuda/ggml_gemv.h"
 #include "kernels/cuda/q3r.h"
 #include "quant/q2_0/moe_cpu.hpp"
@@ -425,11 +426,37 @@ void free_block_scratch(BlockScratch& b) {
     if (b.idx_cells) cudaFree(b.idx_cells);
     if (b.idx_counts) cudaFree(b.idx_counts);
     if (b.attn_part) cudaFree(b.attn_part);
+    if (b.gemm_ws) cudaFree(b.gemm_ws);
+    if (b.q3k_tmp) cudaFree(b.q3k_tmp);
     b = BlockScratch{};
 }
 
 void linear(const BlockCtx& c, const GpuTensor& W, const float* x, float* y, int T) {
     const int64_t cols = W.cols(), rows = W.rows();
+    const uint32_t mm_type = W.type == kTypeQ3R ? 11u /* Q3_K */ : W.type;
+    if (T >= kGemmMinTokens && gemm::supported(mm_type)) {
+        BlockScratch& bs = c.scratch;
+        const void* Wp = W.dev;
+        if (W.type == kTypeQ3R) {   // back to Q3_K for ggml's kernel
+            const size_t need = size_t(rows) * (cols / 256) * 110 + gemv::kWeightTailPad;
+            if (bs.q3k_tmp_bytes < need) {
+                if (bs.q3k_tmp) cudaFree(bs.q3k_tmp);
+                ck(cudaMalloc(&bs.q3k_tmp, need), "cudaMalloc q3k copy");
+                ck(cudaMemset(bs.q3k_tmp, 0, need), "memset q3k copy");
+                bs.q3k_tmp_bytes = need;
+            }
+            q3r::unpack(W.dev, bs.q3k_tmp, rows, cols, c.stream);
+            Wp = bs.q3k_tmp;
+        }
+        const size_t ws = gemm::workspace_bytes(cols, T);
+        if (bs.gemm_ws_bytes < ws) {
+            if (bs.gemm_ws) cudaFree(bs.gemm_ws);
+            ck(cudaMalloc(&bs.gemm_ws, ws), "cudaMalloc gemm workspace");
+            bs.gemm_ws_bytes = ws;
+        }
+        gemm::gemm(mm_type, Wp, x, y, cols, rows, T, bs.gemm_ws, bs.gemm_ws_bytes, c.stream);
+        return;
+    }
     if (W.type == kTypeQ3R) {
         q3r::matvec(W.dev, x, y, rows, cols, T, c.stream);
         return;

@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // gemm (MMQ / cuBLAS matrix-matrix) against gemv (MMVQ / MMVF mat-vec) on real weights from the
 // model: one tensor of each type the model uses, T = 200 tokens of random activations. Both
-// quantize the activations to 8 bits, but per 32 or per 128 values and in another order, so they
-// agree to about 1e-3 relative; the tolerance is 1e-2. Also: gemm::moe on a real Q2_0 expert
+// quantize the activations to 8 bits, but in another layout and order, so they agree to about
+// 2e-4 relative (tolerance 1e-2). The offset types (Q4_0, Q5_0, Q4_K, Q5_K) take MMQ's DS4 layout,
+// whose fp16 block sums carry the offset term: about 1.5e-2 on these random activations
+// (tolerance 3e-2); the KLD gate judges the effect on real activations. Also: gemm::moe on a real Q2_0 expert
 // tensor against gemv::moe_q, and Q3R -> Q3_K (q3r::unpack) byte-exact against the original.
 //
 //   test_gemm MODEL.gguf
@@ -98,7 +100,8 @@ int main(int argc, char** argv) {
         CK(cudaMemcpy(a.data(), y1, a.size() * 4, cudaMemcpyDeviceToHost));
         CK(cudaMemcpy(b.data(), y2, b.size() * 4, cudaMemcpyDeviceToHost));
         const double e = rel(b, a);
-        const bool ok = std::isfinite(e) && e < 1e-2;
+        const bool offset = type == 2 || type == 6 || type == 12 || type == 13;   // Q4_0, Q5_0, Q4_K, Q5_K
+        const bool ok = std::isfinite(e) && e < (offset ? 3e-2 : 1e-2);
         fail += !ok;
         std::printf("gemm %-7s %-28s %6lld x %6lld: relative error %.2e %s\n", ggml_type_name(type), t->name.c_str(), (long long)R,
                     (long long)K, e, ok ? "ok" : "FAIL");

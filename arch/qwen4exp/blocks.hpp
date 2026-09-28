@@ -38,6 +38,12 @@ struct BlockScratch {
     // attention partials (split-K flash decode), grown on demand
     float* attn_part = nullptr;
     size_t attn_part_elems = 0;
+    // matrix-matrix products (linear() with many tokens): the gemm workspace and a Q3_K copy of a
+    // Q3R matrix, grown on demand (never used inside a captured graph)
+    void* gemm_ws = nullptr;
+    size_t gemm_ws_bytes = 0;
+    void* q3k_tmp = nullptr;
+    size_t q3k_tmp_bytes = 0;
 };
 BlockScratch alloc_block_scratch(const Spec& s, int max_tokens);
 // The addresses a captured graph bakes in: a graph is stale once any of them changes (a
@@ -61,7 +67,9 @@ struct BlockCtx {
 };
 constexpr int kMaxGraphTokens = 8;
 
-// W x for T tokens (any T): gemv in chunks of up to 8 tokens. x [T][cols], y [T][rows].
+// W x for T tokens (any T): gemv in chunks of up to 8 tokens, or from kGemmMinTokens on the
+// matrix-matrix path (kernels/cuda/ggml_gemm.h). x [T][cols], y [T][rows].
+constexpr int kGemmMinTokens = 16;
 void linear(const BlockCtx& c, const GpuTensor& W, const float* x, float* y, int T);
 
 // Hyper-connection mix. which: 0 = before the mixer (hc_attn_*), 1 = before the MoE
