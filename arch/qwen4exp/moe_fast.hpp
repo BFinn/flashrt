@@ -97,6 +97,11 @@ struct CachePolicyConfig {
 };
 struct CacheManager;   // opaque; see moe_fast.cu
 
+// Registers the arena with CUDA (mapped, pinned: full-speed copies; idempotent) and returns its
+// device pointer. About 1.5 s for the whole arena, so loaders call it up front: otherwise the
+// first prefill chunk or the cache manager pays it.
+const uint8_t* arena_register(const ExpertArena& arena);
+
 // Registers the arena with CUDA (pinned uploads) and seeds the counts with `prior` (e.g. the
 // prompt's routing counts, [n_layer * n_expert]).
 CacheManager* create_cache_manager(const Spec& s, ExpertCache& cache, const ExpertArena& arena, const CachePolicyConfig& cfg,

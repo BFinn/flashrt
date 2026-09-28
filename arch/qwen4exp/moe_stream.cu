@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "arch/qwen4exp/moe_stream.hpp"
 
+#include "arch/qwen4exp/moe_fast.hpp"
+
 #include "kernels/cuda/ggml_gemm.h"
 #include "kernels/cuda/ggml_gemv.h"
 #include "quant/q2_0/q2_0.hpp"
@@ -12,8 +14,6 @@
 #include <string>
 
 namespace flashrt::qwen4exp {
-
-const uint8_t* arena_register(const ExpertArena& arena);   // moe_fast.cu
 
 namespace {
 

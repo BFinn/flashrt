@@ -148,6 +148,11 @@ int main(int argc, char** argv) {
     ExpertArena arena = arena_alloc(s.n_layer, s.n_expert, q2_0::expert_bytes({s.d_model, s.d_ff_expert}), PageMode::THP, 0);
     if (!arena.buf.ptr) { std::fprintf(stderr, "arena allocation failed\n"); return 1; }
     load_experts(g, s, arena, 12);
+    {
+        const auto tr = Clock::now();
+        arena_register(arena);   // at load, outside the timed prefill
+        std::printf("expert arena registered in %.1f s\n", std::chrono::duration<double>(Clock::now() - tr).count());
+    }
     const std::vector<int> cpus = physical_cpus();
     CpuPool pool(workers, cpus);   // pins this thread to cpus[0]
     if (spec_k > 0 && mtp_path.empty()) { std::fprintf(stderr, "--spec needs --mtp\n"); return 2; }
@@ -320,7 +325,7 @@ int main(int argc, char** argv) {
             cfg.budget = swap_budget;
             mgr = create_cache_manager(s, cache, arena, cfg, fwd.counts());
             fwd.set_cache_manager(mgr);
-            std::printf("adaptive cache: decayed LFU, swap budget %d (arena registered in %.1f s)\n", swap_budget,
+            std::printf("adaptive cache: decayed LFU, swap budget %d (set up in %.1f s)\n", swap_budget,
                         std::chrono::duration<double>(Clock::now() - tr).count());
         }
     }

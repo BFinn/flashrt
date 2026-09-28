@@ -64,6 +64,7 @@ struct Session::Impl {
         arena = arena_alloc(s.n_layer, s.n_expert, q2_0::expert_bytes({s.d_model, s.d_ff_expert}), PageMode::THP, 0);
         if (!arena.buf.ptr) throw std::runtime_error("expert arena allocation failed");
         load_experts(g, s, arena, 12);
+        arena_register(arena);   // now, not in the first long prompt's prefill
         cpus = physical_cpus();
         pool = std::make_unique<CpuPool>(o.workers, cpus);   // pins this thread to cpus[0] for now
         const bool spec = !o.mtp.empty() && o.spec_k > 0;

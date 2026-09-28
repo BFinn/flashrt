@@ -418,13 +418,14 @@ __global__ void k_gdn_delta_reg(const float* S_in, float* S_out, float* S_bak, c
     for (int jj = 0; jj < JPT; ++jj) So[size_t(ty * JPT + jj) * DK + i] = st[jj];
 }
 
-// The same delta rule for long calls (prefill): four lanes own a column of S, 32 rows each, so a
-// token's two column sums are two shuffles each and no block barrier. The tokens' q, k, v, gate
-// and beta come in tiles of 16 through shared memory (cp.async, the next tile loading while this
-// one computes), as the recurrence can not wait for DRAM once per token. One warp per 8 columns,
-// 8 warps (64 columns) per block: the 96 blocks of 48 heads all fit at once (2 per SM).
-constexpr int kGdnColWarps = 8;
-constexpr int kGdnTile = 16;
+// The same delta rule for long calls (prefill). Four lanes share two columns of S, 32 rows each,
+// so a token's column sums are shuffles, with no block barrier. The tokens' q, k, v, gate and beta
+// come through shared memory in tiles of 8, three tiles in flight (cp.async), as the recurrence
+// can not wait for DRAM once per token. Shared-memory reads bound it: a warp's q and k reads
+// have 4 distinct addresses, so each lane reads them once per token for two columns, from a
+// layout where those addresses are adjacent (step s of quarter qd at s * 16 + qd * 4). Two warps
+// (32 columns) per block: the 192 blocks spread evenly over the SMs.
+constexpr int kGdnTile = 8, kGdnStages = 3, kGdnColWarps = 2;
 __device__ __forceinline__ void cp_async16(void* dst, const void* src) {
     asm volatile("cp.async.cg.shared.global [%0], [%1], 16;\n" ::"r"(uint32_t(__cvta_generic_to_shared(dst))), "l"(src));
 }
@@ -432,95 +433,108 @@ __device__ __forceinline__ void cp_async4(void* dst, const void* src) {
     asm volatile("cp.async.ca.shared.global [%0], [%1], 4;\n" ::"r"(uint32_t(__cvta_generic_to_shared(dst))), "l"(src));
 }
 template <int DK>
-__global__ void __launch_bounds__(32 * kGdnColWarps) k_gdn_delta_col(const float* S_in, float* S_out, float* S_bak, const float* conv_out, const float* g,
-                                                        const float* beta, float* o, int T, int k_heads, int v_heads, int channels) {
-    constexpr int R = DK / 4, RP = R + 4;   // rows per lane; a quarter's stride in shared (padded: no bank conflicts)
-    constexpr int NC = 8 * kGdnColWarps;   // columns per block
-    __shared__ __align__(16) float qs[2][kGdnTile][4 * RP], ks[2][kGdnTile][4 * RP], vs[2][kGdnTile][NC];
-    __shared__ float gs[2][kGdnTile], bs[2][kGdnTile];
+__global__ void __launch_bounds__(32 * kGdnColWarps) k_gdn_delta_col(const float* S_in, float* S_out, float* S_bak, const float* conv_out,
+                                                                    const float* g, const float* beta, float* o, int T, int k_heads,
+                                                                    int v_heads, int channels) {
+    constexpr int R = DK / 4, NC = 16 * kGdnColWarps;   // rows per lane, columns per block
+    __shared__ __align__(16) float qs[kGdnStages][kGdnTile][DK], ks[kGdnStages][kGdnTile][DK], vs[kGdnStages][kGdnTile][NC];
+    __shared__ float gs[kGdnStages][kGdnTile], bs[kGdnStages][kGdnTile];
     const int h = blockIdx.x, lane = threadIdx.x & 31, warp = threadIdx.x >> 5, hk = h % k_heads;
-    const int qd = lane & 3, ic = warp * 8 + (lane >> 2), i = blockIdx.y * NC + ic, j0 = qd * R;
-    const size_t q_off = size_t(hk) * DK, k_off = size_t(k_heads) * DK + size_t(hk) * DK, v_off = size_t(2 * k_heads) * DK + size_t(h) * DK + blockIdx.y * NC;
-    auto load = [&](int tile, int buf) {
-        const int t0 = tile * kGdnTile, n = min(kGdnTile, T - t0);
-        for (int e = threadIdx.x; e < n * (DK / 4); e += blockDim.x) {   // 16-byte pieces of q and k
-            const int tt = e / (DK / 4), p = e % (DK / 4), d = p * 4;
-            const float* row = conv_out + size_t(t0 + tt) * channels;
-            float* qd_ = &qs[buf][tt][(d / R) * RP + d % R];
-            float* kd_ = &ks[buf][tt][(d / R) * RP + d % R];
-            cp_async16(qd_, row + q_off + d);
-            cp_async16(kd_, row + k_off + d);
-        }
-        for (int e = threadIdx.x; e < n * (NC / 4); e += blockDim.x) {
-            const int tt = e / (NC / 4), p = e % (NC / 4);
-            cp_async16(&vs[buf][tt][p * 4], conv_out + size_t(t0 + tt) * channels + v_off + p * 4);
-        }
-        if (threadIdx.x < n) {
-            cp_async4(&gs[buf][threadIdx.x], g + size_t(t0 + threadIdx.x) * v_heads + h);
-            cp_async4(&bs[buf][threadIdx.x], beta + size_t(t0 + threadIdx.x) * v_heads + h);
+    const int qd = lane & 3, ic = warp * 16 + (lane >> 2) * 2, i = blockIdx.y * NC + ic, j0 = qd * R;
+    const size_t q_off = size_t(hk) * DK, k_off = size_t(k_heads) * DK + size_t(hk) * DK,
+                 v_off = size_t(2 * k_heads) * DK + size_t(h) * DK + size_t(blockIdx.y) * NC;
+    const int n_tiles = (T + kGdnTile - 1) / kGdnTile;
+    auto load = [&](int tile) {   // always commits a group (empty past the end), so the waits count right
+        if (tile < n_tiles) {
+            const int t0 = tile * kGdnTile, n = min(kGdnTile, T - t0), buf = tile % kGdnStages;
+            for (int e = threadIdx.x; e < n * (DK / 4); e += blockDim.x) {   // 16-byte pieces: dims d .. d + 3
+                const int tt = e / (DK / 4), d = (e % (DK / 4)) * 4, at = ((d % R) / 4) * 16 + (d / R) * 4;
+                const float* row = conv_out + size_t(t0 + tt) * channels;
+                cp_async16(&qs[buf][tt][at], row + q_off + d);
+                cp_async16(&ks[buf][tt][at], row + k_off + d);
+            }
+            for (int e = threadIdx.x; e < n * (NC / 4); e += blockDim.x) {
+                const int tt = e / (NC / 4), p = e % (NC / 4);
+                cp_async16(&vs[buf][tt][p * 4], conv_out + size_t(t0 + tt) * channels + v_off + p * 4);
+            }
+            if (threadIdx.x < n) {
+                cp_async4(&gs[buf][threadIdx.x], g + size_t(t0 + threadIdx.x) * v_heads + h);
+                cp_async4(&bs[buf][threadIdx.x], beta + size_t(t0 + threadIdx.x) * v_heads + h);
+            }
         }
         asm volatile("cp.async.commit_group;\n" ::);
     };
     const float* Si = S_in + size_t(h) * DK * DK;
-    float st[R];
+    float s0[R], s1[R];   // columns i, i + 1
 #pragma unroll
-    for (int jj = 0; jj < R; ++jj) st[jj] = Si[size_t(j0 + jj) * DK + i];
+    for (int jj = 0; jj < R; ++jj) {
+        const float2 v = *reinterpret_cast<const float2*>(Si + size_t(j0 + jj) * DK + i);
+        s0[jj] = v.x;
+        s1[jj] = v.y;
+    }
     if (S_bak)
 #pragma unroll
-        for (int jj = 0; jj < R; ++jj) S_bak[size_t(h) * DK * DK + size_t(j0 + jj) * DK + i] = st[jj];
+        for (int jj = 0; jj < R; ++jj) *reinterpret_cast<float2*>(S_bak + size_t(h) * DK * DK + size_t(j0 + jj) * DK + i) = make_float2(s0[jj], s1[jj]);
     const float scale = rsqrtf(float(DK));
-    const int n_tiles = (T + kGdnTile - 1) / kGdnTile;
-    if (n_tiles > 0) load(0, 0);
+    for (int k = 0; k < kGdnStages - 1; ++k) load(k);
     for (int tile = 0; tile < n_tiles; ++tile) {
-        const int buf = tile & 1, t0 = tile * kGdnTile, n = min(kGdnTile, T - t0);
-        if (tile + 1 < n_tiles) {
-            load(tile + 1, buf ^ 1);
-            asm volatile("cp.async.wait_group 1;\n" ::);
-        } else {
-            asm volatile("cp.async.wait_group 0;\n" ::);
-        }
-        __syncthreads();
+        asm volatile("cp.async.wait_group %0;\n" ::"n"(kGdnStages - 2));
+        __syncthreads();   // this tile is in; the tile computed last is no longer read
+        load(tile + kGdnStages - 1);
+        const int buf = tile % kGdnStages, t0 = tile * kGdnTile, n = min(kGdnTile, T - t0);
         for (int tt = 0; tt < n; ++tt) {
-            const float* qv = &qs[buf][tt][qd * RP];
-            const float* kv = &ks[buf][tt][qd * RP];
-            const float decay = __expf(gs[buf][tt]), b = bs[buf][tt], vi = vs[buf][tt][ic];
-            float sk0 = 0.0f, sk1 = 0.0f;
+            float kv[R], qv[R];
 #pragma unroll
-            for (int jj = 0; jj < R; jj += 4) {
-                const float4 k4 = *reinterpret_cast<const float4*>(kv + jj);
-                st[jj] *= decay;
-                st[jj + 1] *= decay;
-                st[jj + 2] *= decay;
-                st[jj + 3] *= decay;
-                sk0 += st[jj] * k4.x + st[jj + 2] * k4.z;
-                sk1 += st[jj + 1] * k4.y + st[jj + 3] * k4.w;
+            for (int s = 0; s < R / 4; ++s) {
+                const float4 k4 = *reinterpret_cast<const float4*>(&ks[buf][tt][s * 16 + qd * 4]);
+                const float4 q4 = *reinterpret_cast<const float4*>(&qs[buf][tt][s * 16 + qd * 4]);
+                kv[4 * s] = k4.x; kv[4 * s + 1] = k4.y; kv[4 * s + 2] = k4.z; kv[4 * s + 3] = k4.w;
+                qv[4 * s] = q4.x; qv[4 * s + 1] = q4.y; qv[4 * s + 2] = q4.z; qv[4 * s + 3] = q4.w;
             }
-            float sk = sk0 + sk1;
-            sk += __shfl_xor_sync(~0u, sk, 1);
-            sk += __shfl_xor_sync(~0u, sk, 2);
-            const float d = b * (vi - sk);
-            float o0 = 0.0f, o1 = 0.0f;
+            const float decay = __expf(gs[buf][tt]), b = bs[buf][tt];
+            const float2 vi = *reinterpret_cast<const float2*>(&vs[buf][tt][ic]);
+            float a0 = 0.0f, a1 = 0.0f, c0 = 0.0f, c1 = 0.0f;
 #pragma unroll
-            for (int jj = 0; jj < R; jj += 4) {
-                const float4 k4 = *reinterpret_cast<const float4*>(kv + jj);
-                const float4 q4 = *reinterpret_cast<const float4*>(qv + jj);
-                st[jj] += d * k4.x;
-                st[jj + 1] += d * k4.y;
-                st[jj + 2] += d * k4.z;
-                st[jj + 3] += d * k4.w;
-                o0 += st[jj] * q4.x + st[jj + 2] * q4.z;
-                o1 += st[jj + 1] * q4.y + st[jj + 3] * q4.w;
+            for (int jj = 0; jj < R; jj += 2) {
+                s0[jj] *= decay;
+                s0[jj + 1] *= decay;
+                s1[jj] *= decay;
+                s1[jj + 1] *= decay;
+                a0 += s0[jj] * kv[jj];
+                a1 += s0[jj + 1] * kv[jj + 1];
+                c0 += s1[jj] * kv[jj];
+                c1 += s1[jj + 1] * kv[jj + 1];
             }
-            float oi = o0 + o1;
-            oi += __shfl_xor_sync(~0u, oi, 1);
-            oi += __shfl_xor_sync(~0u, oi, 2);
-            if (qd == 0) o[(size_t(t0 + tt) * v_heads + h) * DK + i] = oi * scale;
+            float sk0 = a0 + a1, sk1 = c0 + c1;
+            sk0 += __shfl_xor_sync(~0u, sk0, 1);
+            sk1 += __shfl_xor_sync(~0u, sk1, 1);
+            sk0 += __shfl_xor_sync(~0u, sk0, 2);
+            sk1 += __shfl_xor_sync(~0u, sk1, 2);
+            const float d0 = b * (vi.x - sk0), d1 = b * (vi.y - sk1);
+            a0 = a1 = c0 = c1 = 0.0f;
+#pragma unroll
+            for (int jj = 0; jj < R; jj += 2) {
+                s0[jj] += d0 * kv[jj];
+                s0[jj + 1] += d0 * kv[jj + 1];
+                s1[jj] += d1 * kv[jj];
+                s1[jj + 1] += d1 * kv[jj + 1];
+                a0 += s0[jj] * qv[jj];
+                a1 += s0[jj + 1] * qv[jj + 1];
+                c0 += s1[jj] * qv[jj];
+                c1 += s1[jj + 1] * qv[jj + 1];
+            }
+            float o0 = a0 + a1, o1 = c0 + c1;
+            o0 += __shfl_xor_sync(~0u, o0, 1);
+            o1 += __shfl_xor_sync(~0u, o1, 1);
+            o0 += __shfl_xor_sync(~0u, o0, 2);
+            o1 += __shfl_xor_sync(~0u, o1, 2);
+            if (qd == 0) *reinterpret_cast<float2*>(o + (size_t(t0 + tt) * v_heads + h) * DK + i) = make_float2(o0 * scale, o1 * scale);
         }
-        __syncthreads();   // the buffer is refilled next iteration
     }
+    asm volatile("cp.async.wait_group 0;\n" ::);
     float* So = S_out + size_t(h) * DK * DK;
 #pragma unroll
-    for (int jj = 0; jj < R; ++jj) So[size_t(j0 + jj) * DK + i] = st[jj];
+    for (int jj = 0; jj < R; ++jj) *reinterpret_cast<float2*>(So + size_t(j0 + jj) * DK + i) = make_float2(s0[jj], s1[jj]);
 }
 
 // Rewinds a history of H rows (oldest first, C values each) after a call of T inputs to its
@@ -841,7 +855,7 @@ void gdn_mixer(const BlockCtx& c, int il, const float* x, int T, GdnState& st, f
         return !(e && e[0] == '0');
     }();
     if (dk == 128 && T >= 16 && col_on)   // prefill; decode keeps the block kernel
-        k_gdn_delta_col<128><<<dim3(H, 128 / (8 * kGdnColWarps)), 32 * kGdnColWarps, 0, c.stream>>>(st.S, st.S, win ? win->S_bak : nullptr, conv, alpha, beta, o, T,
+        k_gdn_delta_col<128><<<dim3(H, 128 / (16 * kGdnColWarps)), 32 * kGdnColWarps, 0, c.stream>>>(st.S, st.S, win ? win->S_bak : nullptr, conv, alpha, beta, o, T,
                                                                      s.ssm_groups, H, ch);
     else if (dk == 128)
         k_gdn_delta_reg<128><<<dim3(H, 128 / 32), dim3(32, 8), 0, c.stream>>>(st.S, st.S, win ? win->S_bak : nullptr, conv, alpha, beta, o, T,
