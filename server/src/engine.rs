@@ -86,7 +86,7 @@ impl Engine {
                         routes.remove(&id);
                     }
                 } else if ev == "error" {
-                    tracing::error!("engine: {}", v.get("msg").and_then(Value::as_str).unwrap_or(""));
+                    tracing::error!("engine: {}", v.get("msg").and_then(|x| x.as_str()).unwrap_or(""));
                 }
             }
             tracing::error!("engine exited");

@@ -342,9 +342,9 @@ pub async fn start(st: Arc<AppState>, req: ChatRequest) -> Result<(mpsc::Receive
                         "{id}: prompt {} (reused {}) in {:.0} ms, {} tokens in {:.0} ms, {:?}",
                         n("prompt_tokens"),
                         n("reused"),
-                        ev.get("prompt_ms").and_then(Value::as_f64).unwrap_or(0.0),
+                        ev.get("prompt_ms").and_then(|x| x.as_f64()).unwrap_or(0.0),
                         n("generated"),
-                        ev.get("decode_ms").and_then(Value::as_f64).unwrap_or(0.0),
+                        ev.get("decode_ms").and_then(|x| x.as_f64()).unwrap_or(0.0),
                         finish
                     );
                     send!(ChatEvent::Done {

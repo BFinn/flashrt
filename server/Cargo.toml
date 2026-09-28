@@ -13,7 +13,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 fancy-regex = "0.19"
 minijinja = { version = "2", features = ["json", "preserve_order"] }
-minijinja-contrib = "2"
+minijinja-contrib = { version = "2", features = ["pycompat"] }
 tokio-stream = "0.1"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
