@@ -163,6 +163,51 @@ int main() {
         fail += !ok;
         std::printf("window of %d tokens, grouped by expert: max difference to one-token calls %.3g %s\n", T, worst, ok ? "ok" : "FAIL");
     }
+    // timing: hit lists of 10 distinct experts rotated over >= 256 MB of slots (weights from VRAM,
+    // as in decode), one token and windows of 2 and 3
+    {
+        const int big = int((size_t(280) << 20) / eb) + 1, sets = big / K;
+        uint8_t* d_big;
+        CK(cudaMalloc(&d_big, eb * big));
+        for (int sl = 0; sl < big; ++sl) CK(cudaMemcpy(d_big + eb * sl, host.data() + eb * (sl % n_slots), eb, cudaMemcpyHostToDevice));
+        const int TM = 3;
+        std::vector<const uint8_t*> bp(size_t(sets) * TM * K);
+        for (int st = 0; st < sets; ++st)
+            for (int t = 0; t < TM; ++t)
+                for (int k = 0; k < K; ++k) bp[(size_t(st) * TM + t) * K + k] = d_big + eb * ((st * K + (k + 3 * t) % K) % big);
+        const uint8_t** d_bp;
+        int32_t* d_bn;
+        float *d_bx, *d_by;
+        void* d_bs;
+        CK(cudaMalloc(&d_bp, bp.size() * sizeof(void*)));
+        CK(cudaMemcpy(d_bp, bp.data(), bp.size() * sizeof(void*), cudaMemcpyHostToDevice));
+        const int32_t nn[TM] = {K, K, K};
+        CK(cudaMalloc(&d_bn, TM * 4));
+        CK(cudaMemcpy(d_bn, nn, TM * 4, cudaMemcpyHostToDevice));
+        CK(cudaMalloc(&d_bx, size_t(TM) * n * 4));
+        CK(cudaMemcpy(d_bx, x.data(), n * 4, cudaMemcpyHostToDevice));
+        CK(cudaMemcpy(d_bx + n, x.data(), n * 4, cudaMemcpyHostToDevice));
+        CK(cudaMemcpy(d_bx + 2 * n, x.data(), n * 4, cudaMemcpyHostToDevice));
+        CK(cudaMalloc(&d_by, size_t(TM) * K * n * 4));
+        CK(cudaMalloc(&d_bs, qwen4exp::moe_hits_scratch_bytes(K, ff, TM)));
+        cudaEvent_t e0, e1;
+        cudaEventCreate(&e0);
+        cudaEventCreate(&e1);
+        for (int T = 1; T <= TM; ++T) {
+            const int iters = 400;
+            for (int it = 0; it < 20; ++it) qwen4exp::moe_hits(d_bp + size_t(it % sets) * TM * K, d_bn, K, d_bx, n, ff, d_bs, d_by, nullptr, T);
+            cudaEventRecord(e0);
+            for (int it = 0; it < iters; ++it) qwen4exp::moe_hits(d_bp + size_t(it % sets) * TM * K, d_bn, K, d_bx, n, ff, d_bs, d_by, nullptr, T);
+            cudaEventRecord(e1);
+            CK(cudaEventSynchronize(e1));
+            float ms = 0;
+            cudaEventElapsedTime(&ms, e0, e1);
+            const double us = 1e3 * ms / iters;
+            // distinct experts read: T = 1: K; windows overlap by construction ((k + 3t) % K: the same K)
+            std::printf("timing, T %d: %.2f us per call, %.0f GB/s of distinct experts (%d x %.2f MB)\n", T, us, K * eb / (us * 1e3), K, eb / 1e6);
+        }
+        cudaFree(d_big);
+    }
     std::printf("%s\n", fail ? "FAILED" : "all passed");
     return fail ? 1 : 0;
 }
