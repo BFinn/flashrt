@@ -691,8 +691,12 @@ __global__ void k_gdn_conv(const float* qkv, float* hist, const float* w, float*
 
 // The same conv for many tokens, parallel over (channel, token): input t' < 0 comes from the
 // history. k_gdn_conv_hist then advances the history (after every token has read it).
-__global__ void k_gdn_conv_par(const float* qkv, const float* hist, const float* w, float* y, int channels, int T, int K) {
+// norm_heads > 0 (blockDim = head dim): the first norm_heads blocks of a token are its q and k
+// heads, L2-normalised here (as k_l2_norm; sw81)
+__global__ void k_gdn_conv_par(const float* qkv, const float* hist, const float* w, float* y, int channels, int T, int K, int norm_heads,
+                               float eps) {
     const int c = blockIdx.x * blockDim.x + threadIdx.x, t = blockIdx.y;
+    const bool norm = int(blockIdx.x) < norm_heads;   // block-uniform; such blocks are full
     if (c >= channels) return;
     float acc = 0.0f;
     for (int k = 0; k < K; ++k) {
@@ -700,7 +704,9 @@ __global__ void k_gdn_conv_par(const float* qkv, const float* hist, const float*
         const float v = tt >= 0 ? qkv[size_t(tt) * channels + c] : hist[size_t(K - 1 + tt) * channels + c];
         acc += v * w[size_t(c) * K + k];
     }
-    y[size_t(t) * channels + c] = acc / (1.0f + __expf(-acc));
+    float out = acc / (1.0f + __expf(-acc));
+    if (norm) out *= rsqrtf(block_sum(out * out) + eps);
+    y[size_t(t) * channels + c] = out;
 }
 __global__ void k_gdn_conv_hist(const float* qkv, float* hist, int channels, int T, int K) {
     const int c = blockIdx.x * blockDim.x + threadIdx.x;
@@ -1983,11 +1989,12 @@ void gdn_mixer(const BlockCtx& c, int il, const float* x, int T, GdnState& st, f
         linear(c, *ab[1].W, x, beta, T);
         linear(c, *ab[0].W, x, alpha, T);
     }
-    const bool conv_l2 = T <= 8 && dk == 128 && fuse_epi();   // decode: the conv kernel normalises q and k
+    const bool conv_l2 = dk == 128 && fuse_epi();   // the conv kernel normalises q and k (a block per head)
     if (T > 8) {
-        k_gdn_conv_par<<<dim3((ch + 255) / 256, T), 256, 0, c.stream>>>(qkv, st.conv,
-                                                                       static_cast<const float*>(c.w.layer(il, "ssm_conv1d.weight").dev), conv,
-                                                                       ch, T, s.ssm_conv);
+        const int bt = conv_l2 ? 128 : 256;
+        k_gdn_conv_par<<<dim3((ch + bt - 1) / bt, T), bt, 0, c.stream>>>(qkv, st.conv,
+                                                                        static_cast<const float*>(c.w.layer(il, "ssm_conv1d.weight").dev), conv,
+                                                                        ch, T, s.ssm_conv, conv_l2 ? 2 * s.ssm_groups : 0, float(s.rms_eps));
         k_gdn_conv_hist<<<(ch + 255) / 256, 256, 0, c.stream>>>(qkv, st.conv, ch, T, s.ssm_conv);
     } else {
         k_gdn_conv<<<(ch + 127) / 128, 128, 0, c.stream>>>(qkv, st.conv, static_cast<const float*>(c.w.layer(il, "ssm_conv1d.weight").dev),
