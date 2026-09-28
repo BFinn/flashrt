@@ -1,0 +1,35 @@
+WARNING: Device-side CUDA Event completion trace is currently enabled.
+         This may increase runtime overhead and the likelihood of false
+         dependencies across CUDA Streams. If you wish to avoid this, please
+         disable the feature with --cuda-event-trace=false.
+WARNING: CPU IP/backtrace sampling not supported, disabling.
+Try the 'nsys status --environment' command to learn more.
+
+WARNING: CPU context switch tracing not supported, disabling.
+Try the 'nsys status --environment' command to learn more.
+
+expert arena registered in 1.8 s
+KV cache: q8_0
+VRAM before prefill: 11449 MiB free
+prefill chunk: 16384 tokens (auto; estimated 8047 MiB)
+  chunk at      0: 16384 tokens in 3.10 s (5291 tok/s)
+prefill: 32768 tokens in 6.0 s (5442.3 tok/s, chunks of 16384, experts streamed to the GPU)
+VRAM after prefill: 12038 MiB used, 3801 MiB free (chunk buffers 7406 MiB)
+expert cache: 7879 slots (32.1% of experts), filled in 0.2 s from 11412 MiB free
+adaptive cache: decayed LFU, swap budget 8 (set up in 0.0 s)
+decode: 8 tokens at depth 32768 in 0.09 s: 93.30 tok/s (fast path, doorbell), swaps 0
+expert cache hit rate 94.35% (3623 hits, 217 misses: 217 on the CPU, 0 read over PCIe)
+host per token: 8.80 ms waiting for routing, 1.17 ms running misses
+misses per layer: count (share of layers) and mean host miss time
+   0 :  59.4%     0.4 us
+   1 :  28.6%    47.3 us
+   2 :   8.3%    78.3 us
+   3 :   3.4%   111.6 us
+   4 :   0.3%   145.3 us
+CUDA graphs: on (1 capture(s))
+tokens: 5820 24304 383 279 44798 641 4855 22950 8619
+Collecting data...
+Generating '/tmp/nsys-report-5222.qdstrm'
+[1/1] [0%                          ] lpc8.nsys-rep[1/1] [0%                          ] lpc8.nsys-rep[1/1] [===22%                      ] lpc8.nsys-rep[1/1] [=======39%                  ] lpc8.nsys-rep[1/1] [============56%             ] lpc8.nsys-rep[1/1] [================71%         ] lpc8.nsys-rep[1/1] [========================100%] lpc8.nsys-rep[1/1] [========================100%] lpc8.nsys-rep
+Generated:
+	$BENCH/sw60/lpc8.nsys-rep

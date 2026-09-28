@@ -1,0 +1,35 @@
+WARNING: Device-side CUDA Event completion trace is currently enabled.
+         This may increase runtime overhead and the likelihood of false
+         dependencies across CUDA Streams. If you wish to avoid this, please
+         disable the feature with --cuda-event-trace=false.
+WARNING: CPU IP/backtrace sampling not supported, disabling.
+Try the 'nsys status --environment' command to learn more.
+
+WARNING: CPU context switch tracing not supported, disabling.
+Try the 'nsys status --environment' command to learn more.
+
+expert arena registered in 1.8 s
+KV cache: q8_0
+VRAM before prefill: 11449 MiB free
+prefill chunk: 16384 tokens (auto; estimated 8047 MiB)
+  chunk at      0: 16384 tokens in 3.05 s (5378 tok/s)
+prefill: 32768 tokens in 5.9 s (5548.5 tok/s, chunks of 16384, experts streamed to the GPU)
+VRAM after prefill: 12038 MiB used, 3801 MiB free (chunk buffers 7406 MiB)
+expert cache: 7879 slots (32.1% of experts), filled in 0.2 s from 11412 MiB free
+adaptive cache: decayed LFU, swap budget 8 (set up in 0.0 s)
+decode: 8 tokens at depth 32768 in 0.10 s: 83.63 tok/s (fast path, doorbell), swaps 0
+expert cache hit rate 94.06% (3612 hits, 228 misses: 228 on the CPU, 0 read over PCIe)
+host per token: 9.95 ms waiting for routing, 1.24 ms running misses
+misses per layer: count (share of layers) and mean host miss time
+   0 :  58.9%     0.4 us
+   1 :  27.9%    49.5 us
+   2 :   9.1%    77.5 us
+   3 :   3.4%   108.6 us
+   4 :   0.8%   143.9 us
+CUDA graphs: on (1 capture(s))
+tokens: 5820 24304 383 279 44798 641 4855 22950 8619
+Collecting data...
+Generating '/tmp/nsys-report-0daf.qdstrm'
+[1/1] [0%                          ] lpc4.nsys-rep[1/1] [0%                          ] lpc4.nsys-rep[1/1] [5%                          ] lpc4.nsys-rep[1/1] [=====29%                    ] lpc4.nsys-rep[1/1] [===22%                      ] lpc4.nsys-rep[1/1] [=======39%                  ] lpc4.nsys-rep[1/1] [============56%             ] lpc4.nsys-rep[1/1] [================71%         ] lpc4.nsys-rep[1/1] [========================100%] lpc4.nsys-rep[1/1] [========================100%] lpc4.nsys-rep
+Generated:
+	$BENCH/sw60/lpc4.nsys-rep
