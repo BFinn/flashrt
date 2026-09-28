@@ -970,8 +970,11 @@ void moe_block_fast(const BlockCtx& c, int il, const float* x, const ExpertCache
     if (size_t(hits_scratch - c.scratch.f32) * 4 + moe_hits_scratch_bytes(K, ff, T) > c.scratch.f32_elems * 4)
         throw std::runtime_error("moe_block_fast: scratch too small");
 
-    // 1. routing, and the input for the CPU
-    linear(c, c.w.layer(il, "ffn_gate_inp.weight"), x, logits, T);
+    // 1. routing (with the shared expert's gate logit when both are BF16), and the input for the CPU
+    const LinearOut rg[2] = {{&c.w.layer(il, "ffn_gate_inp.weight"), logits}, {&c.w.layer(il, "ffn_gate_inp_shexp.weight"), gate}};
+    const bool rg_fused = linear_multi_ok(rg, 2, T);
+    if (rg_fused) linear_multi(c, rg, 2, x, T);
+    else linear(c, *rg[0].W, x, logits, T);
     uint8_t* mb = h.doorbell ? h.mbox_dev + size_t(il) * h.mbox_stride : nullptr;
     k_route<<<T, ((E + 31) / 32) * 32, 0, c.stream>>>(logits, cache.table_dev + size_t(il) * E, E, K, cache.slots, cache.slot_bytes,
                                                      hit_ptr, hit_w, hit_n, h.arena_dev, h.arena_stride, il, h.pcie_frac, h.pcie_max,
@@ -988,7 +991,7 @@ void moe_block_fast(const BlockCtx& c, int il, const float* x, const ExpertCache
     linear(c, c.w.layer(il, "ffn_up_shexp.weight"), x, su, T);
     k_swiglu_1<<<(T * ffs + 255) / 256, 256, 0, c.stream>>>(sg, su, T * ffs);
     linear(c, c.w.layer(il, "ffn_down_shexp.weight"), sg, sh, T);
-    linear(c, c.w.layer(il, "ffn_gate_inp_shexp.weight"), x, gate, T);
+    if (!rg_fused) linear(c, *rg[1].W, x, gate, T);
 
     if (h.doorbell) {   // 3'. the miss server fills the mailbox; the combine waits for it on the GPU
         k_moe_combine_db<<<dim3((n + 255) / 256, T), 256, 0, c.stream>>>(out, yh, hit_w, hit_n, mb, mb_out_off(n, h.max_window), h.seq,

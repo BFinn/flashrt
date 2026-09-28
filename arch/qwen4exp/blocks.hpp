@@ -83,6 +83,20 @@ constexpr int kMaxGraphTokens = 8;
 constexpr int kGemmMinTokens = 16;
 void linear(const BlockCtx& c, const GpuTensor& W, const float* x, float* y, int T);
 
+// Up to four BF16 mat-vecs of one input in one launch (decode's small projections): output i is
+// y_i[t * rows_i + r], with an optional epilogue (GDN gates: g = softplus(z + p0[r]) * p1[r], or
+// sigmoid). Only for T <= gemv::kMaxTokens and BF16 matrices of one row length (a multiple of
+// 256): linear_multi_ok says whether it applies; the caller falls back otherwise.
+struct LinearOut {
+    const GpuTensor* W = nullptr;
+    float* y = nullptr;
+    int epi = 0;   // 0: none, 1: GDN decay, 2: sigmoid
+    const float* p0 = nullptr;
+    const float* p1 = nullptr;
+};
+bool linear_multi_ok(const LinearOut* outs, int n, int T);
+void linear_multi(const BlockCtx& c, const LinearOut* outs, int n, const float* x, int T);
+
 // Hyper-connection mix. which: 0 = before the mixer (hc_attn_*), 1 = before the MoE
 // (hc_ffn_*), 2 = the head (output_hc_*, no inject), 3 = an MTP block's head (blk.il.nextn.hc_head_*,
 // no inject). Writes mixed [T][d_model], inject [T][hc] (for which < 2), and optionally xn

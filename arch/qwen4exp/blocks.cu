@@ -1111,6 +1111,89 @@ void free_block_scratch(BlockScratch& b) {
     b = BlockScratch{};
 }
 
+namespace {
+struct Bf16Seg {
+    const uint4* w;   // rows of K bf16, 8 per uint4
+    float* y;
+    const float* p0;
+    const float* p1;
+    int rows, epi;
+};
+struct Bf16Segs {
+    Bf16Seg s[4];
+    int n;
+};
+__device__ __forceinline__ float bf_lo(uint32_t u) { return __uint_as_float(u << 16); }
+__device__ __forceinline__ float bf_hi(uint32_t u) { return __uint_as_float(u & 0xffff0000u); }
+// a warp per output row over all segments; lanes stride the row in pieces of 8 (K % 256 == 0)
+template <int NT>
+__global__ void __launch_bounds__(256) k_bf16_multi(Bf16Segs segs, const float* __restrict__ x, int K, int T) {
+    const int lane = threadIdx.x & 31;
+    int r = blockIdx.x * 8 + (threadIdx.x >> 5), si = 0;
+    while (si < segs.n && r >= segs.s[si].rows) r -= segs.s[si++].rows;
+    if (si >= segs.n) return;
+    const Bf16Seg sg = si == 0 ? segs.s[0] : si == 1 ? segs.s[1] : si == 2 ? segs.s[2] : segs.s[3];
+    const uint4* w = sg.w + size_t(r) * (K / 8);
+    float acc[NT] = {};
+    for (int c = lane; c < K / 8; c += 32) {
+        const uint4 wv = __ldg(w + c);
+        const float wf[8] = {bf_lo(wv.x), bf_hi(wv.x), bf_lo(wv.y), bf_hi(wv.y), bf_lo(wv.z), bf_hi(wv.z), bf_lo(wv.w), bf_hi(wv.w)};
+#pragma unroll
+        for (int t = 0; t < NT; ++t)
+            if (t < T) {
+                const float4 a = __ldg(reinterpret_cast<const float4*>(x + size_t(t) * K) + 2 * c);
+                const float4 b = __ldg(reinterpret_cast<const float4*>(x + size_t(t) * K) + 2 * c + 1);
+                acc[t] += wf[0] * a.x + wf[1] * a.y + wf[2] * a.z + wf[3] * a.w + wf[4] * b.x + wf[5] * b.y + wf[6] * b.z + wf[7] * b.w;
+            }
+    }
+#pragma unroll
+    for (int t = 0; t < NT; ++t)
+#pragma unroll
+        for (int o = 16; o > 0; o >>= 1) acc[t] += __shfl_xor_sync(~0u, acc[t], o);
+    if (lane == 0)
+#pragma unroll
+        for (int t = 0; t < NT; ++t)
+            if (t < T) {
+                float v = acc[t];
+                if (sg.epi == 1) {   // as k_gdn_gates
+                    const float z = v + sg.p0[r];
+                    v = (z > 20.0f ? z : log1pf(__expf(z))) * sg.p1[r];
+                } else if (sg.epi == 2)
+                    v = 1.0f / (1.0f + __expf(-v));
+                sg.y[size_t(t) * sg.rows + r] = v;
+            }
+}
+}  // namespace
+
+bool linear_multi_ok(const LinearOut* outs, int n, int T) {
+    constexpr uint32_t kBF16 = 30;   // GGML_TYPE_BF16
+    static const bool on = [] {       // FLASHRT_LINEAR_MULTI=0: separate launches
+        const char* e = std::getenv("FLASHRT_LINEAR_MULTI");
+        return !(e && e[0] == '0');
+    }();
+    if (!on || n < 1 || n > 4 || T < 1 || T > gemv::kMaxTokens) return false;
+    for (int i = 0; i < n; ++i)
+        if (outs[i].W->type != kBF16 || outs[i].W->cols() != outs[0].W->cols() || outs[i].W->cols() % 256) return false;
+    return true;
+}
+
+void linear_multi(const BlockCtx& c, const LinearOut* outs, int n, const float* x, int T) {
+    Bf16Segs segs{};
+    segs.n = n;
+    int rows = 0;
+    for (int i = 0; i < n; ++i) {
+        segs.s[i] = Bf16Seg{static_cast<const uint4*>(outs[i].W->dev), outs[i].y, outs[i].p0, outs[i].p1, int(outs[i].W->rows()), outs[i].epi};
+        rows += segs.s[i].rows;
+    }
+    const int K = int(outs[0].W->cols());
+    const unsigned grid = unsigned((rows + 7) / 8);
+    if (T == 1) k_bf16_multi<1><<<grid, 256, 0, c.stream>>>(segs, x, K, T);
+    else if (T == 2) k_bf16_multi<2><<<grid, 256, 0, c.stream>>>(segs, x, K, T);
+    else if (T <= 4) k_bf16_multi<4><<<grid, 256, 0, c.stream>>>(segs, x, K, T);
+    else k_bf16_multi<8><<<grid, 256, 0, c.stream>>>(segs, x, K, T);
+    ck(cudaGetLastError(), "linear_multi");
+}
+
 void linear(const BlockCtx& c, const GpuTensor& W, const float* x, float* y, int T) {
     const int64_t cols = W.cols(), rows = W.rows();
     uint32_t mm_type = W.type == kTypeQ3R ? 11u /* Q3_K */ : W.type;
@@ -1462,8 +1545,15 @@ void gdn_mixer(const BlockCtx& c, int il, const float* x, int T, GdnState& st, f
 
     linear(c, c.w.layer(il, "attn_qkv.weight"), x, qkv, T);
     linear(c, c.w.layer(il, "attn_gate.weight"), x, z, T);
-    linear(c, c.w.layer(il, "ssm_beta.weight"), x, beta, T);
-    linear(c, c.w.layer(il, "ssm_alpha.weight"), x, alpha, T);
+    const float* dt_bias = static_cast<const float*>(c.w.layer(il, "ssm_dt.bias").dev);
+    const float* ssm_a = static_cast<const float*>(c.w.layer(il, "ssm_a").dev);
+    const LinearOut ab[2] = {{&c.w.layer(il, "ssm_alpha.weight"), alpha, 1, dt_bias, ssm_a}, {&c.w.layer(il, "ssm_beta.weight"), beta, 2}};
+    const bool ab_fused = linear_multi_ok(ab, 2, T);   // decode: alpha, beta and the gates in one launch
+    if (ab_fused) linear_multi(c, ab, 2, x, T);
+    else {
+        linear(c, *ab[1].W, x, beta, T);
+        linear(c, *ab[0].W, x, alpha, T);
+    }
     if (T > 8) {
         k_gdn_conv_par<<<dim3((ch + 255) / 256, T), 256, 0, c.stream>>>(qkv, st.conv,
                                                                        static_cast<const float*>(c.w.layer(il, "ssm_conv1d.weight").dev), conv,
@@ -1475,8 +1565,7 @@ void gdn_mixer(const BlockCtx& c, int il, const float* x, int T, GdnState& st, f
     }
     // L2-normalise the q and k heads (the first 2 * groups heads of each token's channels)
     k_l2_norm<<<T * 2 * s.ssm_groups, 128, 0, c.stream>>>(conv, dk, ch, 2 * s.ssm_groups, float(s.rms_eps));
-    k_gdn_gates<<<(T * H + 127) / 128, 128, 0, c.stream>>>(alpha, beta, static_cast<const float*>(c.w.layer(il, "ssm_dt.bias").dev),
-                                                          static_cast<const float*>(c.w.layer(il, "ssm_a").dev), H, T);
+    if (!ab_fused) k_gdn_gates<<<(T * H + 127) / 128, 128, 0, c.stream>>>(alpha, beta, dt_bias, ssm_a, H, T);
     static const bool col_on = [] {
         const char* e = std::getenv("FLASHRT_GDN_COL");
         return !(e && e[0] == '0');
@@ -2732,8 +2821,12 @@ void qsa_mixer(const BlockCtx& c, int il, const float* x, int T, int pos0, QsaCa
     }
 
     // indexer: queries, raw keys, pooling of the blocks completed here, then per-token selection
-    linear(c, c.w.layer(il, "indexer.q_proj.weight"), x, qi, T);
-    linear(c, c.w.layer(il, "indexer.k_proj.weight"), x, ki, T);
+    const LinearOut qk[2] = {{&c.w.layer(il, "indexer.q_proj.weight"), qi}, {&c.w.layer(il, "indexer.k_proj.weight"), ki}};
+    if (linear_multi_ok(qk, 2, T)) linear_multi(c, qk, 2, x, T);
+    else {
+        linear(c, *qk[0].W, x, qi, T);
+        linear(c, *qk[1].W, x, ki, T);
+    }
     k_norm_rope<float><<<T * IH, 128, 0, c.stream>>>(qi, IH * ID, ID, static_cast<const float*>(c.w.layer(il, "indexer.q_norm.weight").dev),
                                                     qi, IH, ID, s.rope_dims, pos0, theta_scale, eps, 0, c.dparams);
     k_idx_pool<<<T, 128, 0, c.stream>>>(ki, kv.idx_ring, static_cast<const float*>(c.w.layer(il, "indexer.k_norm.weight").dev),
