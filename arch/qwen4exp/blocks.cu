@@ -672,6 +672,70 @@ __global__ void __launch_bounds__(32 * kGdnColWarps) k_gdn_delta_col(const float
     for (int jj = 0; jj < R; ++jj) *reinterpret_cast<float2*>(So + size_t(j0 + jj) * DK + i) = make_float2(s0[jj], s1[jj]);
 }
 
+// The delta rule for long calls with a warp per state column (DK / 32 rows per lane): 48 heads x
+// 128 columns give 6,144 warps, so occupancy hides the per-token latency that bounds the column
+// kernel (384 warps). Each lane reads its rows of the token's q and k from global memory (the
+// head's 32 blocks read the same rows: L1 serves them), one token ahead.
+template <int DK>
+__global__ void __launch_bounds__(128) k_gdn_delta_warp(const float* S_in, float* S_out, float* S_bak, const float* conv_out, const float* g,
+                                                        const float* beta, float* o, int T, int k_heads, int v_heads, int channels) {
+    constexpr int R = DK / 32;
+    const int h = blockIdx.x, warp = threadIdx.x >> 5, lane = threadIdx.x & 31, hk = h % k_heads;
+    const int i = blockIdx.y * (blockDim.x >> 5) + warp;
+    const float* Si = S_in + size_t(h) * DK * DK;
+    float st[R];
+#pragma unroll
+    for (int r = 0; r < R; ++r) st[r] = Si[size_t(r * 32 + lane) * DK + i];
+    if (S_bak)
+#pragma unroll
+        for (int r = 0; r < R; ++r) S_bak[size_t(h) * DK * DK + size_t(r * 32 + lane) * DK + i] = st[r];
+    const float scale = rsqrtf(float(DK));
+    const size_t q_off = size_t(hk) * DK + lane, k_off = size_t(k_heads) * DK + size_t(hk) * DK + lane,
+                 v_off = size_t(2 * k_heads) * DK + size_t(h) * DK + i;
+    float qn[R], kn[R], vn = 0.0f, gn = 0.0f, bn = 0.0f;
+    auto load = [&](int t) {
+        const float* row = conv_out + size_t(t) * channels;
+#pragma unroll
+        for (int r = 0; r < R; ++r) {
+            qn[r] = row[q_off + 32 * r];
+            kn[r] = row[k_off + 32 * r];
+        }
+        vn = row[v_off];
+        gn = g[size_t(t) * v_heads + h];
+        bn = beta[size_t(t) * v_heads + h];
+    };
+    if (T > 0) load(0);
+    for (int t = 0; t < T; ++t) {
+        float qv[R], kv[R];
+#pragma unroll
+        for (int r = 0; r < R; ++r) {
+            qv[r] = qn[r];
+            kv[r] = kn[r];
+        }
+        const float vi = vn, decay = __expf(gn), b = bn;
+        if (t + 1 < T) load(t + 1);
+        float sk = 0.0f;
+#pragma unroll
+        for (int r = 0; r < R; ++r) {
+            st[r] *= decay;
+            sk += st[r] * kv[r];
+        }
+        for (int m = 16; m > 0; m >>= 1) sk += __shfl_xor_sync(~0u, sk, m);
+        const float d = b * (vi - sk);
+        float oi = 0.0f;
+#pragma unroll
+        for (int r = 0; r < R; ++r) {
+            st[r] += d * kv[r];
+            oi += st[r] * qv[r];
+        }
+        for (int m = 16; m > 0; m >>= 1) oi += __shfl_xor_sync(~0u, oi, m);
+        if (lane == 0) o[(size_t(t) * v_heads + h) * DK + i] = oi * scale;
+    }
+    float* So = S_out + size_t(h) * DK * DK;
+#pragma unroll
+    for (int r = 0; r < R; ++r) So[size_t(r * 32 + lane) * DK + i] = st[r];
+}
+
 // Rewinds a history of H rows (oldest first, C values each) after a call of T inputs to its
 // first n: row j = row j + n of [old history ; the call's inputs].
 __global__ void k_hist_rewind(float* hist, const float* old, const float* rows, int H, int C, int n) {
@@ -1083,7 +1147,14 @@ void gdn_mixer(const BlockCtx& c, int il, const float* x, int T, GdnState& st, f
         const char* e = std::getenv("FLASHRT_GDN_COL");
         return !(e && e[0] == '0');
     }();
-    if (dk == 128 && T >= 16 && col_on)   // prefill; decode keeps the block kernel
+    static const bool warp_on = [] {   // FLASHRT_GDN_KERNEL=warp: a warp per state column (experiment)
+        const char* e = std::getenv("FLASHRT_GDN_KERNEL");
+        return e && std::string(e) == "warp";
+    }();
+    if (dk == 128 && T >= 16 && col_on && warp_on)
+        k_gdn_delta_warp<128><<<dim3(H, 128 / 4), 128, 0, c.stream>>>(st.S, st.S, win ? win->S_bak : nullptr, conv, alpha, beta, o, T,
+                                                                      s.ssm_groups, H, ch);
+    else if (dk == 128 && T >= 16 && col_on)   // prefill; decode keeps the block kernel
         k_gdn_delta_col<128><<<dim3(H, 128 / (16 * kGdnColWarps)), 32 * kGdnColWarps, 0, c.stream>>>(st.S, st.S, win ? win->S_bak : nullptr, conv, alpha, beta, o, T,
                                                                      s.ssm_groups, H, ch);
     else if (dk == 128)
