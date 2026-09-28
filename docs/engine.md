@@ -385,11 +385,11 @@ cache after, from the prefill's routing counts and the startup prior.
    several window tokens share (the grouped hit kernels read each once), a draft length chosen
    per round from the window's expected misses, and more cache slots (the Q2_0 head frees about
    500).
-2. **Prefill** (64K, 11.6 s; profile in sw58), items of about 1 s each:
-   - Q3_K MMQ, about 122 TOPS: a Q3R kernel in the style of moe_q2, with the weights expanded to
-     int8 in shared memory;
-   - moe_q2's gate/up, about 170 TOPS against a 283-TOPS arithmetic ceiling at its occupancy;
-   - GDN: the chunked WY form of the delta rule;
+2. **Prefill** (64K, 11.3 s). Q3_K now multiplies as Q8_0, exactly (sw69, +3%). Left, in order:
+   - GDN's chunked (WY) form: an estimated 0.97 → 0.3-0.4 s at 64K (~5%), a large kernel. A
+     warp per state column, llama.cpp's design, is 3x slower (sw69).
+   - moe_q2's gate/up: about 170 TOPS against a 283-TOPS ceiling at its occupancy.
    - attention (L2-bound gathers);
    - the hc gated mean and norm, at bandwidth.
+   Decode: fusing the small mat-vecs that share an input saves an estimated 2-3% (sw69).
 3. **Tuning:** multi-CTA select, a parallel hot-set CLOCK, an adaptive swap budget.

@@ -1,0 +1,35 @@
+WARNING: Device-side CUDA Event completion trace is currently enabled.
+         This may increase runtime overhead and the likelihood of false
+         dependencies across CUDA Streams. If you wish to avoid this, please
+         disable the feature with --cuda-event-trace=false.
+WARNING: CPU IP/backtrace sampling not supported, disabling.
+Try the 'nsys status --environment' command to learn more.
+
+WARNING: CPU context switch tracing not supported, disabling.
+Try the 'nsys status --environment' command to learn more.
+
+expert arena registered in 1.8 s
+KV cache: q8_0
+VRAM before prefill: 11717 MiB free
+prefill chunk: 16384 tokens (auto; estimated 8060 MiB)
+  chunk at      0: 16384 tokens in 3.02 s (5434 tok/s)
+prefill: 32768 tokens in 5.9 s (5589.9 tok/s, chunks of 16384, experts streamed to the GPU)
+VRAM after prefill: 11784 MiB used, 4055 MiB free (chunk buffers 7406 MiB)
+expert cache: 8665 slots (35.3% of experts), filled in 0.3 s from 11680 MiB free
+adaptive cache: decayed LFU, swap budget 8 (set up in 0.0 s)
+decode: 8 tokens at depth 32768 in 0.08 s: 94.37 tok/s (fast path, doorbell), swaps 0
+expert cache hit rate 95.13% (3653 hits, 187 misses: 187 on the CPU, 0 read over PCIe)
+host per token: 8.84 ms waiting for routing, 1.04 ms running misses
+misses per layer: count (share of layers) and mean host miss time
+   0 :  65.1%     0.4 us
+   1 :  24.5%    46.3 us
+   2 :   7.6%    86.5 us
+   3 :   2.3%   116.0 us
+   4 :   0.5%   144.6 us
+CUDA graphs: on (1 capture(s))
+tokens: 5820 24304 383 279 44798 641 4855 22950 2512
+Collecting data...
+Generating '/tmp/nsys-report-dfcf.qdstrm'
+[1/1] [0%                          ] col.nsys-rep[1/1] [0%                          ] col.nsys-rep[1/1] [5%                          ] col.nsys-rep[1/1] [=====29%                    ] col.nsys-rep[1/1] [===22%                      ] col.nsys-rep[1/1] [==21%                       ] col.nsys-rep[1/1] [=======37%                  ] col.nsys-rep[1/1] [===========53%              ] col.nsys-rep[1/1] [================69%         ] col.nsys-rep[1/1] [================71%         ] col.nsys-rep[1/1] [========================100%] col.nsys-rep[1/1] [========================100%] col.nsys-rep
+Generated:
+	$BENCH/sw69/col.nsys-rep

@@ -1,0 +1,28 @@
+rows 10240 x cols 2560, T 16384:
+  Q3_K      7.105 ms   120.9 TOPS
+  Q8_0      5.171 ms   166.1 TOPS
+  Q4_K      5.499 ms   156.2 TOPS
+  IQ4_XS    5.049 ms   170.1 TOPS
+  Q5_K      5.769 ms   148.9 TOPS
+  Q2_0      5.028 ms   170.9 TOPS
+rows 6144 x cols 2560, T 16384:
+  Q3_K      4.421 ms   116.6 TOPS
+  Q8_0      3.224 ms   159.9 TOPS
+  Q4_K      3.424 ms   150.5 TOPS
+  IQ4_XS    3.143 ms   164.0 TOPS
+  Q5_K      3.606 ms   142.9 TOPS
+  Q2_0      3.110 ms   165.7 TOPS
+rows 12288 x cols 2560, T 16384:
+  Q3_K      8.546 ms   120.6 TOPS
+  Q8_0      6.161 ms   167.3 TOPS
+  Q4_K      6.562 ms   157.1 TOPS
+  IQ4_XS    6.029 ms   171.0 TOPS
+  Q5_K      6.903 ms   149.3 TOPS
+  Q2_0      5.974 ms   172.6 TOPS
+rows 2560 x cols 6144, T 16384:
+  Q3_K      4.843 ms   106.4 TOPS
+  Q8_0      3.897 ms   132.3 TOPS
+  Q4_K      4.175 ms   123.4 TOPS
+  IQ4_XS    3.778 ms   136.4 TOPS
+  Q5_K      4.151 ms   124.2 TOPS
+  Q2_0      3.789 ms   136.0 TOPS
