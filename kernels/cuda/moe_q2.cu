@@ -4,6 +4,7 @@
 #include <cuda_fp16.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -259,17 +260,18 @@ struct Stage {
 };
 
 // Gate and up: one CTA takes kRT rows of d_ff (of both matrices) x kJ tokens of one expert, the
-// weights and the tokens' rows of x streaming through two stages together. The output
+// weights and the tokens' rows of x streaming through NST stages together (dynamic shared memory). The output
 // h = silu(gate) * up is quantized for the down product (hq, hd, hm by compact row). AB: the
 // activations' scale block; a warp takes AB weight rows (so the epilogue quantizes whole blocks)
 // x 1024 / AB tokens.
-template <int NMAT, int AB>
+template <int NMAT, int AB, int NST>
 __global__ void __launch_bounds__(kThreads) k_moe_q2(const uint8_t* experts, size_t stride, size_t off0, size_t off1, int rows, int kdim,
                                                      const int8_t* aq, const float* ad, const int32_t* am, const int32_t* a_row,
                                                      const int32_t* bounds, const int2* tiles, const int* n_tiles, int8_t* hq, float* hd,
                                                      int32_t* hm, float* y, const int32_t* slot_of) {
     constexpr int RW = AB, TW = 1024 / AB, MT = RW / 16, NT = TW / 8, RG = kRT / RW, SB = 64 / AB;
-    __shared__ __align__(16) Stage<NMAT, AB> st[2];
+    extern __shared__ __align__(16) uint8_t smem[];
+    Stage<NMAT, AB>* st = reinterpret_cast<Stage<NMAT, AB>*>(smem);
     __shared__ int32_t srow[kJ];
     const int tile = blockIdx.y;
     if (tile >= *n_tiles) return;
@@ -285,9 +287,14 @@ __global__ void __launch_bounds__(kThreads) k_moe_q2(const uint8_t* experts, siz
     }
     __syncthreads();
     const int kblk = kdim / AB;
-    auto load = [&](int it, int buf) {
+    const int n_it = nb / kKB;
+    auto load = [&](int it) {   // always commits a group (empty past the end), so the waits count right
+        if (it >= n_it) {
+            asm volatile("cp.async.commit_group;\n" ::);
+            return;
+        }
         const int kb0 = it * kKB;
-        Stage<NMAT, AB>& S = st[buf];
+        Stage<NMAT, AB>& S = st[it % NST];
         for (int i = tid; i < NMAT * kRT * kKB; i += kThreads) {
             const int mat = i / (kRT * kKB), rem = i % (kRT * kKB), r = rem / kKB, kb = rem % kKB;
             const uint8_t* codes = blob + (mat ? off1 : off0);
@@ -323,23 +330,19 @@ __global__ void __launch_bounds__(kThreads) k_moe_q2(const uint8_t* experts, siz
         for (int m = 0; m < MT; ++m)
 #pragma unroll
             for (int n = 0; n < NT; ++n) acc[mat][m][n][0] = acc[mat][m][n][1] = acc[mat][m][n][2] = acc[mat][m][n][3] = 0.0f;
-    const int n_it = nb / kKB;
-    load(0, 0);
+    for (int s = 0; s < NST - 1; ++s) load(s);
     for (int it = 0; it < n_it; ++it) {
-        if (it + 1 < n_it) {
-            load(it + 1, (it + 1) & 1);
-            asm volatile("cp.async.wait_group 1;\n" ::);
-        } else {
-            asm volatile("cp.async.wait_group 0;\n" ::);
-        }
-        __syncthreads();
-        const Stage<NMAT, AB>& S = st[it & 1];
+        asm volatile("cp.async.wait_group %0;\n" ::"n"(NST - 2));
+        __syncthreads();   // this stage is in; the stage computed last is no longer read
+        load(it + NST - 1);
+        const Stage<NMAT, AB>& S = st[it % NST];
 #pragma unroll
         for (int kb = 0; kb < kKB; ++kb)
             block_mma<NMAT, AB>(acc, &S.w[0][kb][0][0], kKB * kRT * 16, &S.ws[0][0], kb, &S.a[0][kb * 64], kActStride, &S.ad[0][kb * SB],
                                 &S.am[0][kb * SB], kKB * SB, wr, wt, g, c);
-        __syncthreads();   // the buffer is refilled next iteration
     }
+    asm volatile("cp.async.wait_group 0;\n" ::);
+    __syncthreads();   // the epilogue reuses the stages
 
     // element q of acc[.][m][n]: weight row r0 + wr * RW + 16m + g + 8 (q >> 1), token wt * TW + 8n + 2c + (q & 1)
     static_assert(NMAT == 2, "k_moe_q2 is gate and up");
@@ -538,8 +541,20 @@ void run(const uint8_t* experts, size_t stride, int E, int n, int ff, const floa
         constexpr int AB = decltype(ab)::value;
         const int xb = T * n / AB;
         k_quant<AB><<<(xb + 7) / 8, 256, 0, stream>>>(x, xb, w.xq, w.xd, w.xm);
-        k_moe_q2<2, AB><<<dim3(ff / kRT, mt), kThreads, 0, stream>>>(experts, stride, 0, gu, ff, n, w.xq, w.xd, w.xm, w.tok_of, w.bounds,
-                                                                    w.tiles, w.n_tiles, w.hq, w.hd, w.hm, nullptr, nullptr);
+        auto gate_up = [&](auto nst) {
+            constexpr int NST = decltype(nst)::value;
+            const size_t sm = sizeof(Stage<2, AB>) * NST;
+            ck(cudaFuncSetAttribute(k_moe_q2<2, AB, NST>, cudaFuncAttributeMaxDynamicSharedMemorySize, int(sm)), "moe_q2 smem");
+            k_moe_q2<2, AB, NST><<<dim3(ff / kRT, mt), kThreads, sm, stream>>>(experts, stride, 0, gu, ff, n, w.xq, w.xd, w.xm, w.tok_of,
+                                                                              w.bounds, w.tiles, w.n_tiles, w.hq, w.hd, w.hm, nullptr, nullptr);
+        };
+        static const int stages = [] {
+            const char* e = std::getenv("FLASHRT_MOE_GU_STAGES");
+            return e ? std::atoi(e) : 2;
+        }();
+        if (stages >= 4) gate_up(std::integral_constant<int, 4>{});
+        else if (stages == 3) gate_up(std::integral_constant<int, 3>{});
+        else gate_up(std::integral_constant<int, 2>{});
         const size_t smem = down_smem_bytes(ff, AB);   // above the 48 KB default: opt in (cheap; once per layer)
         ck(cudaFuncSetAttribute(k_moe_q2_down<AB>, cudaFuncAttributeMaxDynamicSharedMemorySize, int(smem)), "moe_q2 down smem");
         k_moe_q2_down<AB><<<mt, kThreads, smem, stream>>>(experts, stride, 2 * gu, n, ff, w.hq, w.hd, w.hm, w.bounds, w.tiles, w.n_tiles, yd,
