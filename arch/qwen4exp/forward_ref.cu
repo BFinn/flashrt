@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
 #include <future>
 #include <set>
 #include <stdexcept>
@@ -160,7 +161,21 @@ void ForwardRef::state_file(const std::string& path, bool save) {
             cudaFree(tmp);
         }
         state_io(f, kv_[il].idx_pooled, size_t(pos_ / s.qsa_block + 1) * s.idx_dim * 4, save, bounce);
-        state_io(f, kv_[il].idx_ring, size_t(s.qsa_block) * s.idx_dim * 4, save, bounce);
+        // the file keeps the ring of the last `block` positions at slot position % block (its format
+        // before the ring grew to qsa_ring_slots); positions before 0 stay zero
+        {
+            const int r = s.qsa_block, R = qsa_ring_slots(s);
+            const size_t row = size_t(s.idx_dim) * 4;
+            std::vector<uint8_t> ring(size_t(R) * row, 0), file(size_t(r) * row, 0);
+            if (save) ck(cudaMemcpy(ring.data(), kv_[il].idx_ring, ring.size(), cudaMemcpyDeviceToHost), "ring to host");
+            for (int p = std::max(0, pos_ - r); p < pos_ && save; ++p) std::memcpy(&file[size_t(p % r) * row], &ring[size_t(p % R) * row], row);
+            if (save ? std::fwrite(file.data(), 1, file.size(), f) != file.size() : std::fread(file.data(), 1, file.size(), f) != file.size())
+                throw std::runtime_error("state file ring i/o failed");
+            if (!save) {
+                for (int p = std::max(0, pos_ - r); p < pos_; ++p) std::memcpy(&ring[size_t(p % R) * row], &file[size_t(p % r) * row], row);
+                ck(cudaMemcpy(kv_[il].idx_ring, ring.data(), ring.size(), cudaMemcpyHostToDevice), "ring to device");
+            }
+        }
     }
     for (int il : s.ple_layers) state_io(f, ple_state_[il].hist, size_t(ple_.ngram) * 3 * size_t(s.hc_count) * s.d_model * 4 + 4, save, bounce);
     if (save) {
@@ -183,7 +198,7 @@ void ForwardRef::reset() {
     for (int il : s_.gdn_layers) reset_gdn_state(s_, gdn_[il], stream_);
     for (int il : s_.ple_layers) reset_ple_state(s_, ple_, ple_state_[il], stream_);
     for (int il : s_.qsa_layers) {   // K/V and pooled keys are overwritten as positions advance; the ring is not
-        ck(cudaMemsetAsync(kv_[il].idx_ring, 0, size_t(s_.qsa_block) * s_.idx_dim * 4, stream_), "memset ring");
+        ck(cudaMemsetAsync(kv_[il].idx_ring, 0, size_t(qsa_ring_slots(s_)) * s_.idx_dim * 4, stream_), "memset ring");
         reset_qsa_hot(s_, kv_[il], stream_);
     }
     ck(cudaStreamSynchronize(stream_), "reset");

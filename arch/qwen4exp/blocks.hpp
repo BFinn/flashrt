@@ -56,9 +56,13 @@ struct BlockCtx {
 void linear(const BlockCtx& c, const GpuTensor& W, const float* x, float* y, int T);
 
 // Hyper-connection mix. which: 0 = before the mixer (hc_attn_*), 1 = before the MoE
-// (hc_ffn_*), 2 = the head (output_hc_*, no inject). Writes mixed [T][d_model], inject
-// [T][hc] (unless which == 2), and optionally xn [T][hc*d_model] (the grouped-norm output).
+// (hc_ffn_*), 2 = the head (output_hc_*, no inject), 3 = an MTP block's head (blk.il.nextn.hc_head_*,
+// no inject). Writes mixed [T][d_model], inject [T][hc] (for which < 2), and optionally xn
+// [T][hc*d_model] (the grouped-norm output).
 void hc_mix(const BlockCtx& c, int il, int which, const float* x, int T, float* mixed, float* inject, float* xn_out = nullptr);
+
+// y[row] = x[row] / rms(x[row]) * w[(row % groups) * n ..], for `rows` rows of n values.
+void rms_norm_rows(const BlockCtx& c, const float* x, const float* w, float* y, int n, int groups, int rows);
 
 // Hyper-connection combine: x[t][s][:] += out[t][:] * 2*sigmoid(inject[t][s] / hc).
 void hc_combine(const BlockCtx& c, float* x, const float* out, const float* inject, int T);
@@ -84,7 +88,9 @@ void gdn_mixer(const BlockCtx& c, int il, const float* x, int T, GdnState& st, f
 // reference's F16 KV cache (a packed F16 / Q8 layout comes with the fused kernels).
 // The indexer keeps one pooled key per complete block (mean of the block's raw keys, RMS-normed,
 // roped at the block's first position; as llama.cpp's pooled-key cache) and a ring of the last
-// `block` raw keys, from which the next block is pooled.
+// 2 * block raw keys (slot = position % (2 * block)), from which the next block is pooled. Two
+// blocks' worth, so that re-running positions after a rejected speculative window (up to
+// block + 2 tokens) never finds an older position's key overwritten.
 struct QsaCache {
     // K, V [capacity][kv_heads][head_dim]: fp16 bits (llama.cpp's F16 cache), or with q8 int8 in
     // blocks of 32 with an fp16 scale each in Ks, Vs [capacity][kv_heads][head_dim / 32]
@@ -110,8 +116,9 @@ struct QsaCache {
     int32_t* promo = nullptr;        // [count, (block, slot) ...] promotions of the current step
     int capacity = 0;
     float* idx_pooled = nullptr;   // [capacity / block][idx_dim]
-    float* idx_ring = nullptr;     // [block][idx_dim], slot = position % block
+    float* idx_ring = nullptr;     // [qsa_ring_slots][idx_dim], slot = position % qsa_ring_slots
 };
+inline int qsa_ring_slots(const Spec& s) { return 2 * s.qsa_block; }
 QsaCache alloc_qsa_cache(const Spec& s, int capacity, bool q8 = false, int hot_blocks = 0);
 // Empties the hot set (every block misses until promoted again); no-op without one.
 void reset_qsa_hot(const Spec& s, QsaCache& kv, cudaStream_t stream);

@@ -384,6 +384,7 @@ void hc_mix(const BlockCtx& c, int il, int which, const float* x, int T, float* 
     const int n = s.d_model, hc = s.hc_count, hcd = hc * n;
     std::string pre;
     if (which == 2) pre = "output_hc_";
+    else if (which == 3) pre = "blk." + std::to_string(il) + ".nextn.hc_head_";
     else pre = "blk." + std::to_string(il) + (which == 0 ? ".hc_attn_" : ".hc_ffn_");
     const GpuTensor& w_norm = c.w.get(pre + "norm.weight");
     const GpuTensor& w_down = c.w.get(pre + "down.weight");
@@ -392,7 +393,7 @@ void hc_mix(const BlockCtx& c, int il, int which, const float* x, int T, float* 
     float* xn = xn_out ? xn_out : c.scratch.f32;                          // [T][hcd]
     float* lo = c.scratch.f32 + size_t(T) * hcd;                          // [T][rank]
     float* gate = lo + size_t(T) * s.hc_rank;                             // [T][hcd]
-    const GpuTensor* w_inj = which != 2 ? &c.w.get(pre + "inject.weight") : nullptr;
+    const GpuTensor* w_inj = which < 2 ? &c.w.get(pre + "inject.weight") : nullptr;
     constexpr uint32_t kBF16 = 30;   // GGML_TYPE_BF16
     if (T == 1 && hc == 4 && s.hc_rank % 64 == 0 && s.hc_rank <= 1024 && n % 8 == 0 && size_t(n) * 4 <= 48 * 1024 &&
         w_up.type == kBF16 && w_down.type == kBF16 && (!w_inj || w_inj->type == kBF16)) {
@@ -417,6 +418,11 @@ void hc_mix(const BlockCtx& c, int il, int which, const float* x, int T, float* 
     k_gated_mean<<<dim3((n + 255) / 256, T), 256, 0, c.stream>>>(xn, gate, mixed, n, hc, T);
     if (w_inj) linear(c, *w_inj, xn, inject, T);
     ck(cudaGetLastError(), "hc_mix");
+}
+
+void rms_norm_rows(const BlockCtx& c, const float* x, const float* w, float* y, int n, int groups, int rows) {
+    k_grouped_rms_norm<<<rows, 256, 0, c.stream>>>(x, w, y, n, groups, float(c.s.rms_eps));
+    ck(cudaGetLastError(), "rms_norm_rows");
 }
 
 void hc_combine(const BlockCtx& c, float* x, const float* out, const float* inject, int T) {
@@ -833,7 +839,7 @@ __global__ void k_idx_pool(const float* kraw, const float* ring, const float* w,
         float acc = 0.0f;
         for (int k = 0; k < r; ++k) {
             const int pk = p - (r - 1) + k;
-            acc += pk >= pos0 ? kraw[size_t(pk - pos0) * dim + i] : ring[size_t(pk % r) * dim + i];
+            acc += pk >= pos0 ? kraw[size_t(pk - pos0) * dim + i] : ring[size_t(pk % (2 * r)) * dim + i];
         }
         acc /= float(r);
         m[i] = acc;
@@ -857,12 +863,12 @@ __global__ void k_idx_pool(const float* kraw, const float* ring, const float* w,
     }
 }
 
-// the last r raw keys of this call go to ring slot position % r
+// the last 2r raw keys of this call go to ring slot position % 2r
 __global__ void k_idx_ring(const float* kraw, float* ring, int pos0, int T, int r, int dim, const int32_t* dp) {
     if (dp) pos0 = dp[1];
-    const int t = T - 1 - int(blockIdx.x);   // the last min(T, r) tokens
+    const int t = T - 1 - int(blockIdx.x);   // the last min(T, 2r) tokens
     const int p = pos0 + t;
-    for (int i = threadIdx.x; i < dim; i += blockDim.x) ring[size_t(p % r) * dim + i] = kraw[size_t(t) * dim + i];
+    for (int i = threadIdx.x; i < dim; i += blockDim.x) ring[size_t(p % (2 * r)) * dim + i] = kraw[size_t(t) * dim + i];
 }
 
 // score[t][b] = sum over heads of relu(q[t][h] . pooled[b]), for the blocks complete at token t
@@ -1129,8 +1135,8 @@ QsaCache alloc_qsa_cache(const Spec& s, int capacity, bool q8, int hot_blocks) {
         ck(cudaMalloc(&kv.Vs, n / 32 * 2), "cudaMalloc V scales");
     }
     ck(cudaMalloc(&kv.idx_pooled, size_t(capacity / s.qsa_block + 1) * s.idx_dim * 4), "cudaMalloc pooled keys");
-    ck(cudaMalloc(&kv.idx_ring, size_t(s.qsa_block) * s.idx_dim * 4), "cudaMalloc key ring");
-    ck(cudaMemset(kv.idx_ring, 0, size_t(s.qsa_block) * s.idx_dim * 4), "memset key ring");
+    ck(cudaMalloc(&kv.idx_ring, size_t(qsa_ring_slots(s)) * s.idx_dim * 4), "cudaMalloc key ring");
+    ck(cudaMemset(kv.idx_ring, 0, size_t(qsa_ring_slots(s)) * s.idx_dim * 4), "memset key ring");
     return kv;
 }
 
@@ -1223,7 +1229,7 @@ void qsa_mixer(const BlockCtx& c, int il, const float* x, int T, int pos0, QsaCa
                                                     qi, IH, ID, s.rope_dims, pos0, theta_scale, eps, 0, c.dparams);
     k_idx_pool<<<T, 128, 0, c.stream>>>(ki, kv.idx_ring, static_cast<const float*>(c.w.layer(il, "indexer.k_norm.weight").dev),
                                        kv.idx_pooled, pos0, r, ID, s.rope_dims, theta_scale, eps, c.dparams);
-    k_idx_ring<<<std::min(T, r), 128, 0, c.stream>>>(ki, kv.idx_ring, pos0, T, r, ID, c.dparams);
+    k_idx_ring<<<std::min(T, qsa_ring_slots(s)), 128, 0, c.stream>>>(ki, kv.idx_ring, pos0, T, r, ID, c.dparams);
 
     const int32_t* cells = nullptr;
     const int32_t* counts = nullptr;

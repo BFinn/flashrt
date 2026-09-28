@@ -75,6 +75,10 @@ public:
     void save_state(const std::string& path);
     void load_state(const std::string& path);
 
+    // The final hyper-connection streams [T][hc][d_model] of the last forward()'s rows (before the
+    // output mix): the h an MTP draft head takes. Valid until the next forward().
+    const float* streams() const { return x_; }
+
     int pos() const { return pos_; }
     cudaStream_t stream() const { return stream_; }
 

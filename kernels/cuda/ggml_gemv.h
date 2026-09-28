@@ -47,6 +47,15 @@ void matvec_q(uint32_t ggml_type, const void* W, const void* xq, float* y, int64
 void moe_q2_0(const void* w, const void* gate, const void* xq, const int32_t* ids, float* dst, int n_ids, int64_t ncols,
               int64_t nrows, int64_t slot_stride_bytes, bool per_channel_act, cudaStream_t stream);
 
+// Grouped mat-vec over experts stored back to back (a GGUF expert tensor [E][nrows][ncols], or
+// equally strided slots), for n_tok <= 8 tokens with k experts each (ids [n_tok][k], device):
+// dst[t][j][rows] = W_{ids[t][j]} x, W_e at w + e * expert_stride_bytes. x is token t's row of
+// xq (Q8_1, quantize_q8_1 with n_tok rows) or, with act_per_expert, row t * k + j. With gate,
+// silu(G x) * (W x), G_e at gate + e * expert_stride_bytes (fused SwiGLU). Types: Q2_0, Q4_0,
+// Q5_0, Q8_0, Q4_K, Q5_K, Q6_K.
+void moe_q(uint32_t ggml_type, const void* w, const void* gate, const void* xq, const int32_t* ids, float* dst, int n_tok, int k,
+           int64_t ncols, int64_t nrows, int64_t expert_stride_bytes, bool act_per_expert, cudaStream_t stream);
+
 // Dequantize n contiguous elements (whole blocks) of a ggml-typed buffer to F32.
 void dequantize(uint32_t ggml_type, const void* src, float* dst, int64_t n, cudaStream_t stream);
 

@@ -17,6 +17,7 @@
 
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 
 namespace flashrt::gemv {
 
@@ -129,6 +130,39 @@ void moe_q2_0(const void* w, const void* gate, const void* xq, const int32_t* id
         uint32_t(ncols / QK2_0), uint32_t(act_blocks), uint32_t(nrows),
         uint32_t(slot_stride_bytes / int64_t(sizeof(block_q2_0))), per_channel_act ? uint32_t(act_blocks) : 0u, uint32_t(nrows),
         1u, 0u, warp, n_ids, stream);
+}
+
+void moe_q(uint32_t t, const void* w, const void* gate, const void* xq, const int32_t* ids, float* dst, int n_tok, int k,
+           int64_t ncols, int64_t nrows, int64_t expert_stride_bytes, bool act_per_expert, cudaStream_t stream) {
+    check_args(t, ncols, n_tok);
+    if (is_float(t) || expert_stride_bytes % type_size(t) || k < 1) throw std::runtime_error("gemv::moe_q: bad type or shape");
+    const int64_t act_blocks = GGML_PAD(ncols, MATRIX_ROW_PADDING) / QK8_1;   // Q8_1 blocks per activation row
+    ggml_cuda_mm_fusion_args_device fusion{};
+    fusion.gate = gate;
+    fusion.glu_op = GGML_GLU_OP_SWIGLU;
+    const int warp = ggml_cuda_info().devices[ggml_cuda_get_device()].warp_size;
+    // channel = expert slot j of the token (grid y), column = token (block y)
+    const uint3 nch_y = init_fastdiv_values(act_per_expert ? uint32_t(k) : 1u);
+    const uint32_t s_col_y = uint32_t(act_per_expert ? act_blocks * k : act_blocks);
+    const uint32_t s_ch_y = act_per_expert ? uint32_t(act_blocks) : 0u;
+    const uint32_t s_ch_x = uint32_t(expert_stride_bytes / type_size(t));
+    const uint32_t s_row_x = uint32_t(ncols / block_size(t));
+    auto run = [&](auto tag) {
+        constexpr ggml_type T = decltype(tag)::value;
+        mul_mat_vec_q_moe_launch<T>(w, xq, ids, fusion, dst, uint32_t(ncols), nch_y, uint32_t(nrows), s_row_x, s_col_y,
+                                    uint32_t(nrows * k), s_ch_x, s_ch_y, uint32_t(nrows), uint32_t(n_tok), uint32_t(k), warp, k,
+                                    stream);
+    };
+    switch (ggml_type(t)) {
+        case GGML_TYPE_Q2_0: run(std::integral_constant<ggml_type, GGML_TYPE_Q2_0>{}); break;
+        case GGML_TYPE_Q4_0: run(std::integral_constant<ggml_type, GGML_TYPE_Q4_0>{}); break;
+        case GGML_TYPE_Q5_0: run(std::integral_constant<ggml_type, GGML_TYPE_Q5_0>{}); break;
+        case GGML_TYPE_Q8_0: run(std::integral_constant<ggml_type, GGML_TYPE_Q8_0>{}); break;
+        case GGML_TYPE_Q4_K: run(std::integral_constant<ggml_type, GGML_TYPE_Q4_K>{}); break;
+        case GGML_TYPE_Q5_K: run(std::integral_constant<ggml_type, GGML_TYPE_Q5_K>{}); break;
+        case GGML_TYPE_Q6_K: run(std::integral_constant<ggml_type, GGML_TYPE_Q6_K>{}); break;
+        default: throw std::runtime_error("gemv::moe_q: unsupported type " + std::to_string(t));
+    }
 }
 
 void dequantize(uint32_t t, const void* src, float* dst, int64_t n, cudaStream_t stream) {
