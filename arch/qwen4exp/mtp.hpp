@@ -54,8 +54,9 @@ public:
     // Restricts the head to these token ids (empty: the full vocabulary again).
     void set_vocab(const std::vector<int32_t>& ids);
     int vocab() const { return vocab_ids_.empty() ? ts_.n_vocab : int(vocab_ids_.size()); }
-    // The drafted token of one logits row (GPU argmax, mapped back to a token id).
-    int32_t argmax(const float* logits_row_dev);
+    // The drafted token of one logits row (GPU argmax, mapped back to a token id); with p_top, also
+    // its probability under the head's softmax (over vocab()).
+    int32_t argmax(const float* logits_row_dev, float* p_top = nullptr);
 
     void reset();   // a new sequence
     size_t weight_bytes() const { return w_.device_bytes() + exp_bytes_ + head_bytes_; }
@@ -90,7 +91,7 @@ private:
     std::vector<int32_t> vocab_ids_;
     GpuTensor head_;
     size_t head_bytes_ = 0;
-    int32_t *amax_dev_ = nullptr, *amax_host_ = nullptr;
+    int32_t *amax_dev_ = nullptr, *amax_host_ = nullptr;   // [index, token, p as float bits]
 };
 
 }  // namespace flashrt::qwen4exp

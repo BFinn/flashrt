@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <regex>
 #include <stdexcept>
 #include <string>
@@ -120,8 +121,25 @@ void q8_0_to_q4_0(const uint8_t* src, uint8_t* dst, size_t nblocks) {
     }
 }
 
-// ids_dev[idx] for the argmax index (device)
-__global__ void k_map_id(const int32_t* ids, int32_t* v) { v[0] = ids[v[0]]; }
+// v = [argmax index, token, p]: token = ids[index] (or the index itself), and with want_p, p =
+// 1 / sum exp(x - x[index]), the top token's softmax probability. One block of 1024 threads.
+__global__ void k_draft_top(const float* x, int n, const int32_t* ids, int32_t* v, bool want_p) {
+    const int idx = v[0];
+    if (threadIdx.x == 0) v[1] = ids ? ids[idx] : idx;
+    if (!want_p) return;
+    const float mx = x[idx];
+    float sum = 0.0f;
+    for (int i = threadIdx.x; i < n; i += blockDim.x) sum += __expf(x[i] - mx);
+    __shared__ float red[32];
+    for (int o = 16; o > 0; o >>= 1) sum += __shfl_xor_sync(0xffffffff, sum, o);
+    if ((threadIdx.x & 31) == 0) red[threadIdx.x >> 5] = sum;
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        float t = 0.0f;
+        for (int w = 0; w < int(blockDim.x >> 5); ++w) t += red[w];
+        reinterpret_cast<float*>(v)[2] = 1.0f / t;
+    }
+}
 
 // rows[i] = src row ids[i], row_bytes each; one block per row
 __global__ void k_gather_rows(const uint8_t* src, const int32_t* ids, uint8_t* dst, size_t row_bytes) {
@@ -168,8 +186,8 @@ MtpHead::MtpHead(const Gguf& g, const Spec& target, const GpuWeights& target_w, 
     }
     if (exps_[0].dims != std::vector<int64_t>{s_.d_model, s_.d_ff_expert, s_.n_expert} || s_.n_expert > 1024 || s_.top_k > 32)
         throw std::runtime_error("MTP: unexpected expert shape");
-    ck(cudaMalloc(&amax_dev_, 4), "cudaMalloc MTP argmax");
-    ck(cudaHostAlloc(&amax_host_, 4, cudaHostAllocDefault), "cudaHostAlloc MTP argmax");
+    ck(cudaMalloc(&amax_dev_, 16), "cudaMalloc MTP argmax");
+    ck(cudaHostAlloc(&amax_host_, 16, cudaHostAllocDefault), "cudaHostAlloc MTP argmax");
 
     scratch_ = alloc_block_scratch(s_, max_batch);
     kv_ = alloc_qsa_cache(s_, max_ctx, kv_q8, kv_hot_blocks);
@@ -265,15 +283,16 @@ void MtpHead::set_vocab(const std::vector<int32_t>& ids) {
     head_.bytes = rb * ids.size();
 }
 
-int32_t MtpHead::argmax(const float* logits_row_dev) {
+int32_t MtpHead::argmax(const float* logits_row_dev, float* p_top) {
     argmax_dev(stream_, logits_row_dev, vocab(), amax_dev_);
-    if (!vocab_ids_.empty()) {
-        const int32_t* ids_dev = reinterpret_cast<const int32_t*>(static_cast<const uint8_t*>(head_.dev) + head_.bytes + gemv::kWeightTailPad);
-        k_map_id<<<1, 1, 0, stream_>>>(ids_dev, amax_dev_);
-    }
-    ck(cudaMemcpyAsync(amax_host_, amax_dev_, 4, cudaMemcpyDeviceToHost, stream_), "MTP argmax to host");
+    const int32_t* ids_dev =
+        vocab_ids_.empty() ? nullptr
+                           : reinterpret_cast<const int32_t*>(static_cast<const uint8_t*>(head_.dev) + head_.bytes + gemv::kWeightTailPad);
+    k_draft_top<<<1, 1024, 0, stream_>>>(logits_row_dev, vocab(), ids_dev, amax_dev_, p_top != nullptr);
+    ck(cudaMemcpyAsync(amax_host_, amax_dev_, 12, cudaMemcpyDeviceToHost, stream_), "MTP argmax to host");
     ck(cudaStreamSynchronize(stream_), "MTP argmax");
-    return *amax_host_;
+    if (p_top) std::memcpy(p_top, &amax_host_[2], 4);
+    return amax_host_[1];
 }
 
 MtpHead::~MtpHead() {

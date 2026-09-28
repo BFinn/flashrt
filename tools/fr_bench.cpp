@@ -27,7 +27,9 @@
 // in one step, and the matching prefix plus the target's next token are kept. The head's experts
 // are Q4_0 (requantized at load) unless --mtp-q8. --draft-vocab RANKS (bench/mtp_vocab.py) trims
 // the drafter's LM head to the top --draft-vocab-n ranked tokens (default 32768) plus the
-// prompt's distinct tokens, at most 65536 rows.
+// prompt's distinct tokens, at most 65536 rows. --draft-pmin P stops a round's drafting at the
+// first draft whose probability under the head is below P (then fewer than K are verified;
+// none if the first is below P).
 #include "arch/qwen4exp/experts.hpp"
 #include "arch/qwen4exp/forward_ref.hpp"
 #include "arch/qwen4exp/gpu_weights.hpp"
@@ -63,6 +65,7 @@ int main(int argc, char** argv) {
     }
     std::string ids_path, trace_path, save_state, load_state, mtp_path, vocab_path;
     int draft_k = 4, spec_k = 0, vocab_n = 32768;
+    float draft_pmin = 0.0f;
     bool mtp_q8 = false;
     int n_prompt = 1024, gen = 128, slots = 0, reserve_mib = 1024, workers = 8, windows = 1;
     bool reference = false, doorbell = true, adaptive = true;
@@ -101,6 +104,7 @@ int main(int argc, char** argv) {
         else if (a == "--mtp-q8") mtp_q8 = true;
         else if (a == "--draft-vocab") vocab_path = next();
         else if (a == "--draft-vocab-n") vocab_n = std::atoi(next());
+        else if (a == "--draft-pmin") draft_pmin = float(std::atof(next()));
         else { std::fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
     }
     std::vector<int32_t> seq;
@@ -269,7 +273,7 @@ int main(int argc, char** argv) {
     float* logits_win = nullptr;
     if (spec_k > 0) cudaMalloc(&logits_win, size_t(spec_k + 1) * s.n_vocab * 4);
     std::vector<long> acc_hist(spec_k + 1, 0);
-    long rounds = 0;
+    long rounds = 0, drafted = 0;
     double draft_s = 0, verify_s = 0, commit_s = 0;
     cudaProfilerStart();   // nsys --capture-range=cudaProfilerApi profiles the decode loop only
     for (int wi = 0; wi < windows; ++wi) {
@@ -283,24 +287,27 @@ int main(int argc, char** argv) {
             const int p = int(seq.size()) - 1;
             std::vector<int32_t> win(seq.end() - 1, seq.end());   // x_p, d1 .. dK
             mtp->forward(h_buf, seq.data() + p - pend + 1, pend, p - pend + 1, pend - 1, mtp_logits);
-            int32_t d = mtp->argmax(mtp_logits);
-            win.push_back(d);
-            for (int j = 1; j < spec_k; ++j) {
+            float pd = 1.0f;
+            int32_t d = mtp->argmax(mtp_logits, draft_pmin > 0 ? &pd : nullptr);
+            if (pd >= draft_pmin) win.push_back(d);
+            for (int j = 1; j < spec_k && pd >= draft_pmin; ++j) {
                 mtp->forward(mtp->h_out() + size_t(j == 1 ? pend - 1 : 0) * hrow, &d, 1, p + j, 0, mtp_logits);
-                d = mtp->argmax(mtp_logits);
-                win.push_back(d);
+                d = mtp->argmax(mtp_logits, draft_pmin > 0 ? &pd : nullptr);
+                if (pd >= draft_pmin) win.push_back(d);
             }
+            const int kd = int(win.size()) - 1;   // drafts this round
             // 2. verify the window x_p, d1 .. dK
             const auto t1 = Clock::now();
             std::vector<int32_t> seqw(seq.begin(), seq.end() - 1);
             seqw.insert(seqw.end(), win.begin(), win.end());
-            fwd.forward_window(seqw.data(), spec_k + 1, logits_win);
+            fwd.forward_window(seqw.data(), kd + 1, logits_win);
             int a = 0;
             std::vector<int32_t> y;
-            for (int j = 0; j <= spec_k; ++j) {
+            for (int j = 0; j <= kd; ++j) {
                 y.push_back(fwd.argmax(logits_win + size_t(j) * s.n_vocab));
-                if (j == a && j < spec_k && y[j] == win[j + 1]) ++a;
+                if (j == a && j < kd && y[j] == win[j + 1]) ++a;
             }
+            drafted += kd;
             // 3. keep x_p, d1 .. da; emit y_0 .. y_a
             const auto t2 = Clock::now();
             fwd.commit(a + 1);
@@ -376,7 +383,8 @@ int main(int argc, char** argv) {
     if (spec_k > 0 && rounds > 0) {
         long toks = 0;
         for (int a = 0; a <= spec_k; ++a) toks += acc_hist[a] * (a + 1);
-        std::printf("speculative: %ld rounds, %.3f tokens per round; accepted drafts:", rounds, double(toks) / rounds);
+        std::printf("speculative: %ld rounds, %.3f tokens per round, %.2f drafts verified per round; accepted drafts:", rounds,
+                    double(toks) / rounds, double(drafted) / rounds);
         for (int a = 0; a <= spec_k; ++a) std::printf(" %d:%.1f%%", a, 100.0 * acc_hist[a] / rounds);
         std::printf("\n  per round: draft %.2f ms, verify %.2f ms, commit %.2f ms\n", 1e3 * draft_s / rounds, 1e3 * verify_s / rounds,
                     1e3 * commit_s / rounds);

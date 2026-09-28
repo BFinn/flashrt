@@ -13,6 +13,7 @@
 #include <cmath>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 
 namespace flashrt::qwen4exp {
 
@@ -71,106 +72,149 @@ __global__ void k_grouped_rms_norm_v4(const float* x, const float* w, float* y, 
     reinterpret_cast<float4*>(y + size_t(row) * n)[i] = make_float4(v.x * inv * wv.x, v.y * inv * wv.y, v.z * inv * wv.z, v.w * inv * wv.w);
 }
 
-// Decode (one token): the hyper-connection RMS norm, down-projection and inject projection in
-// one kernel. Block (rb, g) normalises stream g (xn = x * inv_g * w) into shared memory (block
-// row 0 also writes it out), then its warps take one row each of [W_down; W_inject] (BF16,
-// rank + n_inject rows of hc*n columns) over stream g's n columns. part[g][row] holds the
-// per-stream partial dot products; consumers sum them over g in order (deterministic).
+// Decode (TT tokens, a step or a verify window): the hyper-connection RMS norm, down-projection
+// and inject projection in one kernel. Block (rb, g) normalises stream g of every token (xn = x *
+// inv_g * w) into shared memory (block row 0 also writes it out), then its warps take one row
+// each of [W_down; W_inject] (BF16, rank + n_inject rows of hc*n columns) over stream g's n
+// columns, each weight read once for all tokens. part[t][g][row] holds the per-stream partial
+// dot products; consumers sum them over g in order (deterministic, and per token the same
+// arithmetic for every TT).
+template <int TT>
 __global__ void k_hc_down(const float* x, const float* w_norm, const uint16_t* Wd, const uint16_t* Wi, float* xn_out,
                           float* part, int n, int rank, int n_inject, float eps) {
-    extern __shared__ __align__(16) float xs[];   // [n]
-    const int g = blockIdx.y, rows = rank + n_inject;
-    const float* xg = x + size_t(g) * n;
-    float ss = 0.0f;
-    for (int i = threadIdx.x; i < n; i += blockDim.x) ss += xg[i] * xg[i];
-    ss = block_sum(ss);
-    const float inv = rsqrtf(ss / n + eps);
-    for (int i = threadIdx.x; i < n; i += blockDim.x) {
-        const float v = xg[i] * inv * w_norm[size_t(g) * n + i];
-        xs[i] = v;
-        if (blockIdx.x == 0) xn_out[size_t(g) * n + i] = v;
+    extern __shared__ __align__(16) float xs[];   // [TT][n]
+    const int g = blockIdx.y, hc = gridDim.y, rows = rank + n_inject;
+    for (int t = 0; t < TT; ++t) {
+        const float* xg = x + (size_t(t) * hc + g) * n;
+        float ss = 0.0f;
+        for (int i = threadIdx.x; i < n; i += blockDim.x) ss += xg[i] * xg[i];
+        ss = block_sum(ss);
+        const float inv = rsqrtf(ss / n + eps);
+        for (int i = threadIdx.x; i < n; i += blockDim.x) {
+            const float v = xg[i] * inv * w_norm[size_t(g) * n + i];
+            xs[size_t(t) * n + i] = v;
+            if (blockIdx.x == 0) xn_out[(size_t(t) * hc + g) * n + i] = v;
+        }
     }
     __syncthreads();
     const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, r = blockIdx.x * (blockDim.x >> 5) + warp;
     if (r >= rows) return;
-    const size_t hcn = size_t(gridDim.y) * n;
+    const size_t hcn = size_t(hc) * n;
     const uint16_t* wr = (r < rank ? Wd + size_t(r) * hcn : Wi + size_t(r - rank) * hcn) + size_t(g) * n;
     const uint4* w4 = reinterpret_cast<const uint4*>(wr);
-    float acc = 0.0f;
+    float acc[TT];
+#pragma unroll
+    for (int t = 0; t < TT; ++t) acc[t] = 0.0f;
 #pragma unroll 5
     for (int ch = lane; ch < n / 8; ch += 32) {
         const uint4 u = w4[ch];
-        const float4 x0 = reinterpret_cast<const float4*>(xs)[2 * ch], x1 = reinterpret_cast<const float4*>(xs)[2 * ch + 1];
-        const float xv[8] = {x0.x, x0.y, x0.z, x0.w, x1.x, x1.y, x1.z, x1.w};
         const uint32_t wv[4] = {u.x, u.y, u.z, u.w};
 #pragma unroll
-        for (int e = 0; e < 4; ++e) {
-            acc += __uint_as_float(wv[e] << 16) * xv[2 * e];
-            acc += __uint_as_float(wv[e] & 0xffff0000u) * xv[2 * e + 1];
+        for (int t = 0; t < TT; ++t) {
+            const float4 x0 = reinterpret_cast<const float4*>(xs + size_t(t) * n)[2 * ch];
+            const float4 x1 = reinterpret_cast<const float4*>(xs + size_t(t) * n)[2 * ch + 1];
+            const float xv[8] = {x0.x, x0.y, x0.z, x0.w, x1.x, x1.y, x1.z, x1.w};
+#pragma unroll
+            for (int e = 0; e < 4; ++e) {
+                acc[t] += __uint_as_float(wv[e] << 16) * xv[2 * e];
+                acc[t] += __uint_as_float(wv[e] & 0xffff0000u) * xv[2 * e + 1];
+            }
         }
     }
-    for (int o = 16; o > 0; o >>= 1) acc += __shfl_xor_sync(0xffffffff, acc, o);
-    if (lane == 0) part[size_t(g) * rows + r] = acc;
+#pragma unroll
+    for (int t = 0; t < TT; ++t) {
+        float a = acc[t];
+        for (int o = 16; o > 0; o >>= 1) a += __shfl_xor_sync(0xffffffff, a, o);
+        if (lane == 0) part[(size_t(t) * hc + g) * rows + r] = a;
+    }
 }
 
-// Decode (one token), hc == 4: the hyper-connection up-projection fused with its neighbours.
-// gate = W_up (BF16, [hc * n rows][rank]) * silu(lo * scale); mixed[i] = mean_s xn[s][i] *
-// sigmoid(gate[s][i]). One block covers columns i0 .. i0+7 of all 4 streams (32 rows); 8 lanes
-// per row, each lane 16-byte loads of 8 weights. Needs rank % 64 == 0 and rank <= 1024.
-// lo comes as k_hc_down's partials [HC][rank + n_inject]; block 0 also sums the inject rows.
+// Decode (TT tokens), hc == 4: the hyper-connection up-projection fused with its neighbours.
+// gate = W_up (BF16, [hc * n rows][rank]) * silu(lo * scale); mixed[t][i] = mean_s xn[t][s][i] *
+// sigmoid(gate[t][s][i]). One block covers columns i0 .. i0+7 of all 4 streams (32 rows); 8 lanes
+// per row, each lane 16-byte loads of 8 weights, each weight used for all tokens. Needs rank % 64
+// == 0 and TT * rank <= 4096. lo comes as k_hc_down's partials [TT][HC][rank + n_inject]; block 0
+// also sums the inject rows.
+template <int TT>
 __global__ void k_hc_up_mix(const uint16_t* W, const float* part, int n_inject, float scale, const float* xn, float* mixed,
                             float* inject, int n, int rank) {
     constexpr int HC = 4;
-    __shared__ __align__(16) float xs[1024];
-    __shared__ float contrib[HC][8];
+    __shared__ __align__(16) float xs[4096];   // [TT][rank]
+    __shared__ float contrib[TT][HC][8];
     const int prow = rank + n_inject;
-    for (int j = threadIdx.x; j < rank; j += blockDim.x) {
-        float lo = 0.0f;
+    for (int t = 0; t < TT; ++t)
+        for (int j = threadIdx.x; j < rank; j += blockDim.x) {
+            float lo = 0.0f;
 #pragma unroll
-        for (int g = 0; g < HC; ++g) lo += part[size_t(g) * prow + j];
-        const float v = lo * scale;
-        xs[j] = v / (1.0f + __expf(-v));
-    }
-    if (blockIdx.x == 0 && threadIdx.x < n_inject) {
+            for (int g = 0; g < HC; ++g) lo += part[(size_t(t) * HC + g) * prow + j];
+            const float v = lo * scale;
+            xs[t * rank + j] = v / (1.0f + __expf(-v));
+        }
+    if (blockIdx.x == 0 && threadIdx.x < TT * n_inject) {
+        const int t = threadIdx.x / n_inject, k = threadIdx.x % n_inject;
         float a = 0.0f;
 #pragma unroll
-        for (int g = 0; g < HC; ++g) a += part[size_t(g) * prow + rank + threadIdx.x];
-        inject[threadIdx.x] = a;
+        for (int g = 0; g < HC; ++g) a += part[(size_t(t) * HC + g) * prow + rank + k];
+        inject[t * n_inject + k] = a;
     }
     __syncthreads();
     const int grp = threadIdx.x >> 3, l8 = threadIdx.x & 7;
     const int st = grp >> 3, il = grp & 7, i = blockIdx.x * 8 + il;
-    float acc = 0.0f;
+    float acc[TT];
+#pragma unroll
+    for (int t = 0; t < TT; ++t) acc[t] = 0.0f;
     if (i < n) {
         const uint4* wr = reinterpret_cast<const uint4*>(W + (size_t(st) * n + i) * rank);
         for (int ch = l8; ch < rank / 8; ch += 8) {
             const uint4 u = wr[ch];
-            const float4 x0 = reinterpret_cast<const float4*>(xs)[2 * ch], x1 = reinterpret_cast<const float4*>(xs)[2 * ch + 1];
-            const float xv[8] = {x0.x, x0.y, x0.z, x0.w, x1.x, x1.y, x1.z, x1.w};
             const uint32_t wv[4] = {u.x, u.y, u.z, u.w};
 #pragma unroll
-            for (int e = 0; e < 4; ++e) {
-                acc += __uint_as_float(wv[e] << 16) * xv[2 * e];
-                acc += __uint_as_float(wv[e] & 0xffff0000u) * xv[2 * e + 1];
+            for (int t = 0; t < TT; ++t) {
+                const float4 x0 = reinterpret_cast<const float4*>(xs + t * rank)[2 * ch];
+                const float4 x1 = reinterpret_cast<const float4*>(xs + t * rank)[2 * ch + 1];
+                const float xv[8] = {x0.x, x0.y, x0.z, x0.w, x1.x, x1.y, x1.z, x1.w};
+#pragma unroll
+                for (int e = 0; e < 4; ++e) {
+                    acc[t] += __uint_as_float(wv[e] << 16) * xv[2 * e];
+                    acc[t] += __uint_as_float(wv[e] & 0xffff0000u) * xv[2 * e + 1];
+                }
             }
         }
     }
-    acc += __shfl_xor_sync(0xffffffff, acc, 4);
-    acc += __shfl_xor_sync(0xffffffff, acc, 2);
-    acc += __shfl_xor_sync(0xffffffff, acc, 1);
-    if (l8 == 0 && i < n) {
-        const float x = xn[size_t(st) * n + i];
-        contrib[st][il] = x / (1.0f + __expf(-acc));
-    }
-    __syncthreads();
-    if (threadIdx.x < 8) {
-        const int ii = blockIdx.x * 8 + threadIdx.x;
-        if (ii < n) {
-            float m = 0.0f;
-            for (int s2 = 0; s2 < HC; ++s2) m += contrib[s2][threadIdx.x];
-            mixed[ii] = m * (1.0f / HC);
+#pragma unroll
+    for (int t = 0; t < TT; ++t) {
+        float a = acc[t];
+        a += __shfl_xor_sync(0xffffffff, a, 4);
+        a += __shfl_xor_sync(0xffffffff, a, 2);
+        a += __shfl_xor_sync(0xffffffff, a, 1);
+        if (l8 == 0 && i < n) {
+            const float x = xn[(size_t(t) * HC + st) * n + i];
+            contrib[t][st][il] = x / (1.0f + __expf(-a));
         }
     }
+    __syncthreads();
+    if (threadIdx.x < 8 * TT) {
+        const int t = threadIdx.x / 8, c8 = threadIdx.x % 8, ii = blockIdx.x * 8 + c8;
+        if (ii < n) {
+            float m = 0.0f;
+            for (int s2 = 0; s2 < HC; ++s2) m += contrib[t][s2][c8];
+            mixed[size_t(t) * n + ii] = m * (1.0f / HC);
+        }
+    }
+}
+
+template <int TT>
+void hc_fused_launch(const float* x, const float* w_norm, const uint16_t* Wd, const uint16_t* Wi, const uint16_t* Wu, float* xn,
+                     float* part, float* mixed, float* inject, int n, int hc, int rank, int n_inj, float eps, cudaStream_t st) {
+    const int rows = rank + n_inj;
+    const size_t smem = size_t(TT) * n * 4;
+    static bool attr = false;
+    if (!attr && smem > 48 * 1024) {
+        ck(cudaFuncSetAttribute(k_hc_down<TT>, cudaFuncAttributeMaxDynamicSharedMemorySize, 96 * 1024), "hc_down smem");
+        attr = true;
+    }
+    k_hc_down<TT><<<dim3((rows + 15) / 16, hc), 512, smem, st>>>(x, w_norm, Wd, Wi, xn, part, n, rank, n_inj, eps);
+    k_hc_up_mix<TT><<<(n + 7) / 8, 256, 0, st>>>(Wu, part, n_inj, 1.0f / hc, xn, mixed, inject, n, rank);
 }
 
 __global__ void k_gated_mean(const float* xn, const float* gate, float* mixed, int n, int hc, int T) {
@@ -410,16 +454,24 @@ void hc_mix(const BlockCtx& c, int il, int which, const float* x, int T, float* 
     float* gate = lo + size_t(T) * s.hc_rank;                             // [T][hcd]
     const GpuTensor* w_inj = which < 2 ? &c.w.get(pre + "inject.weight") : nullptr;
     constexpr uint32_t kBF16 = 30;   // GGML_TYPE_BF16
-    if (T == 1 && hc == 4 && s.hc_rank % 64 == 0 && s.hc_rank <= 1024 && n % 8 == 0 && size_t(n) * 4 <= 48 * 1024 &&
+    if (T <= 4 && hc == 4 && s.hc_rank % 64 == 0 && T * s.hc_rank <= 4096 && n % 8 == 0 && size_t(T) * n * 4 <= 96 * 1024 &&
         w_up.type == kBF16 && w_down.type == kBF16 && (!w_inj || w_inj->type == kBF16)) {
-        // decode: norm + down + inject in one kernel, then up + silu + gated mean in another
-        const int n_inj = w_inj ? hc : 0, rows = s.hc_rank + n_inj;
-        float* part = lo;   // [hc][rows], fits: lo is followed by gate [hcd]
-        k_hc_down<<<dim3((rows + 15) / 16, hc), 512, size_t(n) * 4, c.stream>>>(
-            x, static_cast<const float*>(w_norm.dev), static_cast<const uint16_t*>(w_down.dev),
-            w_inj ? static_cast<const uint16_t*>(w_inj->dev) : nullptr, xn, part, n, s.hc_rank, n_inj, float(s.rms_eps));
-        k_hc_up_mix<<<(n + 7) / 8, 256, 0, c.stream>>>(static_cast<const uint16_t*>(w_up.dev), part, n_inj, 1.0f / hc, xn, mixed,
-                                                       inject, n, s.hc_rank);
+        // decode steps and verify windows: norm + down + inject in one kernel, then up + silu +
+        // gated mean in another, each weight read once for the T tokens
+        const int n_inj = w_inj ? hc : 0;
+        float* part = lo;   // [T][hc][rows], fits: lo is followed by gate [T][hcd]
+        auto run = [&](auto tt) {
+            hc_fused_launch<decltype(tt)::value>(x, static_cast<const float*>(w_norm.dev), static_cast<const uint16_t*>(w_down.dev),
+                                                 w_inj ? static_cast<const uint16_t*>(w_inj->dev) : nullptr,
+                                                 static_cast<const uint16_t*>(w_up.dev), xn, part, mixed, inject, n, hc, s.hc_rank,
+                                                 n_inj, float(s.rms_eps), c.stream);
+        };
+        switch (T) {
+            case 1: run(std::integral_constant<int, 1>{}); break;
+            case 2: run(std::integral_constant<int, 2>{}); break;
+            case 3: run(std::integral_constant<int, 3>{}); break;
+            default: run(std::integral_constant<int, 4>{}); break;
+        }
         ck(cudaGetLastError(), "hc_mix");
         return;
     }
