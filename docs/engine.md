@@ -231,6 +231,7 @@ cache after, from the prefill's routing counts and the startup prior.
 | **Prefill: every layer's experts streamed, not only the misses** | A 4K-8K chunk touches all 512 experts of a layer; one 676 MB copy per layer overlaps the previous layer, and the cache's VRAM is free for the chunk's buffers. | sw36-sw39 (P3): 136 → 2,135 tok/s at 32K |
 | **A VRAM mirror of host KV during prefill** | Chunk attention reading the host store over PCIe ran 2.6× slower. | sw42, sw43: 245K 738 → 1,940 tok/s |
 | **Tensor-core prefill attention, K/V gathered into fragments** | The FP32 split-K kernel ran at about 7 TFLOPS and wrote 0.8 MB of partials per token-layer. | sw46: 32K 2,193 → 2,644 tok/s; 64K attention 6.1 → 0.95 s |
+| **Decode launch fusions** (`linear_multi`, `FLASHRT_FUSE_EPI`) | A decode step is hundreds of 2-6 µs kernels. The BF16 projections of one input share a launch (a block of 4 warps per row: a warp per row lost to two MMVF launches), the q/k norm runs in the conv kernel, and SwiGLU and the gated norm write the next mat-vec's q8_1 input. | sw73, sw74 (32K plain 99.8 → 104.1; KLD 0.00891) |
 | **GDN prefill: the chunked form on tensor cores** | fp32 chunked is exact but 5x slower: it needs 2.4x the recurrence's FLOPs, and the fp32 tensor paths are no faster than the CUDA cores (TF32 61, BF16 122 TFLOPS). fp16 mma with an fp32 state is 1.8x the column kernel. Prep is DRAM-bound (about 70 MB per 512-token slab); state is mma-bound. | sw70, sw71 (+3.1-3.5% prefill, KLD 0.0084), sw72 |
 | **GDN: lanes own columns, tokens tiled through shared memory** | The block kernel waited on 4 barriers per token. v1, which prefetched one token into registers, waited on DRAM (slower). v2 was bound by shared-memory reads (24 per lane-token, over 4 addresses). | sw47, sw50: 32K 3,216 → 3,531 tok/s |
 | **Tensor-core indexer scores** | FP32 scoring is linear in depth: 1.65 s at 64K, an estimated 20 s at 245K. | sw49: 64K 2,984 → 3,197 tok/s; 0.16 s |
@@ -410,5 +411,7 @@ cache after, from the prefill's routing counts and the startup prior.
    - moe_q2's gate/up: about 170 TOPS against a 283-TOPS ceiling at its occupancy.
    - attention (L2-bound gathers);
    - the hc gated mean and norm, at bandwidth.
-   Decode: fusing the small mat-vecs that share an input saves an estimated 2-3% (sw69).
+   Decode: the small mat-vecs that share an input, and the norms and SwiGLU in front of a
+   mat-vec, are fused (sw73, sw74: plain +4.3%, `--spec 1` +1.9-2.3%). What is left there is
+   mostly the hc kernels and the MoE combine.
 3. **Tuning:** multi-CTA select, a parallel hot-set CLOCK, an adaptive swap budget.
