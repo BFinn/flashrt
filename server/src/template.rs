@@ -116,7 +116,9 @@ mod tests {
         let msgs = json!([{"role": "system", "content": "be brief"}, {"role": "user", "content": "hi there"}]);
         let tools = json!([{"name": "f", "parameters": {"x": 1}}]);
         let out = t.render(&msgs, Some(&tools), &serde_json::Map::new()).unwrap();
-        assert_eq!(out, "<system>be brief\n<user>hi there!\nT=[{\"name\": \"f\", \"parameters\": {\"x\": 1}}]\n<assistant>");
+        // trim_blocks (as Hugging Face renders chat templates): the newline right after a block
+        // tag ({% endif %} in the loop) is dropped; the one after an expression is kept
+        assert_eq!(out, "<system>be brief<user>hi there!T=[{\"name\": \"f\", \"parameters\": {\"x\": 1}}]\n<assistant>");
     }
 
     #[test]
