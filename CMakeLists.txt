@@ -137,6 +137,7 @@ if(FLASHRT_CUDA)
   add_executable(fr_parity tools/fr_parity.cpp)
   target_link_libraries(fr_parity PRIVATE flashrt_qwen4exp_gpu flashrt_gemv flashrt_ggml_stubs)   # stubs last
 
+  add_executable(bench_mma tools/bench_mma.cu)
   add_executable(bench_gemv tools/bench_gemv.cpp)
   target_link_libraries(bench_gemv PRIVATE flashrt_gemv flashrt_ggml_stubs)
   add_executable(test_moe_hits tests/test_moe_hits.cpp)
