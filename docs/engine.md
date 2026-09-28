@@ -9,7 +9,13 @@ per-experiment evidence is in `bench/results/2026-09-2*`, each folder with a REA
   fp16 KV, fast-path KLD 0.0087.
 - **P4's KV work is done:** q8 KV and host-resident KV with a GPU hot set. With them, 245K runs at
   66-80 tok/s over 6 windows.
-- **Next:** P2, speculative decoding with the MTP head.
+- **P2 is complete (2026-09-28).** At temperature 1.0 with one MTP draft per round: 32K 108-120
+  tok/s, 245K 82-101 tok/s over 6 windows (gates ≥ 80 / ≥ 72). The distribution test and the
+  window KLD gate pass.
+- **The engine process serves the fast path** (`flashrt-engine`, JSON lines): prefix reuse,
+  checkpoints, sampling, speculation, cancellation. The Rust server does not use it yet.
+- **Next:** the server end to end (tokenizer, chat template, OpenAI API over the engine), then
+  P3 prefill.
 
 ## One decode token (fast path)
 
@@ -164,7 +170,12 @@ window's cost.
 | 245K q8 KV, 3 windows | 70.2 / 63.5 / 71.5 | `2026-09-28-sw18-kv-q8` |
 | 245K q8 + hot set 4096, fresh prefill, decayed prior, 6 windows | 68.7 / 70.5 / 75.9 / 67.3 / 80.2 / 76.3 | `2026-09-28-sw21-warmup` (budget 32) |
 | Fast-path KLD (2 × 8K wikitext against the FP16-KV llama.cpp base) | 0.0087-0.0092 | sw17-sw22 |
-| Prefill (reference path, CPU experts) | 111-123 tok/s | P3 targets ≥ 1,700 |
+| **2K greedy, `--spec 1` / `--spec 2`** (MTP) | 123.1 / 121.0 | `2026-09-28-sw29-fused-hc` |
+| **32K, temperature 1.0: plain / `--spec 1` / `--spec 2`, 6 windows, means** | 97.9 / 114.2 / 115.3 | `2026-09-28-sw31-p2-temp1`, `sw33` |
+| **245K, temperature 1.0: plain / `--spec 1` / `--spec 2`, 6 windows, means** | 78.5 / 90.2 / 83.2 | same |
+| **245K greedy `--spec 2`, fresh prefill with the head, 3 windows** | 83.7 / 94.8 / 92.3 | `2026-09-28-sw30-spec-245k` |
+| Verify window KLD (windows of 3 with rewinds, hot set 512) | 0.009232 | `2026-09-28-sw33-p2-temp1-rerun` |
+| Prefill (reference path, CPU experts) | 109-123 tok/s | P3 targets ≥ 1,700 |
 
 **Where the time goes at 245K with the hot set** (nsys `--cuda-graph-trace=node`, sw20):
 - 14.1 ms of GPU kernel time per token;
@@ -209,8 +220,16 @@ window's cost.
   - `state-32k.bin`: fp16 KV.
 
   An fp16 state loads into a q8 cache. A state reflects the kernels that wrote it.
-- **KLD gate:** `cd $BENCH/kld && build/fr_kld $M kl8k-f16.bin --ctx 8192 --chunks 2 --batch 64 --fast [--kv q8 | --kv-hot 512]`.
-  It takes about 5 minutes.
+- **KLD gate:** `cd $BENCH/kld && build/fr_kld $M kl8k-f16.bin --ctx 8192 --chunks 2 --batch 64 --fast [--kv q8 | --kv-hot 512] [--window W]`.
+  It takes about 5 minutes. `--window W` scores verify windows with random rejected tails.
+- **Speculative decoding:** add `--mtp $D --spec K --draft-vocab $BENCH/mtp-vocab/ranks.txt`
+  (`D=$MODELS/mtp-Flash-Next-Q8_0-noembd.gguf`; the ranking comes from
+  `bench/mtp_vocab.py`). `[--mtp-bits 8|4|2]` sets the head's experts (default 4).
+  Sampling: `--temp 1.0 --top-k 20 --top-p 0.95 [--seed S]`. `--dist-test N` runs the
+  distribution test. States with the head: `$BENCH/state-32k-q8-mtp.bin` and
+  `state-245k-q8-mtp.bin` (each with a `.mtp`), for `--kv-hot 4096`.
+- **Engine:** `build/flashrt-engine $M [--mtp $D --spec K --draft-vocab RANKS] [--ctx N]`, then
+  JSON lines on stdin (`bench/engine_smoke.py` drives it).
 - **Kernel profile:**
   `/usr/local/cuda-12.9/bin/nsys profile --capture-range=cudaProfilerApi --cuda-graph-trace=node --trace=cuda build/fr_bench ... --gen 64`.
   Without `--cuda-graph-trace=node`, graphs appear as single launches.
@@ -229,16 +248,23 @@ window's cost.
   about 30 µs per layer at steady state. Both have room to improve.
 - **`k_idx_select`** still spends about 70 µs per layer at 245K in 4 single-CTA histogram passes.
   A multi-CTA histogram would roughly halve it (estimate).
-- **The engine binary and server** (`engine/main.cpp`, `server/`) predate this work. The tools
-  (`fr_bench`, `fr_kld`) drive `ForwardRef` directly. Wiring the fast path into the engine
-  protocol is outstanding.
+- **The Rust server** (`server/`) predates the engine: it only probes the pipe. It needs the
+  tokenizer (the GGUF's vocabulary and merges), the chat template and the OpenAI API mapped to
+  the engine protocol.
+- **The engine refills the expert cache from the prefill's routing counts** after the first
+  prompt and after any prompt that adds 4,096 or more tokens. For short prompts the adaptive
+  policy alone moves it.
+- **The drafter's probability does not gate drafts well** (sw29). Draft length is fixed per run.
+- **At depth, windows keep only token T - 1's selected KV blocks in the hot set;** the others
+  are read from the host store when missing. Not measured separately.
 
 ## Next steps (priority order)
 
-1. **P2: MTP speculative decoding.** Verifying a window of drafts reads each missed expert once
-   per window, which attacks the 3.5-4 ms miss wait at depth. The multi-token CPU kernel exists
-   (`moe_cpu` takes up to 4 tokens per miss), and `k_route`/`moe_hits` need windows > 1.
-2. **Wire the fast path into `engine/`,** so the server can use it (graphs, doorbells, hot set).
-3. **Tuning:** multi-CTA select, a parallel hot-set CLOCK, an adaptive swap budget (large while
-   warming up, small afterwards).
-4. **P3 prefill.**
+1. **The server end to end:** tokenizer from the GGUF (as `bench/mtp_vocab.py` builds it, checked
+   against llama.cpp), the chat template, OpenAI and Anthropic APIs over the engine protocol.
+2. **Cheaper verify windows:** the misses dominate. Candidates: PCIe reads for the misses
+   several window tokens share (the grouped hit kernels read each once), a draft length chosen
+   per round from the window's expected misses, and more cache slots (the Q2_0 head frees about
+   500).
+3. **P3 prefill** (the reference path runs 109-123 tok/s: 38 minutes for 245K).
+4. **Tuning:** multi-CTA select, a parallel hot-set CLOCK, an adaptive swap budget.

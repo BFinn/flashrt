@@ -116,6 +116,25 @@ depth, unless noted.
   - The hit rate at depth is still set by cache warm-up and by the generated text.
 - **Not done:** Q4 KV with a Hadamard rotation. Given the hot set, it matters less than P4 assumed.
 
+**P2 status (2026-09-28): gates met.** Temperature 1.0, top-k 20, top-p 0.95, from saved states
+with the MTP head's KV, 6 windows of 128 tokens each:
+
+| Gate | Target | Plain decode | `--spec 1` (MTP, one draft) | Source |
+|---|---|---|---|---|
+| 32K decode | ≥ 80 tok/s | 95.9-99.3 (mean 97.9) | 107.8-119.6 (mean 114.2) | `bench/results/2026-09-28-sw31-p2-temp1` |
+| 250K decode | ≥ 72 tok/s | 77.2-80.9 (mean 78.5) | 81.5-101.3 (mean 90.2) | 245,760 tokens; same folder |
+| Distribution test | exact | | first token equal in 400/400 (2K) and 300/300 (245K), second in 82/82 and 59/59 | `--dist-test`; sw31, sw33 |
+| KLD with verify windows and rewinds | ≤ 0.03 | | 0.0087 (windows of 4), 0.0092 (windows of 3, hot set) | sw25, sw33 |
+
+- **Scope done:** the MTP head (Q4_0 experts, trimmed LM head), verify windows on the fast path
+  with rewinds, window graphs, exact speculative sampling on a GPU sampler, the multi-token CPU
+  miss kernel in use, and the engine process serving it all over the protocol.
+- **At temperature 1.0 one draft per round is best** (1.56-1.61 tokens per round). A second
+  draft's acceptance does not pay for the wider window's extra expert misses. Greedy decoding
+  at 2K gains 20% with 1-2 drafts (123 tok/s against 102).
+- **The window's union of missed experts is the cost of speculation here:** each extra verified
+  token adds about 3 ms at 2K, mostly waiting for the CPU (`bench/results/2026-09-28-sw28-profile`).
+
 **How the KLD gate is measured** (set 2026-09-27, `bench/results/2026-09-27-p1-kld`):
 - **Protocol:** llama-perplexity's KL-divergence protocol on wikitext-2 test, 8,192-token chunks,
   2 chunks, scoring the second half of each chunk.
