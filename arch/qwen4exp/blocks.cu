@@ -1291,7 +1291,7 @@ void qsa_mixer(const BlockCtx& c, int il, const float* x, int T, int pos0, QsaCa
     const int32_t* counts = nullptr;
     const int ldc = nsel * r;
     const bool graph = c.dparams != nullptr;
-    if (graph && (T != 1 || ID != 128)) throw std::runtime_error("qsa_mixer: graph mode needs one token and indexer dim 128");
+    if (graph && ID != 128) throw std::runtime_error("qsa_mixer: graph mode needs indexer dim 128");
     if (graph || pos0 + T > width) {   // some token needs a selection (graph mode: always; dense below the width)
         const int max_nb = graph ? kv.capacity / r : (pos0 + T) / r;
         BlockScratch& bs = c.scratch;
@@ -1524,11 +1524,13 @@ __global__ void k_ple_conv(float* x, const float* gated, const float* normed, fl
 }  // namespace
 
 namespace {
-// one Q3_K row (the token's) to float; one thread per element
+// one Q3_K row per token (row t: token dp[t ? 2 + t : 0], see BlockCtx::dparams) to float; one
+// thread per element
 __global__ void k_embed_q3k(const uint8_t* table, const int32_t* dp, float* out, int K) {
-    const int e = blockIdx.x * blockDim.x + threadIdx.x;
+    const int e = blockIdx.x * blockDim.x + threadIdx.x, t = blockIdx.y;
     if (e >= K) return;
-    const uint8_t* b = table + (size_t(dp[0]) * (K / 256) + e / 256) * 110;
+    out += size_t(t) * K;
+    const uint8_t* b = table + (size_t(dp[t ? 2 + t : 0]) * (K / 256) + e / 256) * 110;
     const int el = e % 256, n = el / 128, j = (el % 128) / 32, l = el % 32, is = el / 16;
     const int q = ((b[32 + 32 * n + l] >> (2 * j)) & 3) | (((b[l] >> (4 * n + j)) & 1) << 2);
     const uint8_t* sc = b + 96;
@@ -1548,8 +1550,8 @@ bool embed_graph_capable(const GpuWeights& w) {
 void embed(const BlockCtx& c, const int32_t* tokens, int T, float* out) {
     const GpuTensor& e = c.w.get("token_embd.weight");
     if (c.dparams) {   // graph mode: the token id is on the device
-        if (T != 1 || !embed_graph_capable(c.w)) throw std::runtime_error("embed: graph mode needs one token and a Q3_K table");
-        k_embed_q3k<<<unsigned((e.cols() + 255) / 256), 256, 0, c.stream>>>(static_cast<const uint8_t*>(e.dev), c.dparams, out,
+        if (T > kMaxGraphTokens || !embed_graph_capable(c.w)) throw std::runtime_error("embed: graph mode needs <= 8 tokens and a Q3_K table");
+        k_embed_q3k<<<dim3(unsigned((e.cols() + 255) / 256), T), 256, 0, c.stream>>>(static_cast<const uint8_t*>(e.dev), c.dparams, out,
                                                                           int(e.cols()));
         ck(cudaGetLastError(), "embed");
         return;

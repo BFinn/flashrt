@@ -46,11 +46,13 @@ struct BlockCtx {
     const GpuWeights& w;
     BlockScratch& scratch;
     cudaStream_t stream;
-    // Graph mode (decode, one token): device int32 [token, position, doorbell seq]. Kernels read
-    // the per-token values from here instead of launch arguments, so a captured CUDA graph can be
-    // replayed every token; the QSA path always runs the indexer selection (dense below its width).
+    // Graph mode (a decode step of T <= kMaxGraphTokens tokens): device int32 [token 0, position
+    // of token 0, doorbell seq, token 1, token 2, ...]. Kernels read the per-step values from here
+    // instead of launch arguments, so a captured CUDA graph can be replayed every step; the QSA
+    // path always runs the indexer selection (dense below its width).
     const int32_t* dparams = nullptr;
 };
+constexpr int kMaxGraphTokens = 8;
 
 // W x for T tokens (any T): gemv in chunks of up to 8 tokens. x [T][cols], y [T][rows].
 void linear(const BlockCtx& c, const GpuTensor& W, const float* x, float* y, int T);

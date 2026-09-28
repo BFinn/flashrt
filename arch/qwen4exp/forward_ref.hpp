@@ -100,7 +100,8 @@ private:
     void enqueue_layer(const BlockCtx& c, int il, int T);
     int first_ple_layer() const;
     bool graph_eligible(int T, int out_from, float* logits_dev) const;
-    void capture_graphs(float* logits_dev);
+    struct Graphs;
+    Graphs& capture_graphs(int T, float* logits_dev);
     void drop_graphs();
 
     const Spec& s_;
@@ -126,14 +127,17 @@ private:
     int count_half_life_ = 4096;
     long count_tokens_ = 0;   // tokens counted since the last halving
     int32_t* argmax_dev_ = nullptr;
-    // graph mode
+    // graph mode: one pair of graphs per (step length, window mode)
     bool use_graphs_ = true;
-    int32_t* params_dev_ = nullptr;    // [token, position, doorbell seq]
+    int32_t* params_dev_ = nullptr;    // BlockCtx::dparams: [token 0, position, doorbell seq, token 1, ...]
     int32_t* params_host_ = nullptr;   // pinned; copied to params_dev_ by the first graph node
-    cudaGraphExec_t graph_pre_ = nullptr, graph_post_ = nullptr;
-    float* graph_logits_ = nullptr;
-    const void* graph_ple_pinned_ = nullptr;
-    const void* graph_ple_dev_ = nullptr;
+    struct Graphs {
+        cudaGraphExec_t pre = nullptr, post = nullptr;
+        float* logits = nullptr;
+        const void* ple_pinned = nullptr;
+        const void* ple_dev = nullptr;
+    };
+    Graphs graphs_[kMaxGraphTokens + 1][2];
     long graph_captures_ = 0;
     int32_t* argmax_host_ = nullptr;   // pinned
     // speculative windows

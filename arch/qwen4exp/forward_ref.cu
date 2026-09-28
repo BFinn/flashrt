@@ -53,8 +53,8 @@ ForwardRef::ForwardRef(const Gguf& g, const Spec& s, const GpuWeights& w, const 
     pemb_ = dalloc(B * n);
     norm_ = dalloc(B * n);
     ck(cudaMalloc(&argmax_dev_, 4), "cudaMalloc argmax");
-    ck(cudaMalloc(&params_dev_, 4 * sizeof(int32_t)), "cudaMalloc decode params");
-    ck(cudaHostAlloc(&params_host_, 4 * sizeof(int32_t), cudaHostAllocDefault), "cudaHostAlloc decode params");
+    ck(cudaMalloc(&params_dev_, 16 * sizeof(int32_t)), "cudaMalloc decode params");
+    ck(cudaHostAlloc(&params_host_, 16 * sizeof(int32_t), cudaHostAllocDefault), "cudaHostAlloc decode params");
     ck(cudaHostAlloc(&argmax_host_, 4, cudaHostAllocDefault), "cudaHostAlloc argmax");
 }
 
@@ -290,25 +290,38 @@ void ForwardRef::commit(int n) {
 int ForwardRef::first_ple_layer() const { return s_.ple_layers.empty() ? s_.n_layer : s_.ple_layers.front(); }
 
 bool ForwardRef::graph_eligible(int T, int out_from, float* logits_dev) const {
-    return use_graphs_ && T == 1 && out_from == 0 && logits_dev && fast_cache_ && fast_host_->doorbell && embed_graph_capable(w_) &&
-           s_.idx_dim == 128;
+    return use_graphs_ && (T == 1 || in_window_) && T <= kMaxGraphTokens && out_from == 0 && logits_dev && fast_cache_ &&
+           fast_host_->doorbell && embed_graph_capable(w_) && s_.idx_dim == 128;
 }
 
 void ForwardRef::drop_graphs() {
-    for (cudaGraphExec_t* g : {&graph_pre_, &graph_post_})
+    for (auto& row : graphs_)
+        for (Graphs& gs : row) {
+            for (cudaGraphExec_t* g : {&gs.pre, &gs.post})
+                if (*g) {
+                    cudaGraphExecDestroy(*g);
+                    *g = nullptr;
+                }
+            gs = Graphs{};
+        }
+}
+
+ForwardRef::Graphs& ForwardRef::capture_graphs(int T, float* logits_dev) {
+    Graphs& gs = graphs_[T][in_window_ ? 1 : 0];
+    for (cudaGraphExec_t* g : {&gs.pre, &gs.post})
         if (*g) {
             cudaGraphExecDestroy(*g);
             *g = nullptr;
         }
-}
-
-void ForwardRef::capture_graphs(float* logits_dev) {
-    drop_graphs();
-    // everything the graphs touch is allocated now, not while capturing
+    // everything the graphs touch is allocated now, not while capturing; a scratch that grows
+    // later drops every graph (an eager pass does that)
     int capacity = 0;
     for (int il : s_.qsa_layers) capacity = kv_[il].capacity;
-    qsa_scratch_reserve(s_, scratch_, 1, capacity / s_.qsa_block);
+    qsa_scratch_reserve(s_, scratch_, T, capacity / s_.qsa_block);
     if (!s_.ple_layers.empty() && (!ple_host_.raw_pinned || !ple_host_.raw_dev)) throw std::runtime_error("capture_graphs: run a prefill first");
+    const size_t ple_bytes = size_t(T) * ple_.n_heads * ple_.row_bytes;
+    if (!s_.ple_layers.empty() && (ple_host_.raw_pinned_bytes < ple_bytes || ple_host_.raw_dev_bytes < ple_bytes))
+        throw std::runtime_error("capture_graphs: the PLE buffers are smaller than the step");
     const BlockCtx cg{s_, w_, scratch_, stream_, params_dev_};
     auto capture = [&](auto&& body) {
         cudaGraph_t g = nullptr;
@@ -320,15 +333,16 @@ void ForwardRef::capture_graphs(float* logits_dev) {
         cudaGraphDestroy(g);
         return ge;
     };
-    graph_pre_ = capture([&] {
-        ck(cudaMemcpyAsync(params_dev_, params_host_, 3 * sizeof(int32_t), cudaMemcpyHostToDevice, stream_), "params");
-        enqueue_pre(cg, nullptr, 1);
+    gs.pre = capture([&] {
+        ck(cudaMemcpyAsync(params_dev_, params_host_, size_t(2 + T) * sizeof(int32_t), cudaMemcpyHostToDevice, stream_), "params");
+        enqueue_pre(cg, nullptr, T);
     });
-    graph_post_ = capture([&] { enqueue_post(cg, 1, 0, logits_dev); });
-    graph_logits_ = logits_dev;
-    graph_ple_pinned_ = ple_host_.raw_pinned;
-    graph_ple_dev_ = ple_host_.raw_dev;
+    gs.post = capture([&] { enqueue_post(cg, T, 0, logits_dev); });
+    gs.logits = logits_dev;
+    gs.ple_pinned = ple_host_.raw_pinned;
+    gs.ple_dev = ple_host_.raw_dev;
     ++graph_captures_;
+    return gs;
 }
 
 void ForwardRef::forward(const int32_t* seq, int T, int out_from, float* logits_dev) {
@@ -353,15 +367,28 @@ void ForwardRef::forward(const int32_t* seq, int T, int out_from, float* logits_
         params_host_[0] = seq[pos_];
         params_host_[1] = pos_;
         params_host_[2] = int32_t(fast_host_->seq);
-        if (!graph_pre_ || graph_logits_ != logits_dev) {
+        for (int t = 1; t < T; ++t) params_host_[2 + t] = seq[pos_ + t];
+        Graphs* gs = &graphs_[T][in_window_ ? 1 : 0];
+        if (!gs->pre || gs->logits != logits_dev) {
             if (ple_rows.valid()) ple_rows.wait();   // the PLE buffers must exist before capture
-            capture_graphs(logits_dev);
+            if (!s.ple_layers.empty() && ple_host_.raw_dev_bytes < ple_host_.raw_pinned_bytes) {   // grow the device side too
+                if (ple_host_.raw_dev) cudaFree(ple_host_.raw_dev);
+                ck(cudaMalloc(&ple_host_.raw_dev, ple_host_.raw_pinned_bytes), "cudaMalloc ple rows");
+                ple_host_.raw_dev_bytes = ple_host_.raw_pinned_bytes;
+                for (auto& row : graphs_)   // the old graphs point at the old buffer
+                    for (Graphs& g : row)
+                        if (&g != gs && g.pre) {
+                            drop_graphs();
+                            break;
+                        }
+            }
+            gs = &capture_graphs(T, logits_dev);
         }
-        ck(cudaGraphLaunch(graph_pre_, stream_), "launch graph (pre)");
+        ck(cudaGraphLaunch(gs->pre, stream_), "launch graph (pre)");
         if (ple_rows.valid()) ple_rows.get();
-        if (ple_host_.raw_pinned != graph_ple_pinned_ || ple_host_.raw_dev != graph_ple_dev_)
+        if (ple_host_.raw_pinned != gs->ple_pinned || ple_host_.raw_dev != gs->ple_dev)
             throw std::runtime_error("ForwardRef: PLE buffers moved under a captured graph");
-        ck(cudaGraphLaunch(graph_post_, stream_), "launch graph (post)");
+        ck(cudaGraphLaunch(gs->post, stream_), "launch graph (post)");
     } else {
         enqueue_pre(c, seq, T);
         if (ple_rows.valid()) ple_rows.get();
