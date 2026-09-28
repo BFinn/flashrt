@@ -121,7 +121,7 @@ if(FLASHRT_CUDA)
   add_library(flashrt_ggml_stubs STATIC kernels/cuda/ggml_stubs.cpp)
   target_include_directories(flashrt_ggml_stubs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ggml/include)
   add_library(flashrt_qwen4exp_gpu STATIC arch/qwen4exp/gpu_weights.cu arch/qwen4exp/blocks.cu arch/qwen4exp/forward_ref.cu
-    arch/qwen4exp/moe_fast.cu arch/qwen4exp/mtp.cu kernels/cuda/sample.cu)
+    arch/qwen4exp/moe_fast.cu arch/qwen4exp/moe_stream.cu arch/qwen4exp/mtp.cu kernels/cuda/sample.cu)
   target_link_libraries(flashrt_qwen4exp_gpu PUBLIC flashrt_qwen4exp flashrt_gemv)
   add_executable(fr_gpu_load tools/fr_gpu_load.cpp)
   target_link_libraries(fr_gpu_load PRIVATE flashrt_qwen4exp_gpu flashrt_gemv flashrt_ggml_stubs)   # stubs last

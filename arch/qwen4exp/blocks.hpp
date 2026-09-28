@@ -44,6 +44,8 @@ struct BlockScratch {
     size_t gemm_ws_bytes = 0;
     void* q3k_tmp = nullptr;
     size_t q3k_tmp_bytes = 0;
+    int32_t* tok_dev = nullptr;   // token ids of a many-token embed()
+    size_t tok_cap = 0;
 };
 BlockScratch alloc_block_scratch(const Spec& s, int max_tokens);
 // The addresses a captured graph bakes in: a graph is stale once any of them changes (a
@@ -80,6 +82,14 @@ void hc_mix(const BlockCtx& c, int il, int which, const float* x, int T, float* 
 
 // y[row] = x[row] / rms(x[row]) * w[(row % groups) * n ..], for `rows` rows of n values.
 void rms_norm_rows(const BlockCtx& c, const float* x, const float* w, float* y, int n, int groups, int rows);
+
+// x[t][s][:] = emb[t][:] for every stream s (the residual streams' start).
+void hc_init(const BlockCtx& c, const float* emb, float* x, int T);
+
+// Top-k routing on the GPU (softmax over E <= 1024 logits per token, top k by probability, ties
+// to the lower index, weights renormalised as moe_block does): ids, wts [T][k]; with counts
+// ([E], device), each selection adds 1 there.
+void moe_route_topk(cudaStream_t stream, const float* logits, int T, int E, int k, int32_t* ids, float* wts, uint32_t* counts);
 
 // Hyper-connection combine: x[t][s][:] += out[t][:] * 2*sigmoid(inject[t][s] / hc).
 void hc_combine(const BlockCtx& c, float* x, const float* out, const float* inject, int T);

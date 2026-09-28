@@ -30,6 +30,8 @@
 // prompt's distinct tokens, at most 65536 rows. --draft-pmin P stops a round's drafting at the
 // first draft whose probability under the head is below P (then fewer than K are verified;
 // none if the first is below P).
+// --prefill-chunk C prefills C tokens per call (default 64: the CPU reference path; above 64 the
+// chunk path with the experts streamed to the GPU).
 // --save-counts FILE writes the prefill's routing counts (use --count-half-life 0 for a whole
 // corpus): a cache prior for flashrt-engine --cache-prior.
 // --temp T [--top-k K] [--top-p P] [--min-p M] [--seed S] samples instead of greedy decoding
@@ -75,7 +77,7 @@ int main(int argc, char** argv) {
         return 2;
     }
     std::string ids_path, trace_path, save_state, load_state, mtp_path, vocab_path, save_counts;
-    int draft_k = 4, spec_k = 0, vocab_n = 32768;
+    int draft_k = 4, spec_k = 0, vocab_n = 32768, chunk = 64;
     float draft_pmin = 0.0f;
     sample::Params sp;
     sp.temperature = 0.0f;
@@ -127,6 +129,7 @@ int main(int argc, char** argv) {
         else if (a == "--seed") seed = std::strtoull(next(), nullptr, 10);
         else if (a == "--dist-test") dist_test = std::atoi(next());
         else if (a == "--save-counts") save_counts = next();
+        else if (a == "--prefill-chunk") chunk = std::max(1, std::atoi(next()));
         else { std::fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
     }
     std::vector<int32_t> seq;
@@ -186,13 +189,20 @@ int main(int argc, char** argv) {
         std::printf("MTP draft head: layer %d, %.0f MiB of weights in VRAM, %d drafts %s\n", mtp->layer(),
                     mtp->weight_bytes() / 1048576.0, draft_k, spec_k > 0 ? "per verify round" : "per token (probe)");
     }
-    auto mtp_catchup = [&](int p0, int T) {
+    auto mtp_catchup = [&](int p0, int T) {   // in slices of 64 rows (the head's batch)
         if (!mtp) return;
         cudaStream_t st = fwd.stream();
-        cudaMemcpyAsync(h_buf, h_carry, hrow * 4, cudaMemcpyDeviceToDevice, st);
-        if (T > 1) cudaMemcpyAsync(h_buf + hrow, fwd.streams(), size_t(T - 1) * hrow * 4, cudaMemcpyDeviceToDevice, st);
+        for (int j = 0; j < T; j += 64) {
+            const int Tj = std::min(64, T - j);
+            const float* h = fwd.streams() + size_t(j - 1) * hrow;   // rows j-1 .. j+Tj-2
+            if (j == 0) {
+                cudaMemcpyAsync(h_buf, h_carry, hrow * 4, cudaMemcpyDeviceToDevice, st);
+                if (Tj > 1) cudaMemcpyAsync(h_buf + hrow, fwd.streams(), size_t(Tj - 1) * hrow * 4, cudaMemcpyDeviceToDevice, st);
+                h = h_buf;
+            }
+            mtp->forward(h, seq.data() + p0 + j, Tj, p0 + j, Tj, nullptr);
+        }
         cudaMemcpyAsync(h_carry, fwd.streams() + size_t(T - 1) * hrow, hrow * 4, cudaMemcpyDeviceToDevice, st);
-        mtp->forward(h_buf, seq.data() + p0, T, p0, T, nullptr);
     };
 
     // prefill
@@ -217,8 +227,8 @@ int main(int argc, char** argv) {
         std::printf("state: loaded %s (%d positions) in %.1f s\n", load_state.c_str(), n_prompt - 1,
                     std::chrono::duration<double>(Clock::now() - tp).count());
     } else {
-        for (int p = 0; p < n_prompt; p += 64) {
-            const int T = std::min(64, n_prompt - p);
+        for (int p = 0; p < n_prompt; p += chunk) {
+            const int T = std::min(chunk, n_prompt - p);
             const bool last = p + T >= n_prompt;
             if (last && !save_state.empty()) {   // save before the last token, so a load can re-run it
                 if (T > 1) fwd.forward(seq.data(), T - 1, T - 1, nullptr);
@@ -234,8 +244,10 @@ int main(int argc, char** argv) {
             mtp_catchup(p, T);
         }
         const double prefill_s = std::chrono::duration<double>(Clock::now() - tp).count();
-        std::printf("prefill: %d tokens in %.1f s (%.1f tok/s, reference path)\n", n_prompt, prefill_s, n_prompt / prefill_s);
+        std::printf("prefill: %d tokens in %.1f s (%.1f tok/s, %s)\n", n_prompt, prefill_s, n_prompt / prefill_s,
+                    chunk > 64 ? ("chunks of " + std::to_string(chunk) + ", experts streamed to the GPU").c_str() : "reference path");
     }
+    fwd.release_chunk_buffers();   // the expert cache takes that VRAM
     if (!save_counts.empty()) {   // the prefill's routing counts, a cache prior for flashrt-engine --cache-prior
         std::FILE* f = std::fopen(save_counts.c_str(), "wb");
         const int64_t h[4] = {0x50435246 /* "FRCP" */, s.n_layer, s.n_expert, n_prompt};

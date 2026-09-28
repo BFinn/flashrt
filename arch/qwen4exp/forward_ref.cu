@@ -36,7 +36,6 @@ ForwardRef::ForwardRef(const Gguf& g, const Spec& s, const GpuWeights& w, const 
     moe_host_.pool = &pool;
     counts_.assign(size_t(s.n_layer) * s.n_expert, 0);
     moe_host_.counts = &counts_;
-    scratch_ = alloc_block_scratch(s, max_batch);
     ck(cudaStreamCreate(&stream_), "cudaStreamCreate");
     gdn_.resize(s.n_layer);
     kv_.resize(s.n_layer);
@@ -44,14 +43,8 @@ ForwardRef::ForwardRef(const Gguf& g, const Spec& s, const GpuWeights& w, const 
     for (int il : s.gdn_layers) gdn_[il] = alloc_gdn_state(s);
     for (int il : s.qsa_layers) kv_[il] = alloc_qsa_cache(s, max_ctx, kv_q8, kv_hot_blocks);
     for (int il : s.ple_layers) ple_state_[il] = alloc_ple_state(s, ple_);
-    const size_t n = s.d_model, hc = s.hc_count, B = max_batch;
-    emb_ = dalloc(B * n);
-    x_ = dalloc(B * hc * n);
-    mixed_ = dalloc(B * n);
-    inject_ = dalloc(B * hc);
-    blk_ = dalloc(B * n);
-    pemb_ = dalloc(B * n);
-    norm_ = dalloc(B * n);
+    alloc_bufs(dec_, max_batch);
+    use_bufs(dec_);
     ck(cudaMalloc(&argmax_dev_, 4), "cudaMalloc argmax");
     ck(cudaMalloc(&params_dev_, 16 * sizeof(int32_t)), "cudaMalloc decode params");
     ck(cudaHostAlloc(&params_host_, 16 * sizeof(int32_t), cudaHostAllocDefault), "cudaHostAlloc decode params");
@@ -65,8 +58,8 @@ ForwardRef::~ForwardRef() {
     for (GdnWindow& w : gdn_win_) free_gdn_window(w);
     for (PleWindow& w : ple_win_) free_ple_window(w);
     if (ckpt_) cudaFree(ckpt_);
-    free_block_scratch(scratch_);
-    for (float* p : {emb_, x_, mixed_, inject_, blk_, pemb_, norm_}) cudaFree(p);
+    free_bufs(dec_);
+    release_chunk_buffers();
     if (ple_host_.raw_dev) cudaFree(ple_host_.raw_dev);
     if (ple_host_.raw_pinned) cudaFreeHost(ple_host_.raw_pinned);
     drop_graphs();
@@ -162,15 +155,11 @@ void ForwardRef::reset() {
 
 // embedding, hyper-connection streams, and the layers before the first PLE layer
 void ForwardRef::enqueue_pre(const BlockCtx& c, const int32_t* seq, int T) {
-    const Spec& s = s_;
-    const int n = s.d_model, hc = s.hc_count;
     embed(c, seq ? seq + pos_ : nullptr, T, emb_);
-    for (int t = 0; t < T; ++t)
-        for (int st = 0; st < hc; ++st)
-            ck(cudaMemcpyAsync(x_ + (size_t(t) * hc + st) * n, emb_ + size_t(t) * n, size_t(n) * 4, cudaMemcpyDeviceToDevice, stream_),
-               "hc init");
+    hc_init(c, emb_, x_, T);
     for (int il = 0; il < first_ple_layer(); ++il) enqueue_layer(c, il, T);
 }
+
 
 // the PLE rows (already in ple_host_.raw_pinned), the remaining layers, and the head
 void ForwardRef::enqueue_post(const BlockCtx& c, int T, int out_from, float* logits_dev) {
@@ -194,7 +183,8 @@ void ForwardRef::enqueue_layer(const BlockCtx& c, int il, int T) {
     else gdn_mixer(c, il, mixed_, T, gdn_[il], blk_, nullptr, in_window_ ? &gdn_win_[il] : nullptr);
     hc_combine(c, x_, blk_, inject_, T);
     hc_mix(c, il, 1, x_, T, mixed_, inject_);
-    if ((T == 1 || in_window_) && fast_cache_) moe_block_fast(c, il, mixed_, *fast_cache_, *fast_host_, blk_, T);
+    if (in_chunk_) moe_block_stream(c, il, mixed_, T, *estream_, blk_, counts_dev_);
+    else if ((T == 1 || in_window_) && fast_cache_) moe_block_fast(c, il, mixed_, *fast_cache_, *fast_host_, blk_, T);
     else moe_block(c, il, mixed_, T, moe_host_, blk_);
     hc_combine(c, x_, blk_, inject_, T);
 }
@@ -230,7 +220,7 @@ void ForwardRef::forward_window(const int32_t* seq, int T, float* logits_dev) {
 void ForwardRef::commit(int n) {
     if (window_pos0_ < 0 || n < 0 || n > window_T_) throw std::runtime_error("commit: no window, or n out of range");
     if (n < window_T_) {
-        const BlockCtx c{s_, w_, scratch_, stream_};
+        const BlockCtx c{s_, w_, dec_.scratch, stream_};
         for (int il : s_.gdn_layers) gdn_rewind(c, gdn_[il], gdn_win_[il], window_T_, n);
         for (int il : s_.ple_layers) ple_rewind(c, il, ple_, ple_state_[il], ple_win_[il], window_T_, n);
         ck(cudaStreamSynchronize(stream_), "commit");
@@ -314,12 +304,12 @@ ForwardRef::Graphs& ForwardRef::capture_graphs(int T, float* logits_dev) {
     // later drops every graph (an eager pass does that)
     int capacity = 0;
     for (int il : s_.qsa_layers) capacity = kv_[il].capacity;
-    qsa_scratch_reserve(s_, scratch_, T, capacity / s_.qsa_block);
+    qsa_scratch_reserve(s_, dec_.scratch, T, capacity / s_.qsa_block);
     if (!s_.ple_layers.empty() && (!ple_host_.raw_pinned || !ple_host_.raw_dev)) throw std::runtime_error("capture_graphs: run a prefill first");
     const size_t ple_bytes = size_t(T) * ple_.n_heads * ple_.row_bytes;
     if (!s_.ple_layers.empty() && (ple_host_.raw_pinned_bytes < ple_bytes || ple_host_.raw_dev_bytes < ple_bytes))
         throw std::runtime_error("capture_graphs: the PLE buffers are smaller than the step");
-    const BlockCtx cg{s_, w_, scratch_, stream_, params_dev_};
+    const BlockCtx cg{s_, w_, dec_.scratch, stream_, params_dev_};
     auto capture = [&](auto&& body) {
         cudaGraph_t g = nullptr;
         cudaGraphExec_t ge = nullptr;
@@ -338,15 +328,79 @@ ForwardRef::Graphs& ForwardRef::capture_graphs(int T, float* logits_dev) {
     gs.logits = logits_dev;
     gs.ple_pinned = ple_host_.raw_pinned;
     gs.ple_dev = ple_host_.raw_dev;
-    gs.scratch = scratch_;
+    gs.scratch = dec_.scratch;
     ++graph_captures_;
     return gs;
 }
 
+void ForwardRef::alloc_bufs(Bufs& b, int T) {
+    free_bufs(b);
+    const size_t n = s_.d_model, hc = s_.hc_count, B = size_t(T);
+    b.scratch = alloc_block_scratch(s_, T);
+    b.emb = dalloc(B * n);
+    b.x = dalloc(B * hc * n);
+    b.mixed = dalloc(B * n);
+    b.inject = dalloc(B * hc);
+    b.blk = dalloc(B * n);
+    b.pemb = dalloc(B * n);
+    b.norm = dalloc(B * n);
+    b.cap = T;
+}
+
+void ForwardRef::free_bufs(Bufs& b) {
+    if (!b.cap) return;
+    free_block_scratch(b.scratch);
+    for (float* p : {b.emb, b.x, b.mixed, b.inject, b.blk, b.pemb, b.norm}) cudaFree(p);
+    b = Bufs{};
+}
+
+void ForwardRef::use_bufs(Bufs& b) {
+    emb_ = b.emb;
+    x_ = b.x;
+    mixed_ = b.mixed;
+    inject_ = b.inject;
+    blk_ = b.blk;
+    pemb_ = b.pemb;
+    norm_ = b.norm;
+    scr_ = &b.scratch;
+}
+
+void ForwardRef::release_chunk_buffers() {
+    if (x_ == chunk_.x) use_bufs(dec_);
+    free_bufs(chunk_);
+    destroy_expert_stream(estream_);
+    estream_ = nullptr;
+    if (counts_dev_) cudaFree(counts_dev_);
+    counts_dev_ = nullptr;
+}
+
+size_t ForwardRef::chunk_buffer_bytes() const {
+    if (!chunk_.cap) return 0;
+    const size_t n = s_.d_model, hc = s_.hc_count, B = size_t(chunk_.cap);
+    return expert_stream_bytes(estream_) + chunk_.scratch.f32_elems * 4 + chunk_.scratch.q8_bytes + B * (6 * n + hc * n + hc) * 4;
+}
+
 void ForwardRef::forward(const int32_t* seq, int T, int out_from, float* logits_dev) {
-    if (T < 1 || T > max_batch_) throw std::runtime_error("ForwardRef: bad batch size");
+    if (T < 1) throw std::runtime_error("ForwardRef: bad batch size");
     const Spec& s = s_;
-    const BlockCtx c{s, w_, scratch_, stream_};
+    in_chunk_ = T > max_batch_;
+    if (in_chunk_) {
+        if (in_window_) throw std::runtime_error("ForwardRef: a window cannot be a prefill chunk");
+        if (chunk_.cap < T) {
+            alloc_bufs(chunk_, T);
+            destroy_expert_stream(estream_);
+            estream_ = create_expert_stream(s, *moe_host_.arena, T);
+        }
+        if (!counts_dev_) {
+            ck(cudaMalloc(&counts_dev_, counts_.size() * 4), "cudaMalloc routing counts");
+            ck(cudaMemset(counts_dev_, 0, counts_.size() * 4), "memset routing counts");
+        }
+        use_bufs(chunk_);
+        expert_stream_prefetch(estream_, 0);   // layer 0's experts copy while the embedding and PLE run
+    } else {
+        use_bufs(dec_);
+    }
+    const BlockCtx c{s, w_, *scr_, stream_};
     const bool graph = graph_eligible(T, out_from, logits_dev);
     if (!graph) drop_graphs();   // an eager pass may regrow scratch the graphs point at
     for (int il : s.qsa_layers)
@@ -367,7 +421,7 @@ void ForwardRef::forward(const int32_t* seq, int T, int out_from, float* logits_
         params_host_[2] = int32_t(fast_host_->seq);
         for (int t = 1; t < T; ++t) params_host_[2 + t] = seq[pos_ + t];
         Graphs* gs = &graphs_[T][in_window_ ? 1 : 0];
-        if (gs->pre && !same_buffers(gs->scratch, scratch_)) {   // another length's capture grew the scratch
+        if (gs->pre && !same_buffers(gs->scratch, dec_.scratch)) {   // another length's capture grew the scratch
             drop_graphs();
             gs = &graphs_[T][in_window_ ? 1 : 0];
         }
@@ -388,7 +442,7 @@ void ForwardRef::forward(const int32_t* seq, int T, int out_from, float* logits_
             // capturing may have grown the scratch under the other lengths' graphs
             for (auto& row : graphs_)
                 for (Graphs& g : row)
-                    if (&g != gs && g.pre && !same_buffers(g.scratch, scratch_))
+                    if (&g != gs && g.pre && !same_buffers(g.scratch, dec_.scratch))
                         for (cudaGraphExec_t* e : {&g.pre, &g.post})
                             if (*e) {
                                 cudaGraphExecDestroy(*e);
@@ -413,6 +467,13 @@ void ForwardRef::forward(const int32_t* seq, int T, int out_from, float* logits_
     if (have_access_) {
         fast_host_->access_prev = fast_host_->access;
         fast_host_->access_prev_T = T;
+    }
+    if (in_chunk_) {   // the chunk's routing counts join the host's
+        std::vector<uint32_t> add(counts_.size());
+        ck(cudaMemcpy(add.data(), counts_dev_, add.size() * 4, cudaMemcpyDeviceToHost), "routing counts");
+        ck(cudaMemset(counts_dev_, 0, add.size() * 4), "memset routing counts");
+        for (size_t i = 0; i < add.size(); ++i) counts_[i] += add[i];
+        in_chunk_ = false;
     }
     if (!fast && count_half_life_ > 0 && (count_tokens_ += T) >= count_half_life_) {
         for (uint32_t& c : counts_) c >>= 1;

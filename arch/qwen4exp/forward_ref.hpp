@@ -6,6 +6,7 @@
 
 #include "arch/qwen4exp/blocks.hpp"
 #include "arch/qwen4exp/moe_fast.hpp"
+#include "arch/qwen4exp/moe_stream.hpp"
 #include "arch/qwen4exp/ple.hpp"
 #include "core/cpu_pool.hpp"
 #include "core/expert_arena.hpp"
@@ -41,7 +42,12 @@ public:
 
     // Runs seq[pos() .. pos() + T) (seq holds the whole sequence so far, for the n-gram context)
     // and advances pos(). Logits of rows [out_from, T) go to logits_dev, [T - out_from][n_vocab].
+    // T above max_batch is a prefill chunk: its own buffers, sized on first use, and the MoE on
+    // the GPU with each layer's experts streamed from the host arena (moe_stream.hpp);
+    // release_chunk_buffers() gives that memory back.
     void forward(const int32_t* seq, int T, int out_from, float* logits_dev);
+    void release_chunk_buffers();
+    size_t chunk_buffer_bytes() const;
 
     // Decode (T == 1) uses the fast MoE path with this cache when set; batches keep the reference
     // path. Routing counts of the reference path accumulate into counts() (for a cache fill).
@@ -117,7 +123,20 @@ private:
     std::unique_ptr<RowReader> reader_;
     PleHost ple_host_;
     MoeHost moe_host_;
-    BlockScratch scratch_;
+    // working buffers: one set for decode steps and batches up to max_batch, one for chunks
+    struct Bufs {
+        float *emb = nullptr, *x = nullptr, *mixed = nullptr, *inject = nullptr, *blk = nullptr, *pemb = nullptr, *norm = nullptr;
+        int cap = 0;
+        BlockScratch scratch;
+    };
+    void alloc_bufs(Bufs& b, int T);
+    void free_bufs(Bufs& b);
+    void use_bufs(Bufs& b);
+    Bufs dec_, chunk_;
+    BlockScratch* scr_ = nullptr;   // the current set's scratch
+    ExpertStream* estream_ = nullptr;
+    uint32_t* counts_dev_ = nullptr;   // routing counts of chunks, [n_layer][n_expert]
+    bool in_chunk_ = false;
     cudaStream_t stream_ = nullptr;
     std::vector<GdnState> gdn_;
     std::vector<QsaCache> kv_;

@@ -412,7 +412,7 @@ BlockScratch alloc_block_scratch(const Spec& s, int max_tokens) {
     BlockScratch b;
     // enough for the widest per-token intermediates of any block (hc_dim-wide norm output,
     // gate, etc.) several times over
-    b.f32_elems = size_t(max_tokens) * size_t(s.hc_count) * s.d_model * 4 + (size_t(1) << 20);
+    b.f32_elems = size_t(max_tokens) * size_t(s.hc_count) * s.d_model * 5 + (size_t(1) << 20);
     ck(cudaMalloc(&b.f32, b.f32_elems * 4), "cudaMalloc block scratch");
     b.q8_bytes = gemv::q8_1_bytes(std::max<int64_t>(int64_t(s.hc_count) * s.d_model, s.ssm_inner * 2), 8);
     ck(cudaMalloc(&b.q8, b.q8_bytes), "cudaMalloc q8 scratch");
@@ -428,6 +428,7 @@ void free_block_scratch(BlockScratch& b) {
     if (b.attn_part) cudaFree(b.attn_part);
     if (b.gemm_ws) cudaFree(b.gemm_ws);
     if (b.q3k_tmp) cudaFree(b.q3k_tmp);
+    if (b.tok_dev) cudaFree(b.tok_dev);
     b = BlockScratch{};
 }
 
@@ -519,6 +520,72 @@ void hc_mix(const BlockCtx& c, int il, int which, const float* x, int T, float* 
 void rms_norm_rows(const BlockCtx& c, const float* x, const float* w, float* y, int n, int groups, int rows) {
     k_grouped_rms_norm<<<rows, 256, 0, c.stream>>>(x, w, y, n, groups, float(c.s.rms_eps));
     ck(cudaGetLastError(), "rms_norm_rows");
+}
+
+namespace {
+__global__ void k_hc_init(const float* emb, float* x, int n, int hc) {
+    const int t = blockIdx.y;
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += gridDim.x * blockDim.x) {
+        const float v = emb[size_t(t) * n + i];
+        for (int s = 0; s < hc; ++s) x[(size_t(t) * hc + s) * n + i] = v;
+    }
+}
+
+__global__ void k_route_topk(const float* logits, int E, int K, int32_t* ids, float* wts, uint32_t* counts) {
+    __shared__ float p[1024];
+    __shared__ float red[32];
+    __shared__ float selp[32];
+    const int t = blockIdx.x, e = threadIdx.x, lane = e & 31, warp = e >> 5, nw = blockDim.x >> 5;
+    const float lg = e < E ? logits[size_t(t) * E + e] : -INFINITY;
+    float m = lg;
+    for (int o = 16; o > 0; o >>= 1) m = fmaxf(m, __shfl_xor_sync(0xffffffff, m, o));
+    if (lane == 0) red[warp] = m;
+    __syncthreads();
+    m = red[0];
+    for (int w = 1; w < nw; ++w) m = fmaxf(m, red[w]);
+    __syncthreads();
+    const float ex = e < E ? __expf(lg - m) : 0.0f;
+    float sum = ex;
+    for (int o = 16; o > 0; o >>= 1) sum += __shfl_xor_sync(0xffffffff, sum, o);
+    if (lane == 0) red[warp] = sum;
+    __syncthreads();
+    sum = 0.0f;
+    for (int w = 0; w < nw; ++w) sum += red[w];
+    const float pe = e < E ? ex / sum : -1.0f;
+    p[e] = pe;
+    __syncthreads();
+    if (e < E) {
+        int rank = 0;
+        for (int j = 0; j < E; ++j) {
+            const float pj = p[j];
+            rank += (pj > pe) | ((pj == pe) & (j < e));
+        }
+        if (rank < K) {
+            ids[size_t(t) * K + rank] = e;
+            selp[rank] = pe;
+            if (counts) atomicAdd(counts + e, 1u);
+        }
+    }
+    __syncthreads();
+    if (e == 0) {
+        float ws = 0.0f;
+        for (int k = 0; k < K; ++k) ws += selp[k];
+        ws = fmaxf(ws, 6.103515625e-5f);
+        for (int k = 0; k < K; ++k) wts[size_t(t) * K + k] = selp[k] / ws;
+    }
+}
+}  // namespace
+
+void hc_init(const BlockCtx& c, const float* emb, float* x, int T) {
+    const int n = c.s.d_model;
+    k_hc_init<<<dim3((n + 255) / 256, T), 256, 0, c.stream>>>(emb, x, n, c.s.hc_count);
+    ck(cudaGetLastError(), "hc_init");
+}
+
+void moe_route_topk(cudaStream_t stream, const float* logits, int T, int E, int k, int32_t* ids, float* wts, uint32_t* counts) {
+    if (E > 1024 || k > 32) throw std::runtime_error("moe_route_topk: unsupported shape");
+    k_route_topk<<<T, ((E + 31) / 32) * 32, 0, stream>>>(logits, E, k, ids, wts, counts);
+    ck(cudaGetLastError(), "moe_route_topk");
 }
 
 void hc_combine(const BlockCtx& c, float* x, const float* out, const float* inject, int T) {
@@ -1432,75 +1499,85 @@ void qsa_mixer(const BlockCtx& c, int il, const float* x, int T, int pos0, QsaCa
                                        kv.idx_pooled, pos0, r, ID, s.rope_dims, theta_scale, eps, c.dparams);
     k_idx_ring<<<std::min(T, qsa_ring_slots(s)), 128, 0, c.stream>>>(ki, kv.idx_ring, pos0, T, r, ID, c.dparams);
 
-    const int32_t* cells = nullptr;
-    const int32_t* counts = nullptr;
     const int ldc = nsel * r;
     const bool graph = c.dparams != nullptr;
     if (graph && ID != 128) throw std::runtime_error("qsa_mixer: graph mode needs indexer dim 128");
-    if (graph || pos0 + T > width) {   // some token needs a selection (graph mode: always; dense below the width)
-        const int max_nb = graph ? kv.capacity / r : (pos0 + T) / r;
-        BlockScratch& bs = c.scratch;
-        qsa_scratch_reserve(c.s, bs, T, max_nb, 0);
-        if (ID == 128) {
-            const int per_block = 8 * kIdxKeysPerWarp;
-            k_idx_scores128<<<dim3((max_nb + per_block - 1) / per_block, T), 256, size_t(IH) * 128 * 4, c.stream>>>(
-                qi, kv.idx_pooled, bs.idx_scores, max_nb, pos0, r, IH, c.dparams);
-        } else {
-            k_idx_scores<<<dim3((max_nb + 127) / 128, T), 128, 0, c.stream>>>(qi, kv.idx_pooled, bs.idx_scores, max_nb, pos0, r, IH, ID);
-        }
-        k_idx_select<<<T, 1024, 0, c.stream>>>(bs.idx_scores, max_nb, bs.idx_cells, bs.idx_counts, ldc, pos0, r, nsel, width,
-                                               c.dparams);
-        cells = bs.idx_cells;
-        counts = bs.idx_counts;
-        if (sel_out) {
-            std::vector<int32_t> hc(size_t(T) * ldc), hn(T);
-            ck(cudaMemcpyAsync(hc.data(), cells, hc.size() * 4, cudaMemcpyDeviceToHost, c.stream), "cells to host");
-            ck(cudaMemcpyAsync(hn.data(), counts, hn.size() * 4, cudaMemcpyDeviceToHost, c.stream), "counts to host");
-            ck(cudaStreamSynchronize(c.stream), "sync");
-            sel_out->assign(T, {});
-            for (int t = 0; t < T; ++t)
-                if (hn[t] >= 0) (*sel_out)[t].assign(hc.begin() + size_t(t) * ldc, hc.begin() + size_t(t) * ldc + hn[t]);
-        }
-    } else if (sel_out) {
-        sel_out->assign(T, {});
-    }
-    // split-K flash decode: partials per (token, head, 64-cell split), then a combine
     const int G = H / KH;
     if (D != 256 || G > kAttnMaxGroup || H % KH) throw std::runtime_error("qsa_mixer: attention needs head_dim 256 and a group <= 16");
     const int n_splits = (std::max(width, ldc) + kAttnSplit - 1) / kAttnSplit;
-    qsa_scratch_reserve(c.s, c.scratch, T, 0, n_splits);
-    if (kv.hot_blocks) {   // bring the selected blocks into the hot set first
-        k_hot_select<<<1, 1024, 0, c.stream>>>(kv.slot_of_block, kv.block_of_slot, kv.refbit, kv.pinned, kv.clock_hand, kv.promo, cells,
-                                               counts, ldc, T, pos0, c.dparams, r, kv.hot_blocks);
-        k_hot_copy<<<kHotPromote, 256, 0, c.stream>>>(static_cast<int8_t*>(kv.K), static_cast<int8_t*>(kv.V),
-                                                      reinterpret_cast<__half*>(kv.Ks), reinterpret_cast<__half*>(kv.Vs),
-                                                      static_cast<const int8_t*>(kv.hK), static_cast<const int8_t*>(kv.hV),
-                                                      reinterpret_cast<const __half*>(kv.hKs), reinterpret_cast<const __half*>(kv.hVs),
-                                                      kv.promo, r, KH);
-    }
-    const dim3 grid(n_splits, KH, T);
-    const float scale = 1.0f / sqrtf(float(D));
-    auto launch = [&](auto kvr) {
-        using KV = decltype(kvr);
-        switch (G) {
-            case 12: k_attn_part<12, KV><<<grid, 256, 0, c.stream>>>(q, kvr, H, KH, pos0, scale, cells, counts, ldc, n_splits, c.scratch.attn_part, c.dparams); break;
-            case 8: k_attn_part<8, KV><<<grid, 256, 0, c.stream>>>(q, kvr, H, KH, pos0, scale, cells, counts, ldc, n_splits, c.scratch.attn_part, c.dparams); break;
-            case 16: k_attn_part<16, KV><<<grid, 256, 0, c.stream>>>(q, kvr, H, KH, pos0, scale, cells, counts, ldc, n_splits, c.scratch.attn_part, c.dparams); break;
-            default: throw std::runtime_error("qsa_mixer: unsupported GQA group size");
+    // selection and attention in sub-batches of tokens (prefill chunks), so the per-token score
+    // rows and attention partials stay small at depth; each token only needs its own position
+    const int S = T > 256 ? 128 : T;
+    if (sel_out && S < T) throw std::runtime_error("qsa_mixer: sel_out needs T <= 256");
+    for (int t0 = 0; t0 < T; t0 += S) {
+        const int Ts = std::min(S, T - t0), p0 = pos0 + t0;
+        const float* qi_s = qi + size_t(t0) * IH * ID;
+        const float* q_s = q + size_t(t0) * H * D;
+        const int32_t* cells = nullptr;
+        const int32_t* counts = nullptr;
+        if (graph || p0 + Ts > width) {   // some token needs a selection (graph mode: always; dense below the width)
+            const int max_nb = graph ? kv.capacity / r : (p0 + Ts) / r;
+            BlockScratch& bs = c.scratch;
+            qsa_scratch_reserve(c.s, bs, Ts, max_nb, 0);
+            if (ID == 128) {
+                const int per_block = 8 * kIdxKeysPerWarp;
+                k_idx_scores128<<<dim3((max_nb + per_block - 1) / per_block, Ts), 256, size_t(IH) * 128 * 4, c.stream>>>(
+                    qi_s, kv.idx_pooled, bs.idx_scores, max_nb, p0, r, IH, c.dparams);
+            } else {
+                k_idx_scores<<<dim3((max_nb + 127) / 128, Ts), 128, 0, c.stream>>>(qi_s, kv.idx_pooled, bs.idx_scores, max_nb, p0, r, IH, ID);
+            }
+            k_idx_select<<<Ts, 1024, 0, c.stream>>>(bs.idx_scores, max_nb, bs.idx_cells, bs.idx_counts, ldc, p0, r, nsel, width,
+                                                    c.dparams);
+            cells = bs.idx_cells;
+            counts = bs.idx_counts;
+            if (sel_out) {
+                std::vector<int32_t> hc(size_t(Ts) * ldc), hn(Ts);
+                ck(cudaMemcpyAsync(hc.data(), cells, hc.size() * 4, cudaMemcpyDeviceToHost, c.stream), "cells to host");
+                ck(cudaMemcpyAsync(hn.data(), counts, hn.size() * 4, cudaMemcpyDeviceToHost, c.stream), "counts to host");
+                ck(cudaStreamSynchronize(c.stream), "sync");
+                sel_out->assign(Ts, {});
+                for (int t = 0; t < Ts; ++t)
+                    if (hn[t] >= 0) (*sel_out)[t].assign(hc.begin() + size_t(t) * ldc, hc.begin() + size_t(t) * ldc + hn[t]);
+            }
+        } else if (sel_out) {
+            sel_out->assign(Ts, {});
         }
-    };
-    const KvQ8 g8{static_cast<const int8_t*>(kv.K), static_cast<const int8_t*>(kv.V), reinterpret_cast<const __half*>(kv.Ks),
-                  reinterpret_cast<const __half*>(kv.Vs), KH};
-    if (kv.hot_blocks) {
-        const KvQ8 h8{static_cast<const int8_t*>(kv.hK), static_cast<const int8_t*>(kv.hV), reinterpret_cast<const __half*>(kv.hKs),
-                      reinterpret_cast<const __half*>(kv.hVs), KH};
-        launch(KvQ8Hot{g8, h8, kv.slot_of_block, r, KH});
-    } else if (kv.q8) {
-        launch(g8);
-    } else {
-        launch(KvF16{Kc, Vc, KH});
+        // split-K flash decode: partials per (token, head, 64-cell split), then a combine
+        qsa_scratch_reserve(c.s, c.scratch, Ts, 0, n_splits);
+        if (kv.hot_blocks) {   // bring the selected blocks into the hot set first
+            k_hot_select<<<1, 1024, 0, c.stream>>>(kv.slot_of_block, kv.block_of_slot, kv.refbit, kv.pinned, kv.clock_hand, kv.promo, cells,
+                                                   counts, ldc, Ts, p0, c.dparams, r, kv.hot_blocks);
+            k_hot_copy<<<kHotPromote, 256, 0, c.stream>>>(static_cast<int8_t*>(kv.K), static_cast<int8_t*>(kv.V),
+                                                          reinterpret_cast<__half*>(kv.Ks), reinterpret_cast<__half*>(kv.Vs),
+                                                          static_cast<const int8_t*>(kv.hK), static_cast<const int8_t*>(kv.hV),
+                                                          reinterpret_cast<const __half*>(kv.hKs), reinterpret_cast<const __half*>(kv.hVs),
+                                                          kv.promo, r, KH);
+        }
+        const dim3 grid(n_splits, KH, Ts);
+        const float scale = 1.0f / sqrtf(float(D));
+        auto launch = [&](auto kvr) {
+            using KV = decltype(kvr);
+            switch (G) {
+                case 12: k_attn_part<12, KV><<<grid, 256, 0, c.stream>>>(q_s, kvr, H, KH, p0, scale, cells, counts, ldc, n_splits, c.scratch.attn_part, c.dparams); break;
+                case 8: k_attn_part<8, KV><<<grid, 256, 0, c.stream>>>(q_s, kvr, H, KH, p0, scale, cells, counts, ldc, n_splits, c.scratch.attn_part, c.dparams); break;
+                case 16: k_attn_part<16, KV><<<grid, 256, 0, c.stream>>>(q_s, kvr, H, KH, p0, scale, cells, counts, ldc, n_splits, c.scratch.attn_part, c.dparams); break;
+                default: throw std::runtime_error("qsa_mixer: unsupported GQA group size");
+            }
+        };
+        const KvQ8 g8{static_cast<const int8_t*>(kv.K), static_cast<const int8_t*>(kv.V), reinterpret_cast<const __half*>(kv.Ks),
+                      reinterpret_cast<const __half*>(kv.Vs), KH};
+        if (kv.hot_blocks) {
+            const KvQ8 h8{static_cast<const int8_t*>(kv.hK), static_cast<const int8_t*>(kv.hV), reinterpret_cast<const __half*>(kv.hKs),
+                          reinterpret_cast<const __half*>(kv.hVs), KH};
+            launch(KvQ8Hot{g8, h8, kv.slot_of_block, r, KH});
+        } else if (kv.q8) {
+            launch(g8);
+        } else {
+            launch(KvF16{Kc, Vc, KH});
+        }
+        k_attn_combine<<<Ts * H, 256, 0, c.stream>>>(c.scratch.attn_part, n_splits, qfull + size_t(t0) * H * 2 * D, o + size_t(t0) * H * D,
+                                                     H, D, H * 2 * D, 2 * D, D);
     }
-    k_attn_combine<<<T * H, 256, 0, c.stream>>>(c.scratch.attn_part, n_splits, qfull, o, H, D, H * 2 * D, 2 * D, D);
     if (gated_out) ck(cudaMemcpyAsync(gated_out, o, size_t(T) * H * D * 4, cudaMemcpyDeviceToDevice, c.stream), "copy gated");
     linear(c, c.w.layer(il, "attn_output.weight"), o, out, T);
     ck(cudaGetLastError(), "qsa_mixer");
@@ -1685,6 +1762,20 @@ __global__ void k_embed_q3k(const uint8_t* table, const int32_t* dp, float* out,
                            : (sc[is - 8] >> 4) | (((sc[is - 4] >> 6) & 3) << 4);
     out[e] = __half2float(*reinterpret_cast<const __half*>(b + 108)) * float(us - 32) * float(q - 4);
 }
+// the same for many tokens: row t (blockIdx.y) of token tokens[t]
+__global__ void k_embed_q3k_tok(const uint8_t* table, const int32_t* tokens, float* out, int K) {
+    const int e = blockIdx.x * blockDim.x + threadIdx.x, t = blockIdx.y;
+    if (e >= K) return;
+    const uint8_t* b = table + (size_t(tokens[t]) * (K / 256) + e / 256) * 110;
+    const int el = e % 256, n = el / 128, j = (el % 128) / 32, l = el % 32, is = el / 16;
+    const int q = ((b[32 + 32 * n + l] >> (2 * j)) & 3) | (((b[l] >> (4 * n + j)) & 1) << 2);
+    const uint8_t* sc = b + 96;
+    const int us = is < 4 ? (sc[is] & 0xF) | (((sc[is + 8] >> 0) & 3) << 4)
+                 : is < 8 ? (sc[is] & 0xF) | (((sc[is + 4] >> 2) & 3) << 4)
+                 : is < 12 ? (sc[is - 8] >> 4) | (((sc[is] >> 4) & 3) << 4)
+                           : (sc[is - 8] >> 4) | (((sc[is - 4] >> 6) & 3) << 4);
+    out[size_t(t) * K + e] = __half2float(*reinterpret_cast<const __half*>(b + 108)) * float(us - 32) * float(q - 4);
+}
 }  // namespace
 
 bool embed_graph_capable(const GpuWeights& w) {
@@ -1698,6 +1789,19 @@ void embed(const BlockCtx& c, const int32_t* tokens, int T, float* out) {
         if (T > kMaxGraphTokens || !embed_graph_capable(c.w)) throw std::runtime_error("embed: graph mode needs <= 8 tokens and a Q3_K table");
         k_embed_q3k<<<dim3(unsigned((e.cols() + 255) / 256), T), 256, 0, c.stream>>>(static_cast<const uint8_t*>(e.dev), c.dparams, out,
                                                                           int(e.cols()));
+        ck(cudaGetLastError(), "embed");
+        return;
+    }
+    if (T > 8 && embed_graph_capable(c.w)) {   // many tokens: one kernel over the token ids
+        BlockScratch& bs = c.scratch;
+        if (bs.tok_cap < size_t(T)) {
+            if (bs.tok_dev) cudaFree(bs.tok_dev);
+            ck(cudaMalloc(&bs.tok_dev, size_t(T) * 4), "cudaMalloc tokens");
+            bs.tok_cap = size_t(T);
+        }
+        ck(cudaMemcpyAsync(bs.tok_dev, tokens, size_t(T) * 4, cudaMemcpyHostToDevice, c.stream), "tokens to device");
+        k_embed_q3k_tok<<<dim3(unsigned((e.cols() + 255) / 256), T), 256, 0, c.stream>>>(static_cast<const uint8_t*>(e.dev), bs.tok_dev, out,
+                                                                                       int(e.cols()));
         ck(cudaGetLastError(), "embed");
         return;
     }
