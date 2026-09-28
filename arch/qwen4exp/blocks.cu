@@ -411,6 +411,75 @@ __global__ void k_gdn_delta_reg(const float* S_in, float* S_out, float* S_bak, c
     for (int jj = 0; jj < JPT; ++jj) So[size_t(ty * JPT + jj) * DK + i] = st[jj];
 }
 
+// The same delta rule for long calls (prefill): four lanes own a column of S, 32 rows each, so a
+// token's two column sums are two shuffles each and no block barrier; each lane reads the token's
+// q and k rows for its quarter itself (the same addresses across a warp's columns: broadcasts)
+// and loads the next token's while it computes. One warp per 8 columns, 4 warps per block.
+template <int DK>
+__global__ void __launch_bounds__(128) k_gdn_delta_col(const float* S_in, float* S_out, float* S_bak, const float* conv_out, const float* g,
+                                                        const float* beta, float* o, int T, int k_heads, int v_heads, int channels) {
+    constexpr int R = DK / 4;   // rows per lane
+    const int h = blockIdx.x, lane = threadIdx.x & 31, warp = threadIdx.x >> 5, hk = h % k_heads;
+    const int qd = lane & 3, i = blockIdx.y * 32 + warp * 8 + (lane >> 2), j0 = qd * R;
+    const float* Si = S_in + size_t(h) * DK * DK;
+    float st[R];
+#pragma unroll
+    for (int jj = 0; jj < R; ++jj) st[jj] = Si[size_t(j0 + jj) * DK + i];
+    if (S_bak)
+#pragma unroll
+        for (int jj = 0; jj < R; ++jj) S_bak[size_t(h) * DK * DK + size_t(j0 + jj) * DK + i] = st[jj];
+    const float scale = rsqrtf(float(DK));
+    const size_t q_off = size_t(hk) * DK + j0, k_off = size_t(k_heads) * DK + size_t(hk) * DK + j0, v_off = size_t(2 * k_heads) * DK + size_t(h) * DK + i;
+    float4 qn[R / 4], kn[R / 4];
+    auto load = [&](int t) {
+        const float* row = conv_out + size_t(t) * channels;
+#pragma unroll
+        for (int k = 0; k < R / 4; ++k) {
+            qn[k] = reinterpret_cast<const float4*>(row + q_off)[k];
+            kn[k] = reinterpret_cast<const float4*>(row + k_off)[k];
+        }
+    };
+    if (T > 0) load(0);
+    for (int t = 0; t < T; ++t) {
+        float qv[R], kv[R];
+#pragma unroll
+        for (int k = 0; k < R / 4; ++k) {
+            qv[4 * k] = qn[k].x; qv[4 * k + 1] = qn[k].y; qv[4 * k + 2] = qn[k].z; qv[4 * k + 3] = qn[k].w;
+            kv[4 * k] = kn[k].x; kv[4 * k + 1] = kn[k].y; kv[4 * k + 2] = kn[k].z; kv[4 * k + 3] = kn[k].w;
+        }
+        const float vi = conv_out[size_t(t) * channels + v_off];
+        const float decay = __expf(g[t * v_heads + h]), b = beta[t * v_heads + h];
+        if (t + 1 < T) load(t + 1);
+        float sk0 = 0.0f, sk1 = 0.0f;
+#pragma unroll
+        for (int jj = 0; jj < R; jj += 2) {
+            st[jj] *= decay;
+            st[jj + 1] *= decay;
+            sk0 += st[jj] * kv[jj];
+            sk1 += st[jj + 1] * kv[jj + 1];
+        }
+        float sk = sk0 + sk1;
+        sk += __shfl_xor_sync(~0u, sk, 1);
+        sk += __shfl_xor_sync(~0u, sk, 2);
+        const float d = b * (vi - sk);
+        float o0 = 0.0f, o1 = 0.0f;
+#pragma unroll
+        for (int jj = 0; jj < R; jj += 2) {
+            st[jj] += d * kv[jj];
+            st[jj + 1] += d * kv[jj + 1];
+            o0 += st[jj] * qv[jj];
+            o1 += st[jj + 1] * qv[jj + 1];
+        }
+        float oi = o0 + o1;
+        oi += __shfl_xor_sync(~0u, oi, 1);
+        oi += __shfl_xor_sync(~0u, oi, 2);
+        if (qd == 0) o[(size_t(t) * v_heads + h) * DK + i] = oi * scale;
+    }
+    float* So = S_out + size_t(h) * DK * DK;
+#pragma unroll
+    for (int jj = 0; jj < R; ++jj) So[size_t(j0 + jj) * DK + i] = st[jj];
+}
+
 // Rewinds a history of H rows (oldest first, C values each) after a call of T inputs to its
 // first n: row j = row j + n of [old history ; the call's inputs].
 __global__ void k_hist_rewind(float* hist, const float* old, const float* rows, int H, int C, int n) {
@@ -703,7 +772,14 @@ void gdn_mixer(const BlockCtx& c, int il, const float* x, int T, GdnState& st, f
     k_l2_norm<<<T * 2 * s.ssm_groups, 128, 0, c.stream>>>(conv, dk, ch, 2 * s.ssm_groups, float(s.rms_eps));
     k_gdn_gates<<<(T * H + 127) / 128, 128, 0, c.stream>>>(alpha, beta, static_cast<const float*>(c.w.layer(il, "ssm_dt.bias").dev),
                                                           static_cast<const float*>(c.w.layer(il, "ssm_a").dev), H, T);
-    if (dk == 128)
+    static const bool col_on = [] {
+        const char* e = std::getenv("FLASHRT_GDN_COL");
+        return !(e && e[0] == '0');
+    }();
+    if (dk == 128 && T >= 16 && col_on)   // prefill; decode keeps the block kernel
+        k_gdn_delta_col<128><<<dim3(H, 128 / 32), 128, 0, c.stream>>>(st.S, st.S, win ? win->S_bak : nullptr, conv, alpha, beta, o, T,
+                                                                     s.ssm_groups, H, ch);
+    else if (dk == 128)
         k_gdn_delta_reg<128><<<dim3(H, 128 / 32), dim3(32, 8), 0, c.stream>>>(st.S, st.S, win ? win->S_bak : nullptr, conv, alpha, beta, o, T,
                                                                           s.ssm_groups, H, ch);
     else k_gdn_delta<<<H, dk, size_t(2) * dk * 4, c.stream>>>(st.S, conv, alpha, beta, o, T, s.ssm_groups, H, dk, ch);
