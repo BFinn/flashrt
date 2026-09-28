@@ -458,9 +458,10 @@ __global__ void k_hc_up_mix(WU W, const float* part, int n_inject, float scale, 
 // v2 of k_hc_up_mix (sw75), rank == 64 * NCH: launched as a programmatic dependent of
 // k_hc_down2, it loads its weights while the down kernel runs, then waits for the partials
 // (cudaGridDependencySynchronize; a no-op without the launch attribute). The partials and xn are
-// read with plain loads after the wait.
+// read with plain loads after the wait. At most 64 registers: 4 blocks per SM, so the 320
+// blocks run in one wave (at 80 registers they took two; sw75).
 template <int TT, typename WU, int NCH, bool LATE = false>
-__global__ void __launch_bounds__(256) k_hc_up_mix2(WU W, const float* part, int n_inject, float scale, const float* xn, float* mixed,
+__global__ void __launch_bounds__(256, 4) k_hc_up_mix2(WU W, const float* part, int n_inject, float scale, const float* xn, float* mixed,
                                                     float* inject, int n) {
     constexpr int HC = 4, rank = 64 * NCH;
     __shared__ __align__(16) float xs[TT * rank];
