@@ -1182,42 +1182,6 @@ namespace flashrt::qwen4exp {
 namespace {
 int gdn_channels(const Spec& s) { return 2 * s.ssm_groups * s.ssm_state + s.ssm_heads * s.ssm_state; }
 
-size_t gdn_chunk_ws_bytes(const Spec& s) {
-    const size_t items = size_t(kGdnSlab) * s.ssm_heads, C = kGdnChunk, dk = s.ssm_state;
-    return items * C * (2 * dk + C + 1) * 4;   // U~, W, P, G
-}
-
-void gdn_delta_prefill(const Spec& s, float* S, const float* conv, const float* g, const float* beta, float* o, int T, bool chunked, void* ws,
-                       cudaStream_t stream) {
-    const int H = s.ssm_heads, dk = s.ssm_state, groups = s.ssm_groups, ch = gdn_channels(s);
-    if (dk != 128) throw std::runtime_error("gdn_delta_prefill: state 128 only");
-    if (!chunked) {
-        k_gdn_delta_col<128><<<dim3(H, 128 / (16 * kGdnColWarps)), 32 * kGdnColWarps, 0, stream>>>(S, S, nullptr, conv, g, beta, o, T, groups,
-                                                                                                    H, ch);
-        ck(cudaGetLastError(), "gdn column");
-        return;
-    }
-    constexpr int C = kGdnChunk, DK = 128;
-    const size_t items = size_t(kGdnSlab) * H;
-    float* Ub = static_cast<float*>(ws);
-    float* Wb = Ub + items * C * DK;
-    float* Pb = Wb + items * C * DK;
-    float* Gb = Pb + items * C * C;
-    const size_t smem_prep = size_t(2 * C * (DK + 1) + C * (C + 1)) * 4;
-    const size_t smem_state = size_t(C * (DK + 1) + DK * 32 + C * 32 + C * C) * 4;
-    static bool attr = false;
-    if (!attr) {
-        ck(cudaFuncSetAttribute(k_gdn_chunk_prep<DK>, cudaFuncAttributeMaxDynamicSharedMemorySize, int(smem_prep)), "gdn prep smem");
-        ck(cudaFuncSetAttribute(k_gdn_chunk_state<DK>, cudaFuncAttributeMaxDynamicSharedMemorySize, int(smem_state)), "gdn state smem");
-        attr = true;
-    }
-    for (int t_base = 0; t_base < T; t_base += kGdnSlab * C) {
-        const int n_chunks = std::min(kGdnSlab, (T - t_base + C - 1) / C);
-        k_gdn_chunk_prep<DK><<<dim3(n_chunks, H), 256, smem_prep, stream>>>(conv, g, beta, T, t_base, groups, H, ch, Ub, Wb, Pb, Gb);
-        k_gdn_chunk_state<DK><<<dim3(H, DK / 32), 256, smem_state, stream>>>(S, conv, Ub, Wb, Pb, Gb, o, T, t_base, n_chunks, groups, H, ch);
-    }
-    ck(cudaGetLastError(), "gdn chunked");
-}
 }
 
 GdnState alloc_gdn_state(const Spec& s) {
@@ -2252,6 +2216,43 @@ __global__ void k_idx_select(const float* scores, int ld, int32_t* cells, int32_
 }
 
 }  // namespace
+
+size_t gdn_chunk_ws_bytes(const Spec& s) {
+    const size_t items = size_t(kGdnSlab) * s.ssm_heads, C = kGdnChunk, dk = s.ssm_state;
+    return items * C * (2 * dk + C + 1) * 4;   // U~, W, P, G
+}
+
+void gdn_delta_prefill(const Spec& s, float* S, const float* conv, const float* g, const float* beta, float* o, int T, bool chunked, void* ws,
+                       cudaStream_t stream) {
+    const int H = s.ssm_heads, dk = s.ssm_state, groups = s.ssm_groups, ch = gdn_channels(s);
+    if (dk != 128) throw std::runtime_error("gdn_delta_prefill: state 128 only");
+    if (!chunked) {
+        k_gdn_delta_col<128><<<dim3(H, 128 / (16 * kGdnColWarps)), 32 * kGdnColWarps, 0, stream>>>(S, S, nullptr, conv, g, beta, o, T, groups,
+                                                                                                    H, ch);
+        ck(cudaGetLastError(), "gdn column");
+        return;
+    }
+    constexpr int C = kGdnChunk, DK = 128;
+    const size_t items = size_t(kGdnSlab) * H;
+    float* Ub = static_cast<float*>(ws);
+    float* Wb = Ub + items * C * DK;
+    float* Pb = Wb + items * C * DK;
+    float* Gb = Pb + items * C * C;
+    const size_t smem_prep = size_t(2 * C * (DK + 1) + C * (C + 1)) * 4;
+    const size_t smem_state = size_t(C * (DK + 1) + DK * 32 + C * 32 + C * C) * 4;
+    static bool attr = false;
+    if (!attr) {
+        ck(cudaFuncSetAttribute(k_gdn_chunk_prep<DK>, cudaFuncAttributeMaxDynamicSharedMemorySize, int(smem_prep)), "gdn prep smem");
+        ck(cudaFuncSetAttribute(k_gdn_chunk_state<DK>, cudaFuncAttributeMaxDynamicSharedMemorySize, int(smem_state)), "gdn state smem");
+        attr = true;
+    }
+    for (int t_base = 0; t_base < T; t_base += kGdnSlab * C) {
+        const int n_chunks = std::min(kGdnSlab, (T - t_base + C - 1) / C);
+        k_gdn_chunk_prep<DK><<<dim3(n_chunks, H), 256, smem_prep, stream>>>(conv, g, beta, T, t_base, groups, H, ch, Ub, Wb, Pb, Gb);
+        k_gdn_chunk_state<DK><<<dim3(H, DK / 32), 256, smem_state, stream>>>(S, conv, Ub, Wb, Pb, Gb, o, T, t_base, n_chunks, groups, H, ch);
+    }
+    ck(cudaGetLastError(), "gdn chunked");
+}
 
 void qsa_h2q8_rows(const void* src_f16, void* dst_q8, void* dst_scales, long n_rows, int dim, cudaStream_t stream) {
     const long groups = n_rows * (dim / 32);
