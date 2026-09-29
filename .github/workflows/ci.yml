@@ -1,5 +1,6 @@
-# CI on GitHub's hosted runners (no GPU): the CPU build and its tests, and the server's unit
-# tests and lints. The CUDA kernels and their tests run on the target box (README: Tests).
+# CI on GitHub's hosted runners (no GPU): the CPU build and its tests; the whole tree with CUDA
+# for sm_120, compiled in NVIDIA's CUDA 12.9 container, with the CPU tests of that build; and the
+# server's unit tests and lints. The GPU tests (ctest -L gpu) run on the target box (README: Tests).
 name: ci
 on:
   push:
@@ -15,6 +16,16 @@ jobs:
       - run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DFLASHRT_CUDA=OFF -DFLASHRT_NATIVE=OFF
       - run: cmake --build build
       - run: ctest --test-dir build --output-on-failure
+
+  cuda:
+    runs-on: ubuntu-24.04
+    container: nvidia/cuda:12.9.1-devel-ubuntu24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: apt-get update && apt-get install -y --no-install-recommends cmake ninja-build g++
+      - run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=120 -DFLASHRT_NATIVE=OFF
+      - run: cmake --build build
+      - run: ctest --test-dir build --output-on-failure -L cpu
 
   server:
     runs-on: ubuntu-24.04
