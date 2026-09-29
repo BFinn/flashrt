@@ -152,10 +152,12 @@ def compare_state(ref_top, ev, kl_tol):
 def reuse(a, ids, p, read):
     """The --reuse sequence; returns the exit status."""
     greedy = {"temperature": 0.0, "top_k": 20, "top_p": 1.0}
-    # N = 64 k + 25: the tail checkpoint (24 tokens before the last prompt token) then falls on a
-    # multiple of 64, as the chunk-end checkpoints do, so the restored run's chunked GDN works on
-    # the same 64-token sub-chunks as the cold run's and the comparison can be tight
-    N = (a.n - 25) // 64 * 64 + 25
+    # N = 2048 k + 25 (with --prefill-chunk 2048): the tail checkpoint, 24 tokens before the last
+    # prompt token, then falls on the cold runs' chunk grid, as the other cases' checkpoints do.
+    # The restored run's chunks are then the cold run's chunks, and its state must be the same bit
+    # for bit. Off the grid, a token lands in a chunk of another length and start, and the chunked
+    # prefill rounds differently (the GDN's slabs, the dense MMQ's split of K): sw95d, sw95e.
+    N = (a.n - 25) // 2048 * 2048 + 25
     A = ids[:N]
     other = ids[3 * N:]   # unrelated text
     failed = []
