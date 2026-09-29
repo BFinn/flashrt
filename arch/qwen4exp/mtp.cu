@@ -4,6 +4,7 @@
 #include "core/fp16.hpp"
 #include "core/platform.hpp"
 #include "core/gguf.hpp"
+#include "kernels/cuda/ggml_gemm.h"
 #include "kernels/cuda/ggml_gemv.h"
 
 #include <fcntl.h>
@@ -263,29 +264,68 @@ MtpHead::MtpHead(const Gguf& g, const Spec& target, const GpuWeights& target_w, 
     ck(cudaMalloc(&h_in_, size_t(s_.hc_count) * s_.d_model * 4), "cudaMalloc MTP chain");
     ck(cudaMalloc(&chain_logits_, size_t(ts_.n_vocab) * 4), "cudaMalloc MTP chain");
 
-    scratch_ = alloc_block_scratch(s_, max_batch);
     kv_ = alloc_qsa_cache(s_, max_ctx, kv_q8, kv_hot_blocks);
-    const size_t n = s_.d_model, hc = s_.hc_count, B = max_batch, K = s_.top_k, ff = s_.d_ff_expert, cb = std::min(max_batch, 8);
-    x_ = dalloc<float>(B * hc * n);
-    emb_ = dalloc<float>(B * n);
-    en_ = dalloc<float>(B * n);
-    hn_ = dalloc<float>(B * hc * n);
-    cat_ = dalloc<float>(B * hc * 2 * n);
-    mixed_ = dalloc<float>(B * n);
-    inject_ = dalloc<float>(B * hc);
-    blk_ = dalloc<float>(B * n);
-    norm_ = dalloc<float>(B * n);
-    ids_ = dalloc<int32_t>(B * K);
-    wts_ = dalloc<float>(B * K);
-    logits_e_ = dalloc<float>(B * s_.n_expert);
-    xq_ = dalloc<uint8_t>(gemv::q8_1_bytes(n, int(cb)));
-    hq_ = dalloc<uint8_t>(gemv::q8_1_bytes(std::max<size_t>(ff, s_.d_ff_shared), int(cb * K)));
-    hid_ = dalloc<float>(cb * K * ff);
-    yd_ = dalloc<float>(cb * K * n);
-    sg_ = dalloc<float>(B * s_.d_ff_shared);
-    su_ = dalloc<float>(B * s_.d_ff_shared);
-    sh_ = dalloc<float>(B * n);
-    gate_ = dalloc<float>(B);
+    alloc_bufs(dec_, max_batch, false);
+    use_bufs(dec_);
+}
+
+// The buffers of calls of up to T rows. The decode set has the 8-row MoE slices' buffers; the
+// chunk set has the grouped MoE's instead (gate and up rows, outputs for every (row, slot), the
+// gemm workspace) and the h_prev rows of a call.
+void MtpHead::alloc_bufs(Bufs& b, int T, bool chunk) {
+    const size_t n = s_.d_model, hc = s_.hc_count, B = size_t(T), K = s_.top_k, ff = s_.d_ff_expert, ffs = s_.d_ff_shared;
+    b.scratch = alloc_block_scratch(s_, T);
+    b.x = dalloc<float>(B * hc * n);
+    b.emb = dalloc<float>(B * n);
+    b.en = dalloc<float>(B * n);
+    b.hn = dalloc<float>(B * hc * n);
+    b.cat = dalloc<float>(B * hc * 2 * n);
+    b.mixed = dalloc<float>(B * n);
+    b.inject = dalloc<float>(B * hc);
+    b.blk = dalloc<float>(B * n);
+    b.norm = dalloc<float>(B * n);
+    b.ids = dalloc<int32_t>(B * K);
+    b.wts = dalloc<float>(B * K);
+    b.logits_e = dalloc<float>(B * s_.n_expert);
+    b.sg = dalloc<float>(B * ffs);
+    b.su = dalloc<float>(B * ffs);
+    b.sh = dalloc<float>(B * n);
+    b.gate = dalloc<float>(B);
+    if (chunk) {
+        b.hg = dalloc<float>(B * K * ff);
+        b.hu = dalloc<float>(B * K * ff);
+        b.yd = dalloc<float>(B * K * n);
+        b.hin = dalloc<float>(B * hc * n);
+        b.ws_bytes = gemm::workspace_bytes(int64_t(std::max(n, ff)), int64_t(B * K), false);   // Q8_1 activations only
+        b.ws = dalloc<uint8_t>(b.ws_bytes);
+    } else {
+        const size_t cb = std::min<size_t>(B, 8);
+        b.xq = dalloc<uint8_t>(gemv::q8_1_bytes(n, int(cb)));
+        b.hq = dalloc<uint8_t>(gemv::q8_1_bytes(std::max(ff, ffs), int(cb * K)));
+        b.hid = dalloc<float>(cb * K * ff);
+        b.yd = dalloc<float>(cb * K * n);
+    }
+    b.cap = T;
+}
+
+void MtpHead::free_bufs(Bufs& b) {
+    if (!b.cap) return;
+    free_block_scratch(b.scratch);
+    for (void* p : {static_cast<void*>(b.x), static_cast<void*>(b.emb), static_cast<void*>(b.en), static_cast<void*>(b.hn),
+                    static_cast<void*>(b.cat), static_cast<void*>(b.mixed), static_cast<void*>(b.inject), static_cast<void*>(b.blk),
+                    static_cast<void*>(b.norm), static_cast<void*>(b.ids), static_cast<void*>(b.wts), static_cast<void*>(b.logits_e),
+                    b.xq, b.hq, static_cast<void*>(b.hid), static_cast<void*>(b.yd), static_cast<void*>(b.sg), static_cast<void*>(b.su),
+                    static_cast<void*>(b.sh), static_cast<void*>(b.gate), static_cast<void*>(b.hg), static_cast<void*>(b.hu),
+                    static_cast<void*>(b.hin), b.ws})
+        if (p) cudaFree(p);
+    b = Bufs{};
+}
+
+void MtpHead::use_bufs(Bufs& b) {
+    x_ = b.x, emb_ = b.emb, en_ = b.en, hn_ = b.hn, cat_ = b.cat, mixed_ = b.mixed, inject_ = b.inject, blk_ = b.blk, norm_ = b.norm;
+    ids_ = b.ids, wts_ = b.wts, logits_e_ = b.logits_e, xq_ = b.xq, hq_ = b.hq, hid_ = b.hid, yd_ = b.yd;
+    sg_ = b.sg, su_ = b.su, sh_ = b.sh, gate_ = b.gate, hg_ = b.hg, hu_ = b.hu, mws_ = b.ws, mws_bytes_ = b.ws_bytes;
+    scr_ = &b.scratch;
 }
 
 void MtpHead::load_experts_q4(const Gguf& g, bool q2) {
@@ -487,7 +527,7 @@ std::vector<int32_t> MtpHead::draft_chain(int row, int pos, int k) {
     ck(cudaMemcpyAsync(h_in_, x_ + size_t(row) * hc * n, size_t(hc) * n * 4, cudaMemcpyDeviceToDevice, stream_), "chain h");
     if (k > 1) {
         cudaGraphExec_t& graph = sampled_ ? chain_graph_s_ : chain_graph_;   // one per draft kind
-        if ((chain_graph_ || chain_graph_s_) && !same_buffers(chain_scratch_, scratch_)) {   // an eager call grew the scratch
+        if ((chain_graph_ || chain_graph_s_) && !same_buffers(chain_scratch_, dec_.scratch)) {   // an eager call grew the scratch
             for (cudaGraphExec_t* gp : {&chain_graph_, &chain_graph_s_})
                 if (*gp) {
                     cudaGraphExecDestroy(*gp);
@@ -495,7 +535,7 @@ std::vector<int32_t> MtpHead::draft_chain(int row, int pos, int k) {
                 }
         }
         if (!graph) {   // one chained step: forward at (dp[0], dp[1]), its draft, the bookkeeping, h for the next
-            qsa_scratch_reserve(s_, scratch_, 1, kv_.capacity / s_.qsa_block);
+            qsa_scratch_reserve(s_, dec_.scratch, 1, kv_.capacity / s_.qsa_block);
             cudaGraph_t g = nullptr;
             ck(cudaStreamBeginCapture(stream_, cudaStreamCaptureModeThreadLocal), "begin MTP capture");
             enqueue(h_in_, nullptr, 1, 0, 0, chain_logits_, chain_dp_);
@@ -505,7 +545,7 @@ std::vector<int32_t> MtpHead::draft_chain(int row, int pos, int k) {
             ck(cudaStreamEndCapture(stream_, &g), "end MTP capture");
             ck(cudaGraphInstantiate(&graph, g, 0), "instantiate MTP graph");
             cudaGraphDestroy(g);
-            chain_scratch_ = scratch_;
+            chain_scratch_ = dec_.scratch;
         }
         for (int j = 1; j < k; ++j) ck(cudaGraphLaunch(graph, stream_), "launch MTP graph");
     }
@@ -538,21 +578,25 @@ MtpHead::~MtpHead() {
     if (head_.dev) cudaFree(head_.dev);
     if (amax_dev_) cudaFree(amax_dev_);
     if (amax_host_) cudaFreeHost(amax_host_);
-    free_block_scratch(scratch_);
     free_qsa_cache(kv_);
-    for (void* p : {static_cast<void*>(x_), static_cast<void*>(emb_), static_cast<void*>(en_), static_cast<void*>(hn_),
-                    static_cast<void*>(cat_), static_cast<void*>(mixed_), static_cast<void*>(inject_), static_cast<void*>(blk_),
-                    static_cast<void*>(norm_), static_cast<void*>(ids_), static_cast<void*>(wts_), static_cast<void*>(logits_e_), xq_,
-                    hq_, static_cast<void*>(hid_), static_cast<void*>(yd_), static_cast<void*>(sg_), static_cast<void*>(su_),
-                    static_cast<void*>(sh_), static_cast<void*>(gate_)})
-        if (p) cudaFree(p);
+    free_bufs(chunk_);
+    free_bufs(dec_);
 }
 
-void MtpHead::prefill_begin(int pos, int end_pos) { qsa_mirror_begin(s_, kv_, pos, end_pos, stream_); }
+void MtpHead::prefill_begin(int pos, int end_pos) {
+    qsa_mirror_begin(s_, kv_, pos, end_pos, stream_);
+    static const bool chunk_on = [] {   // FLASHRT_MTP_CHUNK=0: the prompt pass in batches of max_batch
+        const char* e = std::getenv("FLASHRT_MTP_CHUNK");
+        return !(e && e[0] == '0');
+    }();
+    if (chunk_on && !chunk_.cap) alloc_bufs(chunk_, kChunkRows, true);
+}
 
 void MtpHead::prefill_end() {
     ck(cudaStreamSynchronize(stream_), "MTP prefill end");
     qsa_mirror_end(kv_);
+    use_bufs(dec_);
+    free_bufs(chunk_);
 }
 
 void MtpHead::reset() {
@@ -561,14 +605,32 @@ void MtpHead::reset() {
     ck(cudaStreamSynchronize(stream_), "MTP reset");
 }
 
-// The draft block's MoE: every expert in VRAM (the GGUF's type), routed on the GPU, in chunks
-// of up to 8 tokens.
+// The draft block's MoE: every expert in VRAM (the GGUF's type), routed on the GPU. Decode and
+// small batches: mat-vec kernels in slices of up to 8 tokens. Chunk calls (the chunk set, during
+// a chunked prefill): grouped expert GEMMs over the whole call.
 void MtpHead::moe(const BlockCtx& c, const float* x, int T, float* out) {
     const int n = s_.d_model, E = s_.n_expert, K = s_.top_k, ff = s_.d_ff_expert, ffs = s_.d_ff_shared;
     const GpuTensor &wg = exps_[0], &wu = exps_[1], &wd = exps_[2];
     const int64_t gu_stride = gemv::row_bytes(wu.type, n) * ff, d_stride = gemv::row_bytes(wd.type, ff) * n;
     linear(c, w_.layer(il_, "ffn_gate_inp.weight"), x, logits_e_, T);
     k_mtp_route<<<T, ((E + 31) / 32) * 32, 0, c.stream>>>(logits_e_, E, K, ids_, wts_);
+    if (hg_) {   // a chunk: the experts as grouped GEMMs over every row of the call (sw102)
+        const gemm::MoePlan pgu = gemm::moe_prepare(wu.type, E, x, false, ids_, T, K, n, mws_, mws_bytes_, c.stream);
+        gemm::moe_run(pgu, wg.dev, gu_stride, hg_, ff, c.stream);
+        gemm::moe_run(pgu, wu.dev, gu_stride, hu_, ff, c.stream);
+        const size_t nh = size_t(T) * K * ff;
+        k_swiglu_rows<<<unsigned((nh + 255) / 256), 256, 0, c.stream>>>(hg_, hu_, int(nh));
+        const gemm::MoePlan pd = gemm::moe_prepare(wd.type, E, hg_, true, ids_, T, K, ff, mws_, mws_bytes_, c.stream);
+        gemm::moe_run(pd, wd.dev, d_stride, yd_, n, c.stream);
+        linear(c, w_.layer(il_, "ffn_gate_shexp.weight"), x, sg_, T);
+        linear(c, w_.layer(il_, "ffn_up_shexp.weight"), x, su_, T);
+        k_swiglu_rows<<<unsigned((size_t(T) * ffs + 255) / 256), 256, 0, c.stream>>>(sg_, su_, T * ffs);
+        linear(c, w_.layer(il_, "ffn_down_shexp.weight"), sg_, sh_, T);
+        linear(c, w_.layer(il_, "ffn_gate_inp_shexp.weight"), x, gate_, T);
+        k_mtp_moe_combine<<<dim3((n + 255) / 256, T), 256, 0, c.stream>>>(out, yd_, wts_, sh_, gate_, n, K);
+        ck(cudaGetLastError(), "MTP moe (grouped)");
+        return;
+    }
     for (int t0 = 0; t0 < T; t0 += 8) {
         const int nt = std::min(8, T - t0);
         gemv::quantize_q8_1(x + size_t(t0) * n, n, nt, xq_, c.stream);
@@ -592,10 +654,11 @@ void MtpHead::forward(const float* h_prev, const int32_t* tokens, int T, int pos
 }
 
 void MtpHead::enqueue(const float* h_prev, const int32_t* tokens, int T, int pos0, int out_from, float* logits_dev, const int32_t* dp) {
-    if (T < 1 || T > max_batch_) throw std::runtime_error("MtpHead: bad batch size");
+    if (T < 1 || T > std::max(max_batch_, chunk_.cap)) throw std::runtime_error("MtpHead: bad batch size");
+    use_bufs(T > max_batch_ ? chunk_ : dec_);
     const int n = s_.d_model, hc = s_.hc_count, il = il_;
-    const BlockCtx c{s_, w_, scratch_, stream_, dp};
-    const BlockCtx ct{ts_, tw_, scratch_, stream_, dp};   // the target's embedding and head
+    const BlockCtx c{s_, w_, *scr_, stream_, dp};
+    const BlockCtx ct{ts_, tw_, *scr_, stream_, dp};   // the target's embedding and head
     // input: per stream, eh_proj([enorm(embed(x)) | hnorm(h_prev)]); h_prev is read before x_ is written
     rms_norm_rows(c, h_prev, static_cast<const float*>(w_.layer(il, "nextn.hnorm.weight").dev), hn_, n, hc, T * hc);
     embed(ct, tokens, T, emb_);

@@ -89,8 +89,14 @@ public:
     // the target's chunks have theirs), so the head's pass over the prompt attends on tensor
     // cores instead of through the hot set, whose cost grows with depth (P-1). prefill_end()
     // frees it; both are no-ops without a hot set.
+    // Also, for the prefill's length, a second buffer set for calls of up to chunk_rows() rows:
+    // forward() with more than max_batch rows uses it, and runs the MoE as grouped expert GEMMs
+    // over the whole call (every expert read once per call) instead of 8-row mat-vec slices.
+    // chunk_input() holds a call's h_prev rows. FLASHRT_MTP_CHUNK=0: batches of max_batch as before.
     void prefill_begin(int pos, int end_pos);
     void prefill_end();
+    int chunk_rows() const { return chunk_.cap; }
+    float* chunk_input() { return chunk_.hin; }
     // The indexer ring and the streams the next catch-up starts from (h [hc][n]): what a
     // restored checkpoint of the target also needs from the head.
     void save_checkpoint(const float* h_dev);
@@ -110,6 +116,27 @@ public:
 private:
     void enqueue(const float* h_prev, const int32_t* tokens, int T, int pos0, int out_from, float* logits_dev, const int32_t* dp);
     void moe(const BlockCtx& c, const float* x, int T, float* out);
+    // per-call buffers: `dec_` for decode, drafting and small batches (the draft chain's graphs
+    // are captured on it), `chunk_` during a chunked prefill; the members below point at one set
+    struct Bufs {
+        float *x = nullptr, *emb = nullptr, *en = nullptr, *hn = nullptr, *cat = nullptr, *mixed = nullptr, *inject = nullptr,
+              *blk = nullptr, *norm = nullptr, *wts = nullptr, *hid = nullptr, *yd = nullptr, *sg = nullptr, *su = nullptr,
+              *sh = nullptr, *gate = nullptr, *logits_e = nullptr;
+        int32_t* ids = nullptr;
+        void *xq = nullptr, *hq = nullptr;
+        // grouped MoE (chunk set only): gate and up rows [T][K][ff], the gemm workspace, h_prev rows
+        float *hg = nullptr, *hu = nullptr, *hin = nullptr;
+        void* ws = nullptr;
+        size_t ws_bytes = 0;
+        BlockScratch scratch;
+        int cap = 0;
+    };
+    void alloc_bufs(Bufs& b, int T, bool chunk);
+    void free_bufs(Bufs& b);
+    void use_bufs(Bufs& b);
+    Bufs dec_, chunk_;
+    static constexpr int kChunkRows = 1024;   // rows per call in a chunked prefill (~450 MiB of buffers)
+    BlockScratch* scr_ = nullptr;   // the current set's scratch
     void load_experts_q4(const Gguf& g, bool q2);   // Q4_0, or Q2_0 when q2
 
     Spec s_;                 // the target's spec with the draft layer appended
@@ -119,7 +146,6 @@ private:
     int il_ = 0;
     int max_batch_;
     cudaStream_t stream_;
-    BlockScratch scratch_;
     QsaCache kv_;
     float *x_ = nullptr, *emb_ = nullptr, *en_ = nullptr, *hn_ = nullptr, *cat_ = nullptr, *mixed_ = nullptr,
           *inject_ = nullptr, *blk_ = nullptr, *norm_ = nullptr;
@@ -129,6 +155,9 @@ private:
     void* xq_ = nullptr;
     void* hq_ = nullptr;
     float *hid_ = nullptr, *yd_ = nullptr, *sg_ = nullptr, *su_ = nullptr, *sh_ = nullptr, *gate_ = nullptr, *logits_e_ = nullptr;
+    float *hg_ = nullptr, *hu_ = nullptr;   // non-null in the chunk set: the grouped MoE
+    void* mws_ = nullptr;
+    size_t mws_bytes_ = 0;
     // experts requantized at load (gate, up, down), outside w_
     GpuTensor exps_[3];
     void* exp_dev_ = nullptr;

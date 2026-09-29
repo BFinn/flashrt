@@ -218,18 +218,21 @@ struct Session::Impl {
     }
 
     // The draft head catches up on target rows p0 .. p0 + T - 1 (their streams are in
-    // fwd->streams()): its input at q is (h_{q-1}, x_q). In slices of its batch.
+    // fwd->streams()): its input at q is (h_{q-1}, x_q). In slices of its batch, or during a
+    // chunked prefill of its chunk calls (grouped expert GEMMs, sw102).
     void mtp_catchup(const int32_t* toks, int p0, int T) {
         if (!mtp) return;
         cudaStream_t st = fwd->stream();
-        const int B = o.prefill_batch;
+        const bool big = mtp->chunk_rows() > 0 && T > o.prefill_batch;
+        const int B = big ? mtp->chunk_rows() : o.prefill_batch;
+        float* first = big ? mtp->chunk_input() : h_buf;   // the first slice's rows: h_carry, then the target's
         for (int j = 0; j < T; j += B) {
             const int Tj = std::min(B, T - j);
             const float* h = fwd->streams() + size_t(j - 1) * hrow;   // rows j-1 .. j+Tj-2
             if (j == 0) {
-                ck(cudaMemcpyAsync(h_buf, h_carry, hrow * 4, cudaMemcpyDeviceToDevice, st), "h");
-                if (Tj > 1) ck(cudaMemcpyAsync(h_buf + hrow, fwd->streams(), size_t(Tj - 1) * hrow * 4, cudaMemcpyDeviceToDevice, st), "h");
-                h = h_buf;
+                ck(cudaMemcpyAsync(first, h_carry, hrow * 4, cudaMemcpyDeviceToDevice, st), "h");
+                if (Tj > 1) ck(cudaMemcpyAsync(first + hrow, fwd->streams(), size_t(Tj - 1) * hrow * 4, cudaMemcpyDeviceToDevice, st), "h");
+                h = first;
             }
             mtp->forward(h, toks + p0 + j, Tj, p0 + j, Tj, nullptr);
         }
@@ -466,7 +469,7 @@ GenerateResult Session::run(const GenerateRequest& r, const std::function<void(i
     int step = m.o.prefill_batch;
     if (chunked) {   // experts stream to the GPU; the expert cache's memory is lent to the chunks
         m.cache_release();
-        if (m.mtp && !getenv_off("FLASHRT_MTP_MIRROR")) m.mtp->prefill_begin(from, end);   // before the chunk length is picked
+        if (m.mtp && !getenv_off("FLASHRT_MTP_MIRROR")) m.mtp->prefill_begin(from, end);   // before the chunk length is picked: its mirror and chunk buffers
         m.fwd->set_prefill_lookahead(P.data(), end);
         size_t free_b = 0, total_b = 0;
         ck(cudaMemGetInfo(&free_b, &total_b), "cudaMemGetInfo");

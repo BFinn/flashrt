@@ -149,4 +149,5 @@ All default to the tuned setting. Setting one to `0` restores the older path for
 | `FLASHRT_FUSE_EPI` | on | decode/prefill epilogue fusions and shared input conversions | sw74, sw82 |
 | `FLASHRT_DB_SKIP` | on | tokens without CPU misses skip the doorbell round trip | sw77 |
 | `FLASHRT_ATTN_TC` / `FLASHRT_IDX_TC` | on | tensor-core attention and indexer scores in prefill | sw46, sw49 |
+| `FLASHRT_MTP_CHUNK` | on | the MTP head's prompt pass in calls of 1,024 rows with grouped expert GEMMs (needs the mirror) | sw102 |
 | `FLASHRT_MTP_MIRROR` | on | the MTP head's KV mirrored in VRAM during a chunked prefill, so its prompt pass uses the tensor-core attention | sw98 |
