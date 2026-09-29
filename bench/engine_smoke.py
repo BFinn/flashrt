@@ -18,10 +18,12 @@ engine runs with FLASHRT_TEST_HOOKS=1). A greedy reference request A comes first
   - a fault injected after the first prefill chunk, and one in the first decode step, and a
     "stop" during the prefill: A again runs cold (reused 0) and succeeds.
 Each follow-up's state after the prompt must match the reference's: the same top token at the
-first generated position, and the reference's top 4 logits there within --logit-tol. Tokens are
-not compared: a GPU hit and a CPU miss differ in the last bits, so greedy tokens depend on the
-expert cache's content (docs/engine.md), and the reference and a follow-up see different caches.
-The number of leading tokens they share is printed for information. Exits 1 when a check fails.
+first generated position, and the KL divergence over the reference's top 8 there within --kl-tol.
+That catches a broken state (a negative control, a different text, must fail it), not small
+numeric differences. Tokens are not compared: a GPU hit and a CPU miss differ in the last bits,
+so greedy tokens depend on the expert cache's content (docs/engine.md), and the reference and a
+follow-up see different caches (sw92: 1-14 leading tokens shared, relative logits of the less
+likely candidates up to 0.8 apart, KL at most 0.0002). Exits 1 when a check fails.
 
   engine_smoke.py ENGINE MODEL --ids IDS [--n 2048] [--gen 64] [--temp 1.0] [--seed 1] [--faults] -- [engine args]
 
@@ -47,7 +49,7 @@ def main():
     ap.add_argument("--temp", type=float, default=1.0)
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--faults", action="store_true")
-    ap.add_argument("--logit-tol", type=float, default=0.25)
+    ap.add_argument("--kl-tol", type=float, default=0.001)
     argv = sys.argv[1:]
     cut = argv.index("--") if "--" in argv else len(argv)
     a = ap.parse_args(argv[:cut])
@@ -161,7 +163,7 @@ def faults(a, ids, ready, p, read):
 
         pr, pf = probs(ref_top), probs(ev["first_top"])
         kl = sum(p * math.log(p / pf.get(t, 1e-9)) for t, p in pr.items())
-        return d <= a.logit_tol, f"relative logits within {d:.4f} (shift {shift:+.3f}), KL(top 8) {kl:.5f}"
+        return kl <= a.kl_tol, f"KL(top 8) {kl:.5f}, relative logits within {d:.4f} (shift {shift:+.3f})"
 
     def follow_up(name, want_reused):
         ev, toks = request(name + "-next", A)
@@ -192,10 +194,10 @@ def faults(a, ids, ready, p, read):
     ev, _ = request("stop-in-prefill", ids[a.n:2 * a.n], stop_on_progress=True)
     check("stop-in-prefill cancelled", ev["ev"] == "done" and ev["finish"] == "cancelled", ev.get("finish") or ev.get("msg"))
     follow_up("stop-in-prefill", 0)
-    # how sensitive the state check is: A with one token 2,000 positions back changed
-    ev, _ = request("sensitivity", A[:10] + [(A[10] + 1) % 1000 + 1000] + A[11:])
+    # negative control: another text must fail the state check
+    ev, _ = request("control", ids[4 * a.n:5 * a.n])
     ok, detail = same_state(ev)
-    print(f"info sensitivity: A with its 11th token changed: {detail} ({'undetected' if ok else 'detected'})")
+    check("negative control detected", not ok, detail)
     print(f"info reference top 8: {ref_top}")
     send({"op": "quit"})
     p.wait(timeout=60)
