@@ -7,6 +7,11 @@ on:
     branches: [main]
   pull_request:
 
+# a newer push supersedes a running check of the same branch (the CUDA build takes a while)
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   cpu:
     runs-on: ubuntu-24.04
