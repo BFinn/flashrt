@@ -98,11 +98,18 @@ struct Session::Impl {
     int32_t *tok_dev = nullptr, *tok_host = nullptr;
 
     explicit Impl(const SessionOptions& opt) : o(opt), g(Gguf::open(opt.model)), s(parse(g)), plan(qwen4exp::plan(g, s)) {
+        auto t = Clock::now();
+        auto stage = [&](const char* what) {   // the load's stages, timed, in the log
+            std::fprintf(stderr, "flashrt: %s in %.1f s\n", what, ms_since(t) / 1000);
+            t = Clock::now();
+        };
         w.load(g, plan, true);
+        stage("GPU weights loaded");
         arena = arena_alloc(s.n_layer, s.n_expert, q2_0::expert_bytes({s.d_model, s.d_ff_expert}), PageMode::THP, 0);
         if (!arena.buf.ptr) throw std::runtime_error("expert arena allocation failed");
         load_experts(g, s, arena, 12);
         arena_register(arena);   // now, not in the first long prompt's prefill
+        stage("experts read into the host arena and registered");
         cpus = physical_cpus();
         pool = std::make_unique<CpuPool>(o.workers, cpus);   // pins this thread to cpus[0] for now
         const bool spec = !o.mtp.empty() && o.spec_k > 0;
@@ -110,11 +117,13 @@ struct Session::Impl {
         fwd = std::make_unique<ForwardRef>(g, s, w, arena, *pool, o.max_ctx + 16, o.prefill_batch, o.kv_q8 || o.kv_hot > 0, o.kv_hot);
         fwd->set_count_half_life(4096);
         hrow = size_t(s.hc_count) * s.d_model;
+        stage("forward pass set up");
         if (spec) {
             fwd->enable_windows(W);
             g_mtp = std::make_unique<Gguf>(Gguf::open(o.mtp));
             mtp = std::make_unique<MtpHead>(*g_mtp, s, w, fwd->stream(), o.max_ctx + 16, o.prefill_batch, o.kv_q8 || o.kv_hot > 0, o.kv_hot,
                                             o.mtp_bits);
+            stage("MTP head loaded");
             if (!o.draft_vocab.empty()) {
                 std::ifstream f(o.draft_vocab);
                 if (!f) throw std::runtime_error("cannot read " + o.draft_vocab);
@@ -147,6 +156,7 @@ struct Session::Impl {
             for (int i = 0; i < o.ckpts; ++i) ring.push_back({-1, ring_mem + each * size_t(i)});
             std::fprintf(stderr, "flashrt: %d prefill checkpoints of %.1f MiB in host RAM\n", o.ckpts, double(each) / (1 << 20));
         }
+        stage("buffers and checkpoints allocated");
         // the expert cache takes the VRAM that is left; it is filled after the first prefill
         size_t free_b = 0, total_b = 0;
         ck(cudaMemGetInfo(&free_b, &total_b), "cudaMemGetInfo");
@@ -175,6 +185,7 @@ struct Session::Impl {
             refill_cache();
             std::fprintf(stderr, "flashrt: expert cache filled from %s (%lld tokens)\n", o.cache_prior.c_str(), (long long)h[3]);
         }
+        stage("expert cache and miss server set up");
         std::fprintf(stderr, "flashrt: %s, %d layers, expert cache %d slots (%.1f%%), %s\n", s.arch.c_str(), s.n_layer, cache.n_slots,
                      100.0 * cache.n_slots / (s.n_layer * s.n_expert),
                      spec ? ("MTP drafts " + std::to_string(o.spec_k) + " per round").c_str() : "no speculation");
