@@ -1,0 +1,16 @@
+ok   models: {"id": "flashrt", "object": "model", "owned_by": "flashrt", "context_length": 131072}
+ok   chat, no thinking: '391', finish stop, {'prompt_tokens': 28, 'completion_tokens': 3, 'total_tokens': 31, 'prompt_tokens_details': {'cached_tokens': 0}}, 0.7 s
+ok   timings: {"cache_n": 0, "prompt_n": 28, "prompt_ms": 675.992838, "prompt_per_second": 41.42055718051853, "predicted_n": 3, "predicted_ms": 28.100389, "predicted_per_second": 106.76008791195027, "draft_n": 2, "draft_n_accepted": 2, "expert_cache": {"hits": 1036, "misses": 404}}
+ok   chat stream with reasoning: 866 chars reasoning, content 'Red, green, and blue — the primary colours of light (RGB).', finish stop, {'prompt_tokens': 59, 'completion_tokens': 218, 'total_tokens': 277, 'prompt_tokens_details': {'cached_tokens': 0}}, 97.8 tok/s after the first token
+ok   tool call: [{'id': 'call_c8249b14769feb2f7d824420', 'type': 'function', 'function': {'name': 'get_weather', 'arguments': '{"city":"Paris"}'}}], usage {'prompt_tokens': 327, 'completion_tokens': 44, 'total_tokens': 371, 'prompt_tokens_details': {'cached_tokens': 0}}
+ok   tool result turn, prefix reuse: "It's currently **18°C in Paris** with **cloudy** skies.", cached 372 of 402
+ok   stop string: '1, 2, 3, 4, 5, 6, ', finish stop
+ok   raw completion: ' Paris.'
+ok   anthropic messages: blocks ['thinking', 'text'], ' No. 91 is not prime because it can be factored:\n\n**91 = 7 × 13**', {'input_tokens': 62, 'cache_read_input_tokens': 0, 'output_tokens': 72}
+ok   anthropic stream tool_use: stop tool_use, input {'city': 'Oslo'}, 7 events
+ok   count_tokens: {"input_tokens": 54}
+ok   disconnect cancels: next request answered in 0.2 s: 'OK'
+ok   top_k 65 rejected: HTTP 400: top_k 65 is above 64, the most this engine samples from (0 means 64)
+ok   temperature -1 rejected: HTTP 400: temperature must be >= 0
+ok   top_k 0 accepted: 'OK.'
+all checks passed

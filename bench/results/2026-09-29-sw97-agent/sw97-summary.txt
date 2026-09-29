@@ -1,0 +1,4 @@
+sw97-g (n=3): 12 turns, final prompt 77402 tokens; time to first token summed over the turns 20.8 s; decode 101.9 +- 0.4 tok/s over 3897 generated tokens; hit rate (token-weighted) 73.2%; acceptance per turn 71.2%
+   per turn: hit rate 44.2% -> 72.78 tok/s ... 85.9% -> 125.13 tok/s
+sw97-t (n=3): 12 turns, final prompt 66429 tokens; time to first token summed over the turns 19.1 s; decode 102.6 +- 0.3 tok/s over 3595 generated tokens; hit rate (token-weighted) 70.4%; acceptance per turn 74.6%
+   per turn: hit rate 46.9% -> 79.52 tok/s ... 81.0% -> 123.4 tok/s
