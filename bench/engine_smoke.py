@@ -31,6 +31,7 @@ the prefill has several chunks to stop between).
 import os
 import argparse
 import json
+import math
 import subprocess
 import sys
 import time
@@ -140,12 +141,27 @@ def faults(a, ids, ready, p, read):
     ref_top = ev.get("first_top", [])
 
     def same_state(ev):
-        """(ok, max logit difference) of a follow-up's first position against the reference's."""
+        """(ok, detail) of a follow-up's first position against the reference's: the same top token,
+        and the log-probabilities of the reference's top 4 (relative to the top one, so a shift of
+        every logit does not count) within --logit-tol; the KL divergence over the top 8 is shown."""
         top = {t: l for t, l in ev.get("first_top", [])}
-        if not top or not ref_top or ev["first_top"][0][0] != ref_top[0][0]:
-            return False, float("inf")
-        d = max((abs(top[t] - l) if t in top else float("inf")) for t, l in ref_top[:4])
-        return d <= a.logit_tol, d
+        if not top or not ref_top:
+            return False, "no logits"
+        if ev["first_top"][0][0] != ref_top[0][0]:
+            return False, f"top token {ev['first_top'][0][0]} against {ref_top[0][0]}"
+        r0, f0 = ref_top[0][1], ev["first_top"][0][1]
+        d = max((abs((top[t] - f0) - (l - r0)) if t in top else float("inf")) for t, l in ref_top[:4])
+        shift = f0 - r0
+
+        def probs(pairs):
+            m = max(l for _, l in pairs)
+            e = {t: math.exp(l - m) for t, l in pairs}
+            z = sum(e.values())
+            return {t: v / z for t, v in e.items()}
+
+        pr, pf = probs(ref_top), probs(ev["first_top"])
+        kl = sum(p * math.log(p / pf.get(t, 1e-9)) for t, p in pr.items())
+        return d <= a.logit_tol, f"relative logits within {d:.4f} (shift {shift:+.3f}), KL(top 8) {kl:.5f}"
 
     def follow_up(name, want_reused):
         ev, toks = request(name + "-next", A)
@@ -153,10 +169,10 @@ def faults(a, ids, ready, p, read):
             return check(name, False, f"the next request failed: {ev.get('msg')}")
         same = next((i for i, (x, y) in enumerate(zip(toks, ref)) if x != y), min(len(toks), len(ref)))
         reuse_ok = ev["reused"] == 0 if want_reused == 0 else ev["reused"] >= want_reused
-        state_ok, d = same_state(ev)
+        state_ok, detail = same_state(ev)
         check(name, reuse_ok and state_ok,
               f"next request reused {ev['reused']} (want {'0' if want_reused == 0 else '>= %d' % want_reused}), "
-              f"top logits within {d:.4f} of the reference's; {same} of {len(ref)} tokens shared")
+              f"{detail}; {same} of {len(ref)} tokens shared")
 
     n_ctx = ready["max_context"]
     for name, prompt, sampling in [
@@ -178,9 +194,9 @@ def faults(a, ids, ready, p, read):
     follow_up("stop-in-prefill", 0)
     # how sensitive the state check is: A with one token 2,000 positions back changed
     ev, _ = request("sensitivity", A[:10] + [(A[10] + 1) % 1000 + 1000] + A[11:])
-    ok, d = same_state(ev)
-    print(f"info sensitivity: A with its 11th token changed: top logits within {d:.4f} of the reference's "
-          f"({'undetected' if ok else 'detected'} at --logit-tol {a.logit_tol})")
+    ok, detail = same_state(ev)
+    print(f"info sensitivity: A with its 11th token changed: {detail} ({'undetected' if ok else 'detected'})")
+    print(f"info reference top 8: {ref_top}")
     send({"op": "quit"})
     p.wait(timeout=60)
     print(f"engine exited with {p.returncode}; {len(failed)} check(s) failed{': ' + ', '.join(failed) if failed else ''}")
