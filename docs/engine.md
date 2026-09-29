@@ -405,13 +405,19 @@ The scripts run with `set -u`, so they stop if one is unset.
 - **Engine:** `build/flashrt-engine $M [--mtp $D --spec K --draft-vocab RANKS] [--ctx N] [--cache-prior FILE]`,
   then JSON lines on stdin (`bench/engine_smoke.py` drives it). The prior:
   `$BENCH/cache-prior-calib32k.bin` (also in `bench/results/2026-09-28-sw35-server`).
+  `engine_smoke.py --faults` checks that bad and failing requests leave it serving
+  (`bench/results/2026-09-29-sw92-faults/sw92.sh`); run it after changes to `Session` or the
+  forward's state.
 - **Server:** `cargo build --release --manifest-path server/Cargo.toml`, then
   `server/target/release/flashrt-server --model $M --port 8090 --engine build/flashrt-engine --engine-arg $M --engine-arg --mtp --engine-arg $D --engine-arg --spec --engine-arg 1 --engine-arg --draft-vocab --engine-arg RANKS --engine-arg --cache-prior --engine-arg PRIOR`
   (`--api-key KEY` to require one). Checks: `--check-tokenizer TEXT IDS`, `--render REQUEST.json`,
   and `bench/server_smoke.py --url ...` against a running server (`bench/results/2026-09-28-sw86-server/sw86.sh`
-  runs the whole check as temporary units). Only as a test unit: no service stays up on the box.
+  runs the whole check as temporary units; `2026-09-29-sw93-server/sw93.sh` also kills the engine
+  under the server and stops it gracefully). Only as a test unit: no service stays up on the box.
   Run it after any change to VRAM budgeting or the engine: sw86 caught a first-request
-  out-of-memory that `fr_bench` cannot see.
+  out-of-memory that `fr_bench` cannot see. If the engine exits, the server answers 503 and exits
+  3 s later, for a supervisor to restart; a service unit for it should set `KillMode=mixed`, so
+  that a stop reaches the server, which then asks the engine to quit (sw93).
 - **Kernel profile:**
   `/usr/local/cuda-12.9/bin/nsys profile --capture-range=cudaProfilerApi --cuda-graph-trace=node --trace=cuda build/fr_bench ... --gen 64`.
   Without `--cuda-graph-trace=node`, graphs appear as single launches.
@@ -431,6 +437,8 @@ The scripts run with `set -u`, so they stop if one is unset.
   about 30 µs per layer at steady state. Both have room to improve.
 - **`k_idx_select`** still spends about 70 µs per layer at 245K in 4 single-CTA histogram passes.
   A multi-CTA histogram would roughly halve it (estimate).
+- **Failed requests** reset the session to an empty sequence, so the next request starts cold
+  (sw92). A doorbell timeout or a sticky CUDA error ends the process (status 3).
 - **Server limits:** text only (no images); tool_choice "required" or a named tool is not
   enforced (the model decides); Anthropic thinking blocks carry an empty signature; without a
   `thinking` field the model still reasons, and the reasoning is not returned.

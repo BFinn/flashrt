@@ -1,0 +1,9 @@
+flashrt: qwen4exp, 48 layers, expert cache 8636 slots (35.1%), no speculation
+flashrt: prefill of 2047 tokens in chunks of 512 (11897 MiB free)
+flashrt: prefill of 2047 tokens in chunks of 512 (11867 MiB free)
+flashrt: prefill of 2047 tokens in chunks of 512 (11867 MiB free)
+flashrt: prefill of 2047 tokens in chunks of 512 (11867 MiB free)
+flashrt: prefill of 2047 tokens in chunks of 512 (11867 MiB free)
+flashrt: prefill of 2047 tokens in chunks of 512 (11867 MiB free)
+flashrt: prefill of 2047 tokens in chunks of 512 (11867 MiB free)
+flashrt: prefill of 2047 tokens in chunks of 512 (11867 MiB free)

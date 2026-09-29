@@ -1,0 +1,7 @@
+Running as unit: fr-server-sw93c.service; invocation ID: f51c99df2d1c41e39a90978303e466be
+fr-server-sw93c ready after 270 s
+SIGTERM to server pid 2425868
+server unit inactive after 4 s
+  [2m2026-09-29T11:28:18.299675Z[0m [32m INFO[0m [2mflashrt_server[0m[2m:[0m shutting down
+  [2m2026-09-29T11:28:19.011840Z[0m [31mERROR[0m [2mflashrt_server::engine[0m[2m:[0m engine exited
+  [2m2026-09-29T11:28:20.992516Z[0m [32m INFO[0m [2mflashrt_server::engine[0m[2m:[0m engine exited: exit status: 0

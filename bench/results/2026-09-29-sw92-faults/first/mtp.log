@@ -1,0 +1,8 @@
+flashrt: qwen4exp, 48 layers, expert cache 7782 slots (31.7%), MTP drafts 2 per round
+flashrt: prefill of 2047 tokens in chunks of 512 (10771 MiB free)
+flashrt: prefill of 2047 tokens in chunks of 512 (10663 MiB free)
+flashrt: prefill of 2047 tokens in chunks of 512 (10663 MiB free)
+flashrt: prefill of 2047 tokens in chunks of 512 (10663 MiB free)
+flashrt: prefill of 2047 tokens in chunks of 512 (10663 MiB free)
+flashrt: prefill of 2047 tokens in chunks of 512 (10663 MiB free)
+flashrt: prefill of 2047 tokens in chunks of 512 (10663 MiB free)

@@ -1,0 +1,20 @@
+ready after 21.7 s: {'ev': 'ready', 'version': '0.1.0', 'arch': 'qwen4exp', 'max_context': 32768, 'features': ['stop', 'sampling', 'prefix_reuse']}
+PASS reference: length, 32 tokens
+PASS too-long rejected: prompt longer than the context
+FAIL too-long: next request reused 2047 (want >= 2047), top logits within 0.6076 of the reference's; 4 of 32 tokens shared
+PASS bad-token rejected: token id out of range: 1000000000
+FAIL bad-token: next request reused 2047 (want >= 2047), top logits within 0.5105 of the reference's; 4 of 32 tokens shared
+PASS bad-top-k rejected: top_k must be a whole number in 1..64
+FAIL bad-top-k: next request reused 2047 (want >= 2047), top logits within 0.5105 of the reference's; 4 of 32 tokens shared
+PASS bad-temperature rejected: temperature must be >= 0
+FAIL bad-temperature: next request reused 2047 (want >= 2047), top logits within 0.7019 of the reference's; 4 of 32 tokens shared
+PASS bad-top-p rejected: top_p must be in (0, 1]
+FAIL bad-top-p: next request reused 2047 (want >= 2047), top logits within 0.5573 of the reference's; 4 of 32 tokens shared
+PASS fault-prefill reported: injected fault after a prefill step
+FAIL fault-prefill: next request reused 0 (want 0), top logits within 0.8400 of the reference's; 14 of 32 tokens shared
+PASS fault-decode reported: injected fault in a decode step
+PASS fault-decode: next request reused 0 (want 0), top logits within 0.0000 of the reference's; 4 of 32 tokens shared
+PASS stop-in-prefill cancelled: cancelled
+FAIL stop-in-prefill: next request reused 0 (want 0), top logits within 0.5139 of the reference's; 4 of 32 tokens shared
+info sensitivity: A with its 11th token changed: top logits within 0.7243 of the reference's (detected at --logit-tol 0.25)
+engine exited with 0; 7 check(s) failed: too-long, bad-token, bad-top-k, bad-temperature, bad-top-p, fault-prefill, stop-in-prefill

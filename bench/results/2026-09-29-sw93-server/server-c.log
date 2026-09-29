@@ -1,0 +1,8 @@
+flashrt: expert cache filled from $BENCH/cache-prior-calib32k.bin (32768 tokens)
+flashrt: qwen4exp, 48 layers, expert cache 7744 slots (31.5%), MTP drafts 1 per round
+[2m2026-09-29T11:28:17.171275Z[0m [32m INFO[0m [2mflashrt_server[0m[2m:[0m engine ready [3mversion[0m[2m=[0m0.1.0 [3march[0m[2m=[0mqwen4exp [3mmax_context[0m[2m=[0m65536
+[2m2026-09-29T11:28:17.171373Z[0m [32m INFO[0m [2mflashrt_server[0m[2m:[0m listening on 127.0.0.1:8090
+[2m2026-09-29T11:28:18.299675Z[0m [32m INFO[0m [2mflashrt_server[0m[2m:[0m shutting down
+[2m2026-09-29T11:28:19.011840Z[0m [31mERROR[0m [2mflashrt_server::engine[0m[2m:[0m engine exited
+[2m2026-09-29T11:28:19.011860Z[0m [31mERROR[0m [2mflashrt_server[0m[2m:[0m the engine is down; exiting in 3 s
+[2m2026-09-29T11:28:20.992516Z[0m [32m INFO[0m [2mflashrt_server::engine[0m[2m:[0m engine exited: exit status: 0

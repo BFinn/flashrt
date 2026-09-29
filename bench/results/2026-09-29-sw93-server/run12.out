@@ -1,0 +1,14 @@
+Running as unit: fr-server-sw93a.service; invocation ID: aaa451fac44b4e9f8c903f0ead6af00c
+fr-server-sw93a ready after 270 s
+smoke rc=0
+  [2m2026-09-29T11:18:47.784359Z[0m [32m INFO[0m [2mflashrt_server[0m[2m:[0m shutting down
+  [2m2026-09-29T11:18:48.270936Z[0m [31mERROR[0m [2mflashrt_server::engine[0m[2m:[0m engine exited
+  [2m2026-09-29T11:18:50.530138Z[0m [32m INFO[0m [2mflashrt_server::engine[0m[2m:[0m engine exited: signal: 15 (SIGTERM)
+Running as unit: fr-server-sw93b.service; invocation ID: ac8632f272ab4511b72bf95a2641d58f
+fr-server-sw93b ready after 270 s
+killing engine pid 2422446
+health: 503 {"status":"engine down"}
+request after the kill: HTTP 503 in 0.000464 s: {"error":{"message":"the engine is not running","type":"server_error"}}
+server exited by itself within 4 s
+  [2m2026-09-29T11:23:19.720387Z[0m [31mERROR[0m [2mflashrt_server::engine[0m[2m:[0m engine exited
+  [2m2026-09-29T11:23:19.720430Z[0m [31mERROR[0m [2mflashrt_server[0m[2m:[0m the engine is down; exiting in 3 s

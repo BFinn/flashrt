@@ -69,6 +69,11 @@ describes code that does not exist.
 
 ## Phase 1: a failed request must not poison the next one (1-2 days)
 
+**Status: done 2026-09-29** (`bench/results/2026-09-29-sw92-faults`, `2026-09-29-sw93-server`). The
+test for E-1 compares the state after the prompt by its logits, not by tokens: greedy tokens
+depend on the expert cache's content, so they differ from a fresh engine's even when nothing
+failed (sw92). E-3 (a bounded host-side doorbell wait) was done with it.
+
 | Item | Change | Test |
 |---|---|---|
 | E-1 | RAII guard in `Session::generate`: on any exception, close an open window, restore the expert cache, sync, reset the sequence state, then rethrow | `engine_smoke.py`: over-long prompt / stop during prefill / bad token id, each followed by a normal request that must match a fresh engine (greedy) |

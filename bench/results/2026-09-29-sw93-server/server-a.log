@@ -1,0 +1,21 @@
+flashrt: expert cache filled from $BENCH/cache-prior-calib32k.bin (32768 tokens)
+flashrt: qwen4exp, 48 layers, expert cache 7744 slots (31.5%), MTP drafts 1 per round
+[2m2026-09-29T11:18:38.271284Z[0m [32m INFO[0m [2mflashrt_server[0m[2m:[0m engine ready [3mversion[0m[2m=[0m0.1.0 [3march[0m[2m=[0mqwen4exp [3mmax_context[0m[2m=[0m65536
+[2m2026-09-29T11:18:38.271361Z[0m [32m INFO[0m [2mflashrt_server[0m[2m:[0m listening on 127.0.0.1:8090
+[2m2026-09-29T11:18:39.596049Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r0: prompt 28 (reused 0) in 479 ms, 3 tokens in 52 ms, Stop
+[2m2026-09-29T11:18:41.518923Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r1: prompt 59 (reused 0) in 509 ms, 110 tokens in 1413 ms, Stop
+flashrt: prefill of 326 tokens in chunks of 326 (10523 MiB free)
+[2m2026-09-29T11:18:43.044549Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r2: prompt 327 (reused 0) in 1063 ms, 40 tokens in 462 ms, ToolCalls
+[2m2026-09-29T11:18:43.791383Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r3: prompt 398 (reused 368) in 290 ms, 42 tokens in 456 ms, Stop
+[2m2026-09-29T11:18:44.244097Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r4: prompt 24 (reused 0) in 241 ms, 21 tokens in 211 ms, StopSequence
+[2m2026-09-29T11:18:44.339239Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r5: prompt 5 (reused 0) in 75 ms, 2 tokens in 20 ms, Stop
+[2m2026-09-29T11:18:45.381632Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r6: prompt 62 (reused 0) in 478 ms, 59 tokens in 563 ms, Stop
+flashrt: prefill of 321 tokens in chunks of 321 (10511 MiB free)
+[2m2026-09-29T11:18:46.865110Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r7: prompt 322 (reused 0) in 988 ms, 50 tokens in 494 ms, ToolCalls
+[2m2026-09-29T11:18:47.546056Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r8: prompt 60 (reused 0) in 463 ms, 24 tokens in 217 ms, Cancelled
+[2m2026-09-29T11:18:47.724721Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r9: prompt 15 (reused 0) in 157 ms, 1 tokens in 21 ms, Stop
+[2m2026-09-29T11:18:47.772525Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r10: prompt 15 (reused 14) in 13 ms, 2 tokens in 34 ms, Stop
+[2m2026-09-29T11:18:47.784359Z[0m [32m INFO[0m [2mflashrt_server[0m[2m:[0m shutting down
+[2m2026-09-29T11:18:48.270936Z[0m [31mERROR[0m [2mflashrt_server::engine[0m[2m:[0m engine exited
+[2m2026-09-29T11:18:48.270958Z[0m [31mERROR[0m [2mflashrt_server[0m[2m:[0m the engine is down; exiting in 3 s
+[2m2026-09-29T11:18:50.530138Z[0m [32m INFO[0m [2mflashrt_server::engine[0m[2m:[0m engine exited: signal: 15 (SIGTERM)
