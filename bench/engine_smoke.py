@@ -152,7 +152,10 @@ def compare_state(ref_top, ev, kl_tol):
 def reuse(a, ids, p, read):
     """The --reuse sequence; returns the exit status."""
     greedy = {"temperature": 0.0, "top_k": 20, "top_p": 1.0}
-    N = a.n
+    # N = 64 k + 25: the tail checkpoint (24 tokens before the last prompt token) then falls on a
+    # multiple of 64, as the chunk-end checkpoints do, so the restored run's chunked GDN works on
+    # the same 64-token sub-chunks as the cold run's and the comparison can be tight
+    N = (a.n - 25) // 64 * 64 + 25
     A = ids[:N]
     other = ids[3 * N:]   # unrelated text
     failed = []
@@ -205,7 +208,7 @@ def reuse(a, ids, p, read):
     diverged = long_other[:N + 8] + other[:64]
     ref = {"tail": cold("tail", tail), "middle": cold("middle", mid), "cancelled": cold("cancelled", diverged)}
 
-    for name, prompt, lo, hi in [("tail", tail, N - 1 - 24, N - 19), ("middle", mid, 1, N // 2)]:
+    for name, prompt, lo, hi in [("tail", tail, N - 25, N - 19), ("middle", mid, 1, N // 2)]:
         request(name + "-flush", other[:300])
         request(name + "-A", A)   # its prefill leaves the checkpoints
         ev = request(name, prompt)

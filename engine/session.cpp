@@ -497,7 +497,12 @@ GenerateResult Session::run(const GenerateRequest& r, const std::function<void(i
     if (m.mtp) m.mtp->save_checkpoint(m.h_carry);
     if (chunked) m.cache_restore();   // refilled from the prefill's routing counts
     else if (!m.cache_filled || n - from >= 4096) m.refill_cache();
+    // tests: the last prompt token on the reference path (every expert on the CPU), so its logits
+    // depend on the state after the prompt only, not on which experts the cache holds (a GPU hit
+    // and a CPU miss differ in the last bits: up to KL 0.001 at this position, sw95c)
+    if (r.first_top) m.fwd->set_fast_moe(nullptr, nullptr);
     m.fwd->forward(P.data(), 1, 0, m.logits);
+    if (r.first_top) m.fwd->set_fast_moe(&m.cache, &m.host);
     if (r.first_top) {   // tests: the state after the prompt, independent of the sampling path
         std::vector<float> lg(m.s.n_vocab);
         ck(cudaMemcpy(lg.data(), m.logits, lg.size() * 4, cudaMemcpyDeviceToHost), "logits");
