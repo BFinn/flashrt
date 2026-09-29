@@ -15,13 +15,16 @@ systemd-run --user --unit=fr-server-sw103 --collect -p MemoryMax=56G -p KillMode
 for i in $(seq 300); do curl -sf $URL/v1/models > /dev/null && { echo "ready after $((i * 2)) s"; break; }; sleep 2; done
 python3 $FLASHRT/bench/server_smoke.py --url $URL > $O/smoke.txt 2>&1; echo "smoke rc=$? $(tail -1 $O/smoke.txt)"
 python3 - > $O/long.txt 2>&1 <<PY
-import json, time, urllib.request
+import json, time, urllib.error, urllib.request
 text = open("$BENCH/p0b-20260927/wiki_131000.txt").read()[:420000]
 body = {"messages": [{"role": "user", "content": text + "\n\nSummarise the text above in three sentences."}], "max_tokens": 256,
         "temperature": 0, "chat_template_kwargs": {"enable_thinking": False}}
 t = time.time()
-r = json.loads(urllib.request.urlopen(urllib.request.Request("$URL/v1/chat/completions", data=json.dumps(body).encode(),
-                                      headers={"Content-Type": "application/json"}), timeout=1800).read())
+try:
+    r = json.loads(urllib.request.urlopen(urllib.request.Request("$URL/v1/chat/completions", data=json.dumps(body).encode(),
+                                          headers={"Content-Type": "application/json"}), timeout=1800).read())
+except urllib.error.HTTPError as e:
+    raise SystemExit(f"HTTP {e.code}: {e.read().decode()[:500]}")
 print(json.dumps({"wall_s": round(time.time() - t, 1), "usage": r["usage"], "timings": r.get("timings"),
                   "content": r["choices"][0]["message"]["content"][:400]}, indent=1))
 PY
