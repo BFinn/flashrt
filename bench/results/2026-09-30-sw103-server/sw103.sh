@@ -1,7 +1,7 @@
 #!/bin/bash
 # sw103: the server end to end after the head's chunk buffers (sw102) changed the prefill's VRAM
 # budget: server_smoke.py against a server with the head, then a long prompt through the server
-# (a 100K-token chat message: the chunked prefill with the head's chunk set, then decode).
+# (a ~95K-token chat message: the chunked prefill with the head's chunk set, then decode).
 set -u
 M=$MODELS/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf
 D=$MODELS/mtp-Flash-Next-Q8_0-noembd.gguf
@@ -16,7 +16,7 @@ for i in $(seq 300); do curl -sf $URL/v1/models > /dev/null && { echo "ready aft
 python3 $FLASHRT/bench/server_smoke.py --url $URL > $O/smoke.txt 2>&1; echo "smoke rc=$? $(tail -1 $O/smoke.txt)"
 python3 - > $O/long.txt 2>&1 <<PY
 import json, time, urllib.error, urllib.request
-text = open("$BENCH/p0b-20260927/wiki_131000.txt").read()[:420000]
+text = open("$BENCH/p0b-20260927/wiki.txt").read() * 2   # ~95K tokens of text
 body = {"messages": [{"role": "user", "content": text + "\n\nSummarise the text above in three sentences."}], "max_tokens": 256,
         "temperature": 0, "chat_template_kwargs": {"enable_thinking": False}}
 t = time.time()
