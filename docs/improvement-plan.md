@@ -189,7 +189,7 @@ In expected-value order. Each needs its KLD check and a `bench/results` folder.
 1. **P-1: a chunk path for the MTP head's prompt pass** (all three reviews). **Done 2026-09-30:**
    the head's KV mirror (sw98) and its catch-up in calls of 1,024 rows with grouped expert GEMMs
    (sw102). 131K with the head 35.3 → 23.6 s; the head costs 5-7% of prefill at depth; 250K
-   time to the first token on window 9 24.0 s (the whole 250K prompt: about 55 s, estimate). Prefill with the
+   time to the first token on window 9 24.0 s (a whole cold 250K prompt: about 50 s, an estimate). Prefill with the
    head runs at 2,150-4,130 tok/s against 5,690-5,960 without it. The head's experts are
    already in VRAM, so it needs the batched kernels, overlapped with the target's next chunk.
    Expected: 250K TTFT from about 117 s toward 45 s (estimate).
