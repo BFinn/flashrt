@@ -73,6 +73,9 @@ describes code that does not exist.
 test for E-1 compares the state after the prompt by its logits, not by tokens: greedy tokens
 depend on the expert cache's content, so they differ from a fresh engine's even when nothing
 failed (sw92). E-3 (a bounded host-side doorbell wait) was done with it.
+Found on the way: the fast-path KLD (window 3, hot set 512) moved from 0.008931 (sw78) to 0.009124
+before phase 1, still inside the gate band. Bisect it over sw79-sw91 before phase 4's refactors,
+which need a stable baseline.
 
 | Item | Change | Test |
 |---|---|---|

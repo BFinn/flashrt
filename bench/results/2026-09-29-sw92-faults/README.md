@@ -48,7 +48,7 @@ noise. The negative control, a different text, changes the top token.
 **KLD gate: outputs unchanged** (2 × 8K wikitext against the FP16-KV llama.cpp base, `KLD=only`
 arm of `sw92.sh`; logs `kld-*.log`):
 
-| Configuration | This change | Before it (8e6d6b5, the same command) | Earlier |
+| Configuration | This change | Before it (a build of 8e6d6b5, same command, run by hand) | Earlier |
 |---|---|---|---|
 | chunk path, `--prefill-chunk 1024` | 0.008879 | | 0.008879 (sw81-sw83): identical |
 | fast path, window 3, hot set 512, chunks of 2048 | 0.009124 | 0.009124, the same 11,974 swaps | 0.008931 (sw78) |
