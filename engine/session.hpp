@@ -42,9 +42,11 @@ struct SessionOptions {
     int prefill_chunk_max = 16384;    // 0: the longest that fits the free VRAM, up to prefill_chunk_max
     std::string cache_prior;          // routing counts of a calibration prefill (fr_bench --save-counts)
     // Prefix reuse beyond the end of the previous prompt: up to `ckpts` recurrent-state
-    // checkpoints in pinned host RAM (113 MiB each for qwen4exp with the MTP head), taken during a prefill at
-    // chunk ends at least ckpt_interval tokens apart, and before the prompt's last ckpt_tail
-    // tokens (a prompt that keeps a fixed tail after growing text reuses up to there).
+    // checkpoints in pinned host RAM (113 MiB each for qwen4exp with the MTP head), taken during
+    // a prefill at chunk ends at least ckpt_interval tokens apart. And once prompts have shown a
+    // fixed tail after growing text (one diverged from the previous prompt within its last
+    // ckpt_tail tokens), also before each prompt's last tokens, as many as that tail rounded up to
+    // 8: the next prompt then reuses up to there. 0 turns the tail checkpoint off.
     int ckpts = 8;
     int ckpt_interval = 4096;
     int ckpt_tail = 64;

@@ -8,8 +8,8 @@ Runs four requests against one engine process and prints each one's events summa
      should reuse the whole previous sequence: "reused" close to the old length);
   3. request 2's prompt plus different tokens than request 2 generated (the engine should restore
      the checkpoint taken at the end of request 2's prompt: "reused" = that prompt's length);
-  4. request 1's prompt with a "stop" sent after a few tokens (finish "cancelled"; it reuses the
-     host checkpoint taken before request 1's last --ckpt-tail tokens, sw95).
+  4. request 1's prompt with a "stop" sent after a few tokens (finish "cancelled"; it reuses a
+     host checkpoint from request 1's prefill, a chunk end).
 
 With --faults it instead checks that bad and failing requests leave the engine serving (the
 engine runs with FLASHRT_TEST_HOOKS=1). A greedy reference request A comes first; then:
@@ -30,7 +30,9 @@ With --reuse it checks prefix reuse through the host checkpoints taken during a 
 reused) as its reference, then after the prompt it should reuse from; the second run must reuse
 at least the expected prefix and match the reference's state (as for --faults):
   - tail: A with text inserted before its last 19 tokens (window 9's shape: a growing text with
-    a fixed instruction at the end) reuses up to the checkpoint before A's tail (--ckpt-tail);
+    a fixed instruction at the end) reuses up to the checkpoint before A's tail. The engine takes
+    that checkpoint once it has seen the pattern, so A follows a prompt that differs from it in
+    its last 19 tokens only;
   - middle: A with one token changed half way reuses from a checkpoint before the change;
   - cancelled: after A, a different text stopped late in its prefill, past A's length, then
     that text's first N + 8 tokens and something else: it must reuse its own checkpoints, never
@@ -197,9 +199,11 @@ def reuse(a, ids, p, read):
     diverged = long_other[:N + 8] + other[:64]
     ref = {"tail": cold("tail", tail), "middle": cold("middle", mid), "cancelled": cold("cancelled", diverged)}
 
-    for name, prompt, lo, hi in [("tail", tail, N - 1 - 64 - 1, N - 19), ("middle", mid, 1, N // 2)]:
+    for name, prompt, lo, hi in [("tail", tail, N - 1 - 24, N - 19), ("middle", mid, 1, N // 2)]:
         request(name + "-flush", other[:300])
-        request(name + "-A", A)   # A cold: its prefill leaves the checkpoints
+        if name == "tail":   # a prompt with A's text and another 19-token tail: the pattern
+            request(name + "-pattern", A[:-19] + other[2000:2019])
+        request(name + "-A", A)   # its prefill leaves the checkpoints
         ev = request(name, prompt)
         if ev["ev"] != "done":
             check(name, False, ev.get("msg"))

@@ -92,6 +92,10 @@ struct Session::Impl {
     std::vector<HostCkpt> ring;
     char* ring_mem = nullptr;
     size_t ckpt_fwd = 0, ckpt_mtp = 0;
+    // A fixed tail: once a prompt diverged from the previous one within the previous prompt's
+    // last ckpt_tail tokens, prefills end with a batch of tail_len tokens after a checkpoint
+    // (0: not seen; the batch runs its experts on the CPU, ~0.6 s at 64 tokens, sw95)
+    int last_prompt = 0, tail_len = 0;
     bool healthy = true;
     size_t hrow = 0;
     float *logits = nullptr, *logits_win = nullptr, *h_carry = nullptr, *h_buf = nullptr;
@@ -264,6 +268,7 @@ struct Session::Impl {
             ck(cudaMemset(h_carry, 0, hrow * 4), "memset h");
             seq.clear();
             drop_checkpoints_after(0);
+            last_prompt = 0;
             ck(cudaDeviceSynchronize(), "recover");
         } catch (const std::exception& e) {
             std::fprintf(stderr, "flashrt: recovery failed: %s\n", e.what());
@@ -426,6 +431,9 @@ GenerateResult Session::run(const GenerateRequest& r, const std::function<void(i
     while (L < m.seq.size() && L < P.size() && m.seq[L] == P[L]) ++L;
     const size_t usable = std::min(L, size_t(n - 1));   // the last prompt token always runs, for its logits
     m.drop_checkpoints_after(L);
+    if (m.o.ckpt_tail > 0 && L < size_t(m.last_prompt) && m.last_prompt - int(L) <= m.o.ckpt_tail)
+        m.tail_len = std::min(m.o.ckpt_tail, (m.last_prompt - int(L) + 7) / 8 * 8);   // this prompt kept all but the old one's tail
+    m.last_prompt = n;
     if (!m.seq.empty() && usable == m.seq.size()) {
         // continue from the current state
     } else if (const int c = m.restore_best(usable); c > 0) {
@@ -444,8 +452,8 @@ GenerateResult Session::run(const GenerateRequest& r, const std::function<void(i
     // the last token alone, for its logits
     const int from = int(m.seq.size()), end = n - 1;
     const bool chunked = end - from >= m.o.chunk_min;
-    // the tail runs in batches after the chunks, so a checkpoint can sit just before it
-    const int tail = chunked && !m.ring.empty() && m.o.ckpt_tail > 0 && end - from - m.o.ckpt_tail >= m.o.chunk_min ? m.o.ckpt_tail : 0;
+    // the tail runs as a batch after the chunks, so a checkpoint can sit just before it
+    const int tail = chunked && !m.ring.empty() && m.tail_len > 0 && end - from - m.tail_len >= m.o.chunk_min ? m.tail_len : 0;
     int step = m.o.prefill_batch;
     if (chunked) {   // experts stream to the GPU; the expert cache's memory is lent to the chunks
         m.cache_release();
