@@ -326,6 +326,48 @@ mod tests {
         assert_eq!(m[1]["tool_calls"][1]["function"]["arguments"], json!({}));
     }
 
+    /// The SSE frames of a streamed chat: the role first, one delta per event, the finish chunk
+    /// with the engine's timings, the usage chunk when asked for, then [DONE].
+    #[tokio::test]
+    async fn stream_frames() {
+        let (tx, rx) = mpsc::channel(8);
+        for ev in [
+            ChatEvent::Reasoning("think".into()),
+            ChatEvent::Content("hi".into()),
+            ChatEvent::ToolCall { id: "c1".into(), name: "f".into(), arguments: json!({"x": 1}) },
+            ChatEvent::Done {
+                finish: Finish::ToolCalls,
+                stop_sequence: None,
+                prompt_tokens: 10,
+                completion_tokens: 4,
+                reused: 6,
+                timings: json!({"cache_n": 6, "prompt_n": 4}),
+            },
+        ] {
+            tx.send(ev).await.unwrap();
+        }
+        drop(tx);
+        let resp = stream_chat(rx, "id1".into(), 7, "m".into(), true).into_response();
+        let body = tokio::time::timeout(std::time::Duration::from_secs(5), axum::body::to_bytes(resp.into_body(), 1 << 20))
+            .await
+            .expect("the stream ends after Done")
+            .unwrap();
+        let text = String::from_utf8(body.to_vec()).unwrap();
+        let data: Vec<&str> = text.lines().filter_map(|l| l.strip_prefix("data: ")).collect();
+        assert_eq!(data.last(), Some(&"[DONE]"), "{text}");
+        let v: Vec<Value> = data[..data.len() - 1].iter().map(|d| serde_json::from_str(d).unwrap()).collect();
+        assert_eq!(v.len(), 6, "{text}");
+        assert_eq!(v[0]["choices"][0]["delta"]["role"], "assistant");
+        assert_eq!(v[1]["choices"][0]["delta"]["reasoning_content"], "think");
+        assert_eq!(v[2]["choices"][0]["delta"]["content"], "hi");
+        let call = &v[3]["choices"][0]["delta"]["tool_calls"][0];
+        assert_eq!((call["index"].as_u64(), call["function"]["arguments"].as_str()), (Some(0), Some("{\"x\":1}")));
+        assert_eq!(v[4]["choices"][0]["finish_reason"], "tool_calls");
+        assert_eq!(v[4]["timings"]["cache_n"], 6);
+        assert_eq!(v[5]["usage"]["prompt_tokens_details"]["cached_tokens"], 6);
+        assert!(v.iter().all(|c| c["id"] == "id1" && c["object"] == "chat.completion.chunk"));
+    }
+
     #[test]
     fn rejects_what_would_render_wrong() {
         let call = |a: &str| json!([{"role": "assistant", "tool_calls": [{"id": "1", "function": {"name": "f", "arguments": a}}]}]);
