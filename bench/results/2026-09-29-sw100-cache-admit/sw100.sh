@@ -4,7 +4,7 @@
 # 1.5: 75.5%; admit 1 / margin 1.2: 78.0% (and wikitext 87.9 -> 89.3%), at twice the uploads.
 # Each prompt is followed by the model's own greedy generation (sw99's route_trace tokens), which
 # every arm decodes teacher-forced, so every arm routes the same tokens: window 9's 32K prompt
-# and 32K of wikitext, a fresh prefill each, 384 tokens, plain decode (no MTP), 2 runs per arm.
+# and 32K of wikitext, a fresh prefill each, 320 tokens (--teacher reads 64 beyond --gen), plain decode (no MTP), 2 runs per arm.
 set -u
 M=$MODELS/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf
 B=$FLASHRT/build; O=$BENCH/sw100; mkdir -p $O; T=$BENCH/sw99
@@ -24,9 +24,9 @@ run() { local name=$1; shift; wait_vram; timeout 2400 $B/fr_bench $M "$@" > $O/$
 for r in 1 2; do
   for arm in "2 1.5 32" "1.5 1.5 32" "1 1.2 32" "1 1.2 64"; do
     set -- $arm
-    run w9-a$1-m$2-b$3-r$r --ids $O/w9_teacher.ids --n-prompt 32793 --gen 384 --teacher --prefill-chunk auto --kv q8 --kv-hot 4096 \
+    run w9-a$1-m$2-b$3-r$r --ids $O/w9_teacher.ids --n-prompt 32793 --gen 320 --teacher --prefill-chunk auto --kv q8 --kv-hot 4096 \
       --cache-admit $1 --cache-margin $2 --swap-budget $3
-    run wiki-a$1-m$2-b$3-r$r --ids $O/wiki_teacher.ids --n-prompt 32768 --gen 384 --teacher --prefill-chunk auto --kv q8 --kv-hot 4096 \
+    run wiki-a$1-m$2-b$3-r$r --ids $O/wiki_teacher.ids --n-prompt 32768 --gen 320 --teacher --prefill-chunk auto --kv q8 --kv-hot 4096 \
       --cache-admit $1 --cache-margin $2 --swap-budget $3
   done
 done
