@@ -1,0 +1,16 @@
+flashrt: GPU weights loaded in 0.8 s
+flashrt: experts read into the host arena and registered in 21.5 s
+flashrt: forward pass set up in 0.7 s
+flashrt: MTP head loaded in 5.2 s
+flashrt: 8 prefill checkpoints of 112.7 MiB in host RAM
+flashrt: buffers and checkpoints allocated in 0.4 s
+flashrt: expert cache and miss server set up in 0.0 s
+flashrt: qwen4exp, 48 layers, expert cache 7657 slots (31.2%), MTP drafts 2 per round
+flashrt: prefill of 131071 tokens in chunks of 16384 (10607 MiB free)
+flashrt: prefill of 16383 tokens in chunks of 16383 (10381 MiB free)
+ready after 28.6 s: {'ev': 'ready', 'version': '0.1.0', 'arch': 'qwen4exp', 'max_context': 140000, 'features': ['stop', 'sampling', 'prefix_reuse', 'mtp']}
+r1: prompt 131072 (reused 0) in 35.4 s, 256 tokens in 2.57 s (99.6 tok/s), finish length, drafts {'proposed': 224, 'accepted': 143}, first tokens [12436, 318, 9040, 13, 165089, 65187, 7252, 531]
+r2: prompt 131360 (reused 131327) in 0.3 s, 256 tokens in 2.61 s (98.1 tok/s), finish length, drafts {'proposed': 252, 'accepted': 129}, first tokens [283, 283, 283, 30858, 30858, 283, 283, 59742]
+r3: prompt 131376 (reused 131359) in 0.3 s, 256 tokens in 2.46 s (104.0 tok/s), finish length, drafts {'proposed': 242, 'accepted': 136}, first tokens [12, 31, 12967, 641, 30858, 695, 283, 414]
+r4: prompt 131072 (reused 114688) in 5.8 s, 7 tokens in 0.09 s (81.2 tok/s), finish cancelled, drafts {'proposed': 6, 'accepted': 3}, first tokens [12436, 318, 1172, 3146, 314, 14074, 165089]
+engine exited with 0

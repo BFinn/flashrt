@@ -1,0 +1,4 @@
+mirror 1 rc=0 r1: prompt 131072 (reused 0) in 25.8 s, 256 tokens in 2.51 s (102.2 tok/s), finish length, drafts {'proposed': 210, 'acc
+mirror 0 rc=0 r1: prompt 131072 (reused 0) in 35.3 s, 256 tokens in 2.61 s (98.2 tok/s), finish length, drafts {'proposed': 224, 'acce
+mirror 1 rc=0 r1: prompt 131072 (reused 0) in 25.8 s, 256 tokens in 2.53 s (101.4 tok/s), finish length, drafts {'proposed': 210, 'acc
+mirror 0 rc=0 r1: prompt 131072 (reused 0) in 35.4 s, 256 tokens in 2.57 s (99.6 tok/s), finish length, drafts {'proposed': 224, 'acce
