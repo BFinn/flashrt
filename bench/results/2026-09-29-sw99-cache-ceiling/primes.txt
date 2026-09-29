@@ -1,6 +1,20 @@
-Traceback (most recent call last):
-  File "~/scratch/flashrt/bench/results/2026-09-29-sw99-cache-ceiling/primes.py", line 19, in <module>
-    run("prompt, half-life 4096 (engine)", p, base)
-  File "~/scratch/flashrt/bench/results/2026-09-29-sw99-cache-ceiling/primes.py", line 14, in run
-    r, win = sim_engine(dec[p], CAP, E, prime, windows=64, **kw)
-ValueError: too many values to unpack (expected 2)
+w9    prompt, half-life 4096 (engine)             73.0%  windows 46.3 68.8 73.2 79.1 83.5 87.1
+w9    prompt's last 64 tokens only                79.2%  windows 67.7 71.0 77.6 85.3 86.4 87.0
+w9    prompt's last 512 tokens only               76.4%  windows 58.9 70.9 75.5 81.7 84.7 86.9
+w9    prompt's last 4096 tokens only              73.2%  windows 46.7 69.0 73.4 79.3 83.6 87.1
+w9    prompt + 0.25 x the other text's generation  77.0%  windows 60.2 70.0 76.1 83.0 85.4 87.1
+w9    prompt + 1.0 x the other text's generation  78.0%  windows 64.5 69.7 76.9 83.5 86.3 87.3
+w9    prompt + 4.0 x the other text's generation  78.9%  windows 67.9 69.7 77.4 84.3 86.6 87.6
+w9    the other generation alone                  78.7%  windows 68.8 69.3 76.5 83.2 86.4 87.9
+w9    engine, admit 1, margin 1.2                 78.0%  windows 47.8 72.5 80.8 84.3 90.9 91.8
+w9    engine, decay 0.5 per 4                     72.3%  windows 50.2 67.6 71.5 77.0 81.5 85.8
+wiki  prompt, half-life 4096 (engine)             87.9%  windows 89.6 89.7 87.8 93.3 95.7 71.5
+wiki  prompt's last 64 tokens only                85.7%  windows 85.3 83.9 86.5 92.4 94.8 71.1
+wiki  prompt's last 512 tokens only               87.0%  windows 89.7 86.6 86.9 92.7 95.2 71.2
+wiki  prompt's last 4096 tokens only              88.0%  windows 90.0 89.6 88.0 93.6 95.9 71.2
+wiki  prompt + 0.25 x the other text's generation  87.2%  windows 88.3 87.8 87.0 92.5 95.2 72.2
+wiki  prompt + 1.0 x the other text's generation  85.6%  windows 84.8 85.2 85.6 91.2 94.0 72.8
+wiki  prompt + 4.0 x the other text's generation  83.8%  windows 78.9 82.8 84.7 90.0 93.3 73.3
+wiki  the other generation alone                  81.4%  windows 67.2 81.0 84.0 89.1 92.8 74.5
+wiki  engine, admit 1, margin 1.2                 89.3%  windows 90.0 92.6 92.6 93.0 96.5 71.1
+wiki  engine, decay 0.5 per 4                     87.7%  windows 89.8 89.5 87.3 93.2 95.5 70.6

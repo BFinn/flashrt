@@ -14,7 +14,7 @@ def dec_counts(p):
     np.add.at(c, (np.arange(48)[None, :, None] * E + t).reshape(-1), 1.0)
     return c
 def run(name, p, prime, **kw):
-    r, win = sim_engine(dec[p], CAP, E, prime, windows=64, **kw)
+    r, win, _ = sim_engine(dec[p], CAP, E, prime, windows=64, **kw)
     print(f"{p:5s} {name:42s} {100*r:5.1f}%  windows " + " ".join(f"{100*w:4.1f}" for w in win), flush=True)
 for p in ("w9", "wiki"):
     other = "wiki" if p == "w9" else "w9"
