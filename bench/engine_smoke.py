@@ -8,8 +8,8 @@ Runs four requests against one engine process and prints each one's events summa
      should reuse the whole previous sequence: "reused" close to the old length);
   3. request 2's prompt plus different tokens than request 2 generated (the engine should restore
      the checkpoint taken at the end of request 2's prompt: "reused" = that prompt's length);
-  4. request 1's prompt with a "stop" sent after a few tokens (finish "cancelled"; no reuse, as
-     the checkpoint is at the end of request 3's prompt).
+  4. request 1's prompt with a "stop" sent after a few tokens (finish "cancelled"; it reuses the
+     host checkpoint taken before request 1's last --ckpt-tail tokens, sw95).
 
 With --faults it instead checks that bad and failing requests leave the engine serving (the
 engine runs with FLASHRT_TEST_HOOKS=1). A greedy reference request A comes first; then:

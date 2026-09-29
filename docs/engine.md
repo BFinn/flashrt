@@ -406,8 +406,10 @@ The scripts run with `set -u`, so they stop if one is unset.
   then JSON lines on stdin (`bench/engine_smoke.py` drives it). The prior:
   `$BENCH/cache-prior-calib32k.bin` (also in `bench/results/2026-09-28-sw35-server`).
   `engine_smoke.py --faults` checks that bad and failing requests leave it serving
-  (`bench/results/2026-09-29-sw92-faults/sw92.sh`); run it after changes to `Session` or the
-  forward's state.
+  (`bench/results/2026-09-29-sw92-faults/sw92.sh`); `--reuse` checks prefix reuse through the host
+  checkpoints against cold runs (`2026-09-29-sw95-ckpt/sw95.sh`). Run both after changes to
+  `Session` or the forward's state. Host checkpoints: `--ckpts N` (8; 0 turns them off),
+  `--ckpt-interval T` (4,096), `--ckpt-tail T` (64).
 - **Server:** `cargo build --release --manifest-path server/Cargo.toml`, then
   `server/target/release/flashrt-server --model $M --port 8090 --engine build/flashrt-engine --engine-arg $M --engine-arg --mtp --engine-arg $D --engine-arg --spec --engine-arg 1 --engine-arg --draft-vocab --engine-arg RANKS --engine-arg --cache-prior --engine-arg PRIOR`
   (`--api-key KEY` to require one). Checks: `--check-tokenizer TEXT IDS`, `--render REQUEST.json`,
@@ -442,8 +444,12 @@ The scripts run with `set -u`, so they stop if one is unset.
 - **Server limits:** text only (no images); tool_choice "required" or a named tool is not
   enforced (the model decides); Anthropic thinking blocks carry an empty signature; without a
   `thinking` field the model still reasons, and the reasoning is not returned.
-- **Prefix reuse keeps one sequence and one checkpoint** (before the last prompt's last token).
-  Two conversations interleaved on one server re-prefill each time.
+- **Prefix reuse follows one sequence.** A prompt reuses the latest recurrent-state checkpoint
+  inside the prefix it shares with the previous sequence: the one at the end of the previous
+  prompt (on the GPU), or one of up to 8 taken during earlier prefills (host RAM, 113 MiB each):
+  at chunk ends 4,096 or more tokens apart, and before the prompt's last 64 tokens, which then
+  run as one batch (sw95). The KV cache holds one sequence, so two conversations interleaved on
+  one server still re-prefill each time.
 - **The engine refills the expert cache from the prefill's routing counts** after the first
   prompt and after any prompt that adds 4,096 or more tokens. For short prompts the adaptive
   policy alone moves it.
