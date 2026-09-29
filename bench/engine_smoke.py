@@ -207,7 +207,10 @@ def reuse(a, ids, p, read):
     mid = list(A)
     mid[N // 2] = (mid[N // 2] + 1) % 1000 + 10
     long_other = other[5000:5000 + N + N // 2]
-    diverged = long_other[:N + 8] + other[:64]
+    # enough new tokens after the restore at 8,192 to prefill in chunks, as the cold run does: 96
+    # would run as batches (experts on the CPU), which round differently from chunks (sw95e: KL 0.008
+    # between the two paths on this prompt, and its top two tokens are 0.35 logits apart)
+    diverged = long_other[:N + 8] + other[:512]
     ref = {"tail": cold("tail", tail), "middle": cold("middle", mid), "cancelled": cold("cancelled", diverged)}
 
     for name, prompt, lo, hi in [("tail", tail, N - 25, N - 19), ("middle", mid, 1, N // 2)]:
