@@ -24,7 +24,7 @@ mod tokenizer;
 use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Context, Result};
-use axum::extract::{Request, State};
+use axum::extract::{DefaultBodyLimit, Request, State};
 use axum::http::StatusCode;
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -32,6 +32,9 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use clap::Parser;
 use serde_json::{json, Value};
+
+/// The largest request body accepted.
+const BODY_LIMIT: usize = 64 << 20;
 
 #[derive(Parser, Debug)]
 #[command(name = "flashrt-server", about = "OpenAI/Anthropic-compatible front end for flashrt-engine")]
@@ -202,6 +205,9 @@ async fn main() -> Result<()> {
         .route("/v1/messages", post(|State(s): State<Arc<AppState>>, Json(v): Json<Value>| anthropic::messages(s, v)))
         .route("/v1/messages/count_tokens", post(|State(s): State<Arc<AppState>>, Json(v): Json<Value>| anthropic::count_tokens(s, v)))
         .layer(middleware::from_fn_with_state(state.clone(), auth))
+        // axum's default of 2 MiB is too little for a full context: 262K tokens of text with
+        // tool definitions and JSON escaping come to several MiB
+        .layer(DefaultBodyLimit::max(BODY_LIMIT))
         .route("/health", get(health))
         .with_state(state.clone());
     let listener = tokio::net::TcpListener::bind((args.host.as_str(), args.port)).await?;

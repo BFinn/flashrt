@@ -5,7 +5,8 @@
 //! matched as whole strings before pre-tokenization. `flashrt-server --check-tokenizer` compares
 //! it with a llama.cpp tokenization.
 
-use std::collections::HashMap;
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap};
 use std::sync::Mutex;
 
 use anyhow::{anyhow, bail, Result};
@@ -50,6 +51,11 @@ impl Tokenizer {
         let model = kv.get("tokenizer.ggml.model").and_then(Value::as_str).unwrap_or("");
         if model != "gpt2" {
             bail!("tokenizer model '{model}' is not supported (byte-level BPE only)");
+        }
+        // the pre-tokenizer pattern is llama.cpp's for this type; another type tokenizes wrongly
+        let pre = kv.get("tokenizer.ggml.pre").and_then(Value::as_str).unwrap_or("");
+        if pre != "qwen35" {
+            bail!("pre-tokenizer '{pre}' is not supported (only qwen35, whose pattern this tokenizer implements)");
         }
         let tokens: Vec<&str> = kv
             .get("tokenizer.ggml.tokens")
@@ -110,7 +116,11 @@ impl Tokenizer {
                 merges.entry((ia, ib)).or_insert((rank as u32, im));
             }
         }
-        let eos = kv.get("tokenizer.ggml.eos_token_id").and_then(Value::as_int).unwrap_or(0) as u32;
+        let eos = kv
+            .get("tokenizer.ggml.eos_token_id")
+            .and_then(Value::as_int)
+            .filter(|&e| e >= 0 && (e as usize) < tokens.len())
+            .ok_or_else(|| anyhow!("gguf: no valid tokenizer.ggml.eos_token_id"))? as u32;
         Ok(Self {
             n_vocab: tokens.len(),
             eos,
@@ -166,43 +176,71 @@ impl Tokenizer {
         out
     }
 
+    /// The words' ids, from the cache or merged. The cache lock is taken per word, so a long
+    /// text does not hold up other requests' tokenization; words longer than CACHE_WORD bytes are
+    /// not cached, which bounds the cache at CACHE_WORDS entries of that size.
     fn encode_plain(&self, text: &str, out: &mut Vec<u32>) {
-        if text.is_empty() {
-            return;
-        }
-        let mut cache = self.cache.lock().unwrap();
-        if cache.len() > 200_000 {
-            cache.clear();
-        }
+        const CACHE_WORDS: usize = 200_000;
+        const CACHE_WORD: usize = 256;
         for m in self.pretok.find_iter(text) {
             let Ok(m) = m else { continue };
             let word = m.as_str();
-            if let Some(ids) = cache.get(word) {
+            if let Some(ids) = self.cache.lock().unwrap().get(word) {
                 out.extend_from_slice(ids);
                 continue;
             }
             let ids = self.bpe(word.as_bytes());
             out.extend_from_slice(&ids);
-            cache.insert(word.to_string(), ids);
+            if word.len() <= CACHE_WORD {
+                let mut cache = self.cache.lock().unwrap();
+                if cache.len() >= CACHE_WORDS {
+                    cache.clear();
+                }
+                cache.insert(word.to_string(), ids);
+            }
         }
     }
 
+    /// Byte-level BPE: repeatedly merges the adjacent pair of lowest rank, the leftmost among
+    /// equals. A heap of candidate pairs over a linked list of symbols makes it O(n log n) in the
+    /// word's length (a pre-token can be a long run of letters); popping (rank, left index) gives
+    /// the same order as scanning for the leftmost lowest rank.
     fn bpe(&self, word: &[u8]) -> Vec<u32> {
-        let mut parts: Vec<u32> = word.iter().map(|&b| self.byte_token[b as usize]).collect();
-        loop {
-            let mut best: Option<(u32, usize, u32)> = None;   // (rank, position, merged id)
-            for i in 0..parts.len().saturating_sub(1) {
-                if let Some(&(rank, id)) = self.merges.get(&(parts[i], parts[i + 1])) {
-                    if best.is_none_or(|(r, _, _)| rank < r) {
-                        best = Some((rank, i, id));
-                    }
-                }
+        const NONE: usize = usize::MAX;
+        let n = word.len();
+        let mut sym: Vec<u32> = word.iter().map(|&b| self.byte_token[b as usize]).collect();
+        let mut next: Vec<usize> = (1..=n).map(|i| if i < n { i } else { NONE }).collect();
+        let mut prev: Vec<usize> = (0..n).map(|i| if i > 0 { i - 1 } else { NONE }).collect();
+        let mut alive = vec![true; n];
+        // (rank, left, right, left symbol, right symbol, merged id); stale entries are skipped
+        type Candidate = Reverse<(u32, usize, usize, u32, u32, u32)>;
+        let mut heap: BinaryHeap<Candidate> = BinaryHeap::new();
+        let push = |heap: &mut BinaryHeap<Candidate>, sym: &[u32], l: usize, r: usize| {
+            if let Some(&(rank, id)) = self.merges.get(&(sym[l], sym[r])) {
+                heap.push(Reverse((rank, l, r, sym[l], sym[r], id)));
             }
-            let Some((_, i, id)) = best else { break };
-            parts[i] = id;
-            parts.remove(i + 1);
+        };
+        for i in 0..n.saturating_sub(1) {
+            push(&mut heap, &sym, i, i + 1);
         }
-        parts
+        while let Some(Reverse((_, l, r, a, b, id))) = heap.pop() {
+            if !alive[l] || !alive[r] || next[l] != r || sym[l] != a || sym[r] != b {
+                continue;
+            }
+            sym[l] = id;
+            alive[r] = false;
+            next[l] = next[r];
+            if next[r] != NONE {
+                prev[next[r]] = l;
+            }
+            if prev[l] != NONE {
+                push(&mut heap, &sym, prev[l], l);
+            }
+            if next[l] != NONE {
+                push(&mut heap, &sym, l, next[l]);
+            }
+        }
+        (0..n).filter(|&i| alive[i]).map(|i| sym[i]).collect()
     }
 }
 
@@ -262,6 +300,7 @@ pub fn test_tokenizer() -> Tokenizer {
     }
     let kv = HashMap::from([
         ("tokenizer.ggml.model".to_string(), Value::Str("gpt2".into())),
+        ("tokenizer.ggml.pre".to_string(), Value::Str("qwen35".into())),
         ("tokenizer.ggml.tokens".to_string(), Value::Arr(tokens)),
         ("tokenizer.ggml.token_type".to_string(), Value::Arr(types)),
         ("tokenizer.ggml.eos_token_id".to_string(), Value::Int(261)),
@@ -272,6 +311,88 @@ pub fn test_tokenizer() -> Tokenizer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Bytes plus merged tokens over 'a', 'b' and 'c', with overlapping merges of several ranks.
+    fn merges_tokenizer() -> Tokenizer {
+        let b2c = byte_to_char();
+        let mut tokens: Vec<Value> = (0..256).map(|b| Value::Str(b2c[b].to_string())).collect();
+        let merged = ["aa", "ab", "bc", "ba", "aaa", "abc", "aab", "aaaaaa", "bcbc", "aba", "cab"];
+        tokens.extend(merged.iter().map(|t| Value::Str(t.to_string())));
+        let merges = ["a b", "a a", "b c", "b a", "aa a", "ab c", "aa b", "aaa aaa", "bc bc", "ab a", "c ab"];
+        let kv = HashMap::from([
+            ("tokenizer.ggml.model".to_string(), Value::Str("gpt2".into())),
+            ("tokenizer.ggml.pre".to_string(), Value::Str("qwen35".into())),
+            ("tokenizer.ggml.tokens".to_string(), Value::Arr(tokens)),
+            ("tokenizer.ggml.merges".to_string(), Value::Arr(merges.iter().map(|m| Value::Str(m.to_string())).collect())),
+            ("tokenizer.ggml.eos_token_id".to_string(), Value::Int(0)),
+        ]);
+        Tokenizer::from_gguf(&kv).unwrap()
+    }
+
+    /// The merge as first written: scan for the leftmost pair of lowest rank, merge, repeat.
+    fn scan_bpe(tok: &Tokenizer, word: &[u8]) -> Vec<u32> {
+        let mut parts: Vec<u32> = word.iter().map(|&b| tok.byte_token[b as usize]).collect();
+        loop {
+            let mut best: Option<(u32, usize, u32)> = None;
+            for i in 0..parts.len().saturating_sub(1) {
+                if let Some(&(rank, id)) = tok.merges.get(&(parts[i], parts[i + 1])) {
+                    if best.is_none_or(|(r, _, _)| rank < r) {
+                        best = Some((rank, i, id));
+                    }
+                }
+            }
+            let Some((_, i, id)) = best else { break };
+            parts[i] = id;
+            parts.remove(i + 1);
+        }
+        parts
+    }
+
+    #[test]
+    fn rejects_other_pre_tokenizers_and_a_missing_eos() {
+        let base = |pre: &str, eos: Option<i64>| {
+            let b2c = byte_to_char();
+            let mut kv = HashMap::from([
+                ("tokenizer.ggml.model".to_string(), Value::Str("gpt2".into())),
+                ("tokenizer.ggml.pre".to_string(), Value::Str(pre.into())),
+                ("tokenizer.ggml.tokens".to_string(), Value::Arr((0..256).map(|b| Value::Str(b2c[b].to_string())).collect())),
+            ]);
+            if let Some(e) = eos {
+                kv.insert("tokenizer.ggml.eos_token_id".to_string(), Value::Int(e));
+            }
+            Tokenizer::from_gguf(&kv)
+        };
+        assert!(base("qwen35", Some(1)).is_ok());
+        assert!(base("qwen2", Some(1)).is_err());
+        assert!(base("qwen35", None).is_err());
+        assert!(base("qwen35", Some(256)).is_err());
+    }
+
+    #[test]
+    fn heap_bpe_matches_the_scan() {
+        let tok = merges_tokenizer();
+        let mut x = 0x9E3779B97F4A7C15u64;
+        for len in 0..400 {
+            for alphabet in [&b"ab"[..], b"abc", b"a", b"abcd"] {
+                let w: Vec<u8> = (0..len % 97)
+                    .map(|_| {
+                        x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                        alphabet[(x >> 33) as usize % alphabet.len()]
+                    })
+                    .collect();
+                assert_eq!(tok.bpe(&w), scan_bpe(&tok, &w), "word {:?}", String::from_utf8_lossy(&w));
+            }
+        }
+        let long: Vec<u8> = (0..3000).map(|i| b"aababcaaab"[i % 10]).collect();
+        assert_eq!(tok.bpe(&long), scan_bpe(&tok, &long));
+        // a long run of letters (one pre-token): quick (the scan was O(n^2)), and the bytes survive
+        let t = std::time::Instant::now();
+        let word = vec![b'a'; 1 << 20];
+        let ids = tok.bpe(&word);
+        assert!(t.elapsed().as_secs_f64() < 2.0, "{:?}", t.elapsed());
+        let back: Vec<u8> = ids.iter().flat_map(|&id| tok.token_bytes(id).to_vec()).collect();
+        assert_eq!(back, word);
+    }
 
     #[test]
     fn decoder_holds_incomplete_utf8() {

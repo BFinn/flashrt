@@ -152,9 +152,10 @@ pub async fn count_tokens(st: Arc<AppState>, req: Value) -> Response {
         Ok(x) => x,
         Err(e) => return anth_error(400, "invalid_request_error", &e),
     };
-    match chat::prompt_of(&st, &r) {
-        Ok((_, toks)) => Json(json!({"input_tokens": toks.len()})).into_response(),
-        Err(e) => anth_error(400, "invalid_request_error", &e.to_string()),
+    match tokio::task::spawn_blocking(move || chat::prompt_of(&st, &r)).await {
+        Ok(Ok((_, toks))) => Json(json!({"input_tokens": toks.len()})).into_response(),
+        Ok(Err(e)) => anth_error(400, "invalid_request_error", &e.to_string()),
+        Err(e) => anth_error(500, "api_error", &e.to_string()),
     }
 }
 

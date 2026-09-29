@@ -250,7 +250,16 @@ fn sampling_of(st: &AppState, req: &ChatRequest) -> Result<(f32, f32, u32, f32, 
 pub async fn start(st: Arc<AppState>, req: ChatRequest) -> Result<(mpsc::Receiver<ChatEvent>, u32)> {
     let raw = req.raw_prompt.is_some();
     let (temperature, top_p, top_k, min_p, seed) = sampling_of(&st, &req)?;
-    let (prompt_text, prompt) = prompt_of(&st, &req)?;
+    // rendering and tokenizing a long prompt takes a while: not on an async worker
+    let (req, prepared) = tokio::task::spawn_blocking({
+        let st = st.clone();
+        move || {
+            let r = prompt_of(&st, &req);
+            (req, r)
+        }
+    })
+    .await?;
+    let (prompt_text, prompt) = prepared?;
     let ctx = st.max_context;
     if prompt.len() as u64 + 16 >= ctx {
         bail!("the prompt has {} tokens; the context holds {}", prompt.len(), ctx);
