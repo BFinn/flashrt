@@ -45,6 +45,20 @@ position is a confident prediction (top logit 22.8, the next 15.3). Changing one
 positions back moved KL by only 0.00003-0.00004 (`third/`, "sensitivity"), which is within the
 noise. The negative control, a different text, changes the top token.
 
+**KLD gate: outputs unchanged** (2 × 8K wikitext against the FP16-KV llama.cpp base, `KLD=only`
+arm of `sw92.sh`; logs `kld-*.log`):
+
+| Configuration | This change | Before it (8e6d6b5, the same command) | Earlier |
+|---|---|---|---|
+| chunk path, `--prefill-chunk 1024` | 0.008879 | | 0.008879 (sw81-sw83): identical |
+| fast path, window 3, hot set 512, chunks of 2048 | 0.009124 | 0.009124, the same 11,974 swaps | 0.008931 (sw78) |
+| fast path, plain `--fast` | 0.008688 | | |
+
+The fast-path figure moved from sw78's 0.008931 to 0.009124 before this change, somewhere in
+sw79-sw91: that configuration was not rerun then. It is inside the gate band (0.0082-0.0092), at
+its upper edge. Which change moved it is not known yet; the prefill round (sw80-sw83) feeds the
+expert cache's first fill, and the cache's content decides the arithmetic.
+
 Also in this change, recorded in `docs/design.md` (Engine protocol):
 - **Strict requests:** requests are checked before anything runs. `seed` must be a whole number
   up to 2^53. Non-numeric prompt ids are errors.
