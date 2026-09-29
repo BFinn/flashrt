@@ -76,7 +76,7 @@ GgufValue read_value(Reader& r, uint32_t type, int depth = 0) {
             const uint64_t n = r.pod<uint64_t>();
             if (n > (1ull << 32)) r.fail("array length");
             auto arr = std::make_shared<GgufArray>();
-            arr->reserve(n);
+            arr->reserve(std::min<uint64_t>(n, 1u << 20));   // a malformed count fails on the read, not here
             for (uint64_t i = 0; i < n; ++i) arr->push_back(read_value(r, et, depth + 1));
             out.v = arr;
             break;
@@ -96,16 +96,16 @@ void read_shard(Gguf& g, const std::string& path, int shard) {
     const uint64_t n_tensors = r.pod<uint64_t>();
     const uint64_t n_kv = r.pod<uint64_t>();
 
+    uint64_t alignment = 32;   // each file's own (the merged metadata holds shard 1's)
     for (uint64_t i = 0; i < n_kv; ++i) {
         std::string key = r.str();
         const uint32_t t = r.pod<uint32_t>();
         GgufValue v = read_value(r, t);
+        if (key == "general.alignment")
+            if (auto a = v.as_int()) alignment = uint64_t(*a);
         g.meta.emplace(std::move(key), std::move(v));   // emplace: the first shard's value wins
     }
-
-    uint64_t alignment = 32;
-    if (auto it = g.meta.find("general.alignment"); it != g.meta.end())
-        if (auto a = it->second.as_int()) alignment = uint64_t(*a);
+    if (alignment == 0 || (alignment & (alignment - 1)) || alignment > (1u << 20)) r.fail("alignment");
 
     const size_t first = g.tensors.size();
     for (uint64_t i = 0; i < n_tensors; ++i) {
@@ -122,6 +122,8 @@ void read_shard(Gguf& g, const std::string& path, int shard) {
 
     const uint64_t data_start = (r.tell() + alignment - 1) / alignment * alignment;
     const uint64_t file_size = std::filesystem::file_size(path);
+    for (size_t i = first; i < g.tensors.size(); ++i)
+        if (data_start > file_size || g.tensors[i].file_offset > file_size - data_start) r.fail("tensor offset past the end");
 
     // sizes from the gaps between consecutive offsets (the data section is dense up to padding)
     std::vector<size_t> order;
