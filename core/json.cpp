@@ -78,13 +78,28 @@ private:
             fail("expected ',' or ']'");
         }
     }
+    // JSON's grammar, -?(0|[1-9][0-9]*)(.[0-9]+)?([eE][+-]?[0-9]+)?, checked before strtod, which
+    // would also take nan, inf, a leading '+' or hex (a NaN token id must not reach an int)
     Json number() {
-        const char* b = t_.c_str() + i_;
-        char* e = nullptr;
-        const double d = std::strtod(b, &e);
-        if (e == b) fail("bad value");
-        i_ += size_t(e - b);
-        return Json(d);
+        const size_t b = i_;
+        auto digits = [&] {
+            const size_t s = i_;
+            while (i_ < t_.size() && t_[i_] >= '0' && t_[i_] <= '9') ++i_;
+            return i_ > s;
+        };
+        if (i_ < t_.size() && t_[i_] == '-') ++i_;
+        if (i_ < t_.size() && t_[i_] == '0') ++i_;
+        else if (!digits()) fail("bad value");
+        if (i_ < t_.size() && t_[i_] == '.') {
+            ++i_;
+            if (!digits()) fail("bad number");
+        }
+        if (i_ < t_.size() && (t_[i_] == 'e' || t_[i_] == 'E')) {
+            ++i_;
+            if (i_ < t_.size() && (t_[i_] == '+' || t_[i_] == '-')) ++i_;
+            if (!digits()) fail("bad number");
+        }
+        return Json(std::strtod(t_.substr(b, i_ - b).c_str(), nullptr));
     }
     unsigned hex4() {
         if (i_ + 4 > t_.size()) fail("bad \\u escape");
@@ -129,12 +144,22 @@ private:
                 case 'n': out += '\n'; break;
                 case 'r': out += '\r'; break;
                 case 't': out += '\t'; break;
-                case 'u': {
+                case 'u': {   // a surrogate that is not half of a pair becomes U+FFFD
                     unsigned cp = hex4();
-                    if (cp >= 0xD800 && cp < 0xDC00 && i_ + 6 <= t_.size() && t_[i_] == '\\' && t_[i_ + 1] == 'u') {
-                        i_ += 2;
-                        const unsigned lo = hex4();
-                        cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+                    if (cp >= 0xD800 && cp < 0xDC00) {
+                        const size_t at = i_;
+                        unsigned lo = 0;
+                        if (i_ + 6 <= t_.size() && t_[i_] == '\\' && t_[i_ + 1] == 'u') {
+                            i_ += 2;
+                            lo = hex4();
+                        }
+                        if (lo >= 0xDC00 && lo < 0xE000) cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+                        else {
+                            cp = 0xFFFD;
+                            i_ = at;   // the next escape is read on its own
+                        }
+                    } else if (cp >= 0xDC00 && cp < 0xE000) {
+                        cp = 0xFFFD;
                     }
                     utf8(out, cp);
                     break;
@@ -186,9 +211,11 @@ std::string Json::dump() const {
         case Type::Null: return "null";
         case Type::Bool: return b_ ? "true" : "false";
         case Type::Number: {
-            if (std::isfinite(d_) && d_ == std::floor(d_) && std::fabs(d_) < 9.007199254740992e15) return std::to_string(int64_t(d_));
-            char buf[32];
-            std::snprintf(buf, sizeof(buf), "%.6g", std::isfinite(d_) ? d_ : 0.0);
+            if (!std::isfinite(d_)) return "null";   // JSON has no NaN or infinity
+            if (d_ == std::floor(d_) && std::fabs(d_) <= 9.007199254740992e15) return std::to_string(int64_t(d_));
+            char buf[32];   // the shortest of %.15g and %.17g that reads back as the same double
+            std::snprintf(buf, sizeof(buf), "%.15g", d_);
+            if (std::strtod(buf, nullptr) != d_) std::snprintf(buf, sizeof(buf), "%.17g", d_);
             return buf;
         }
         case Type::String: dump_string(s_, out); return out;
