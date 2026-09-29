@@ -231,7 +231,7 @@ cache after, from the prefill's routing counts and the startup prior.
 | **Expert cache in the arena's planar layout** | Uploads are plain copies (no staging, no unrepack), and one layout serves the CPU and GPU kernels. | sw14 |
 | **dp4a hit kernels** (int8 activations per 64 values) | ggml's grouped MMVQ ran the down-projection at about 300 GB/s and always covered 10 entries, pads included. | sw14: MoE hit time 1.6 → 0.97 ms per token; `test_moe_hits` 0.8-1.4% relative L2 |
 | **Q3R for tall Q3_K matrices, converted in place** | ggml's Q3_K MMVQ reaches 364-388 GB/s on sm_120. The limit is decode arithmetic, not bytes; a planar dp4a layout reaches 549-611 GB/s. Only matrices with ≥ 4096 rows and K ≤ 4096 qualify: ggml wins on short or wide ones. | sw10 (v1 kept a duplicate copy: net loss), sw16 |
-| **Adaptive decayed-LFU cache, swap budget 8** | A static cache from the prompt's routing falls to 66% hits on new text; the adaptive one holds about 89%. Budget 32 warms up faster at depth but churns the cache at 32K. | sw11-12, sw21-22 |
+| **Adaptive decayed-LFU cache, swap budget 32** | A static cache from the prompt's routing falls to 66% hits on new text; the adaptive one holds about 89%. The budget was 8 until sw89: when the answer routes unlike the prompt (window 9's chat prompts: 66% hits against 93% on wikitext), 32 uploads per step recover 9-12%; on wikitext continuation it costs 1%. | sw11-12, sw21-22, sw88-sw90 |
 | **Prefill routing counts halve every 4,096 tokens** | At depth, the whole prompt's counts are a poor prior. | sw21: first-window hit rate at 245K 67-69% → 75-79% |
 | **Split-K flash-decode attention** | The first kernel spent 7.1 ms per token on attention. | sw2: 7.1 → 0.23 ms |
 | **Deterministic indexer selection** (block order, no float atomics anywhere) | Atomic slot order made the attention sum order, and so the output, vary from run to run. | sw5: runs bit-reproducible since |
@@ -277,7 +277,10 @@ cache after, from the prefill's routing counts and the startup prior.
   rate). Use dp4a. (sw10, sw14)
 - **Hot set v1** (zero-copy miss reads inside attention, one-CTA promotion afterwards): slower
   than plain q8. (sw19)
-- **Swap budget 32 as the default:** churns the cache at 32K. (sw22)
+- **Swap budget 32 as the default** was rejected in sw22 (churn at 32K) and adopted in sw89-sw90,
+  once window 9's protocol showed the warm-up cost on prompts that predict the answer's routing
+  poorly. The churn cost measured 1% (sw90).
+- **A cache prior from routing statistics** (sw89): no gain over the prompt's own routing.
 - **Q4 KV with a Hadamard rotation** (planned for P4): not done. With the hot set, KV VRAM is
   about 0.2 GB, so it matters little now.
 - **Fewer experts per token** (from P0): rejected at 2-bit, because the KLD cost is too high.
@@ -328,6 +331,10 @@ cache after, from the prefill's routing counts and the startup prior.
 | **Engine: 32K prompt, MTP head, cache rebuild** | 7.9 s | `2026-09-28-sw61-milestone` |
 | Prefill KLD (logits from chunks; fp16, q8; fast path after chunks) | 0.0082-0.0087 | sw47, sw49, sw50 |
 | Prefill, reference path (CPU experts, 64-token batches) | 109-123 tok/s | |
+| **Window 9's protocol** (the reference engines' prompts, 384 tokens, 3 runs), 1K / 32K / 134K / 250K: greedy `--spec 2` | 106.6 / 83.7 / 81.0 / 74.8 | `2026-09-29-sw91-depthbench` |
+| same, temperature 1.0 `--spec 2` (sampled drafts) | 82.2 / 77.7 / 81.0 / 76.4 | same |
+| same, no MTP, greedy | 94.7 / 81.7 / 77.4 / 73.0 | same |
+| same, Strata greedy / temperature 1.0; llama.cpp | 87.0 / 96.0 / 85.0 / 80.4; 80.5 / 79.1 / 73.9 / 69.9; 37.4 / 37.2 / 32.8 / 30.7 | `2026-09-27-w9-validation` |
 
 **Where the time goes at 245K with the hot set** (nsys `--cuda-graph-trace=node`, sw20):
 - 14.1 ms of GPU kernel time per token;
@@ -469,4 +476,8 @@ list, are done (sw85: 32K `--spec 1` 119.0 → 143.1 tok/s, 245K 91.7 → 97.1).
    Decode: the small mat-vecs that share an input, and the norms and SwiGLU in front of a
    mat-vec, are fused (sw73, sw74: plain +4.3%, `--spec 1` +1.9-2.3%). What is left there is
    mostly the hc kernels and the MoE combine.
-3. **Tuning:** multi-CTA select, a parallel hot-set CLOCK, an adaptive swap budget.
+3. **Tuning:** multi-CTA select, a parallel hot-set CLOCK, an adaptive swap budget (larger
+   while the hit rate is low: the gap to Strata at 32K-250K on window 9's protocol is the
+   cache warm-up, sw88).
+4. **The MTP head's pass over the prompt:** prefill with the head runs 2,150-4,130 tok/s
+   against 5,570-5,950 without it (sw87, sw91).
