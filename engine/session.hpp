@@ -66,6 +66,7 @@ struct GenerateResult {
     double prompt_ms = 0, decode_ms = 0;
     std::string finish;               // "stop", "length", "cancelled"
     long drafts_proposed = 0, drafts_accepted = 0;
+    long cache_hits = 0, cache_misses = 0;   // routed experts in the decode: in the VRAM cache, or not
     std::vector<std::pair<int32_t, float>> first_top;   // with GenerateRequest::first_top: (id, logit), best first
 };
 

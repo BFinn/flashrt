@@ -232,7 +232,8 @@ int main(int argc, char** argv) {
                      .set("prompt_ms", res.prompt_ms)
                      .set("decode_ms", res.decode_ms)
                      .set("finish", res.finish)
-                     .set("drafts", drafts));
+                     .set("drafts", drafts)
+                     .set("cache", Json::object().set("hits", double(res.cache_hits)).set("misses", double(res.cache_misses))));
         } catch (const std::exception& e) {
             if (!session->healthy()) {
                 error(id, std::string(e.what()) + " (fatal: the engine exits)");

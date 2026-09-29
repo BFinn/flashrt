@@ -26,6 +26,16 @@ import threading
 import time
 
 
+def gpu_state():
+    """SM clock (MHz), temperature (C) and power (W) now, for the row's record."""
+    try:
+        f = subprocess.check_output(["nvidia-smi", "--query-gpu=clocks.sm,temperature.gpu,power.draw",
+                                     "--format=csv,noheader,nounits"], text=True).split(",")
+        return {"sm_mhz": int(f[0]), "temp_c": int(f[1]), "power_w": float(f[2])}
+    except Exception:
+        return None
+
+
 def vram():
     return int(subprocess.check_output(["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"]).split()[0])
 
@@ -111,12 +121,17 @@ def main():
             new = done["prompt_tokens"] - done.get("reused", 0)
             pre_tps = new / done["prompt_ms"] * 1000 if done.get("prompt_ms") else 0.0
             dr = done.get("drafts") or {}
-            row = {"depth": len(ids), "new": new, "generated": k, "ttft_s": round(times[0] - t_send, 2) if times else None,
+            ca = done.get("cache") or {}
+            hit = ca["hits"] / max(1, ca["hits"] + ca["misses"]) if "hits" in ca else None
+            row = {"depth": len(ids), "new": new, "reused": done.get("reused", 0), "generated": k,
+                   "ttft_s": round(times[0] - t_send, 2) if times else None, "prompt_s": round(done.get("prompt_ms", 0) / 1000, 2),
                    "decode_wall_tps": round(wall_tps, 2), "decode_engine_tps": round(eng_tps, 2), "prefill_tps": round(pre_tps, 1),
-                   "drafts": dr, "finish": done.get("finish")}
+                   "drafts": dr, "cache": ca, "hit_rate": round(hit, 4) if hit is not None else None, "finish": done.get("finish"),
+                   "gpu": gpu_state()}
             rows.append(row)
             acc = f" | drafts {dr.get('accepted')}/{dr.get('proposed')}" if dr.get("proposed") else ""
-            print(f"{a.label:28s} depth {row['depth']:>7} | prefill {row['prefill_tps']:>7} t/s ({new} new) | decode "
+            acc += f" | hits {100 * hit:.1f}%" if hit is not None else ""
+            print(f"{a.label:28s} depth {row['depth']:>7} | prefill {row['prefill_tps']:>7} t/s ({new} new, {row['prompt_s']} s) | decode "
                   f"{row['decode_wall_tps']:>6} t/s wall, {row['decode_engine_tps']:>6} engine | gen {k} {row['finish']}{acc}"
                   f" | vram_max {max(samples) if samples else 0}", flush=True)
         print("SUMMARY " + json.dumps({"label": a.label, "load_s": round(load_s, 1), "sampling": sampling, "engine_args": extra,

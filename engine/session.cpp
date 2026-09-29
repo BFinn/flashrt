@@ -487,6 +487,7 @@ GenerateResult Session::run(const GenerateRequest& r, const std::function<void(i
 
     // 3. decode
     const auto td = Clock::now();
+    const long hits0 = m.host.hits, misses0 = m.host.misses + m.host.gpu_misses;
     auto is_stop = [&](int32_t t) { return std::find(r.stop_ids.begin(), r.stop_ids.end(), t) != r.stop_ids.end(); };
     int32_t y = m.pick(m.logits, 1, n, r)[0];   // the pending token: sampled, not yet run
     bool done = false;
@@ -565,6 +566,8 @@ GenerateResult Session::run(const GenerateRequest& r, const std::function<void(i
     if (K > 0) ck(cudaMemcpyAsync(m.h_carry, m.h_buf + size_t(pend - 1) * m.hrow, m.hrow * 4, cudaMemcpyDeviceToDevice, m.fwd->stream()), "h");
     ck(cudaStreamSynchronize(m.fwd->stream()), "generate");
     res.decode_ms = ms_since(td);
+    res.cache_hits = m.host.hits - hits0;
+    res.cache_misses = m.host.misses + m.host.gpu_misses - misses0;
     return res;
 }
 
