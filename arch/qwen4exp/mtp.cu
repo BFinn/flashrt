@@ -125,6 +125,19 @@ void q8_0_to_q4_0(const uint8_t* src, uint8_t* dst, size_t nblocks) {
 // Q8_0 blocks (32) -> ggml Q2_0 blocks (64: an fp16 scale d and 2-bit codes q, value (q - 1) * d,
 // element j in byte j / 4 at bit 2 * (j % 4)). Round to nearest with the scale that minimises
 // the block's squared error over a small set of candidates.
+// The code of a value v = x / d is clamp(lround(v), -1, 2). For finite v that is three
+// comparisons, which vectorise; lround was a library call per value and made the head's load take
+// ~250 s (sw98). A zero or infinite d (fp16 underflow or overflow) keeps lround, as before. The
+// error sum keeps its expressions and order, so the chosen scales and codes are bit-identical
+// (test_mtp_convert).
+inline int q2_code(float v) { return int(v >= 0.5f) + int(v >= 1.5f) - int(v <= -0.5f); }
+void q2_codes(const float* x, float d, int* q) {
+    if (d > 0.0f && std::isfinite(d)) {
+        for (int j = 0; j < 64; ++j) q[j] = q2_code(x[j] / d);
+    } else {
+        for (int j = 0; j < 64; ++j) q[j] = std::min(2, std::max(-1, int(std::lround(x[j] / d))));
+    }
+}
 void q8_0_to_q2_0(const uint8_t* src, uint8_t* dst, size_t nblocks64) {
     for (size_t b = 0; b < nblocks64; ++b, src += 68, dst += 18) {
         float x[64], amax = 0.0f;
@@ -134,14 +147,15 @@ void q8_0_to_q2_0(const uint8_t* src, uint8_t* dst, size_t nblocks64) {
             for (int j = 0; j < 32; ++j) amax = std::max(amax, std::fabs(x[32 * h + j] = d8 * float(int8_t(s8[2 + j]))));
         }
         float best_d = 0.0f, best_e = INFINITY;
+        int q[64];
         for (int c = 0; c < 24 && amax > 0.0f; ++c) {   // d from amax / 2.5 up to amax
             const float d = amax / (2.5f - 1.5f * float(c) / 23.0f);
             const uint16_t dh = fp32_to_fp16(d);
             const float dq = fp16_to_fp32(dh);
+            q2_codes(x, dq, q);
             float e = 0.0f;
             for (int j = 0; j < 64; ++j) {
-                const int q = std::min(2, std::max(-1, int(std::lround(x[j] / dq))));
-                const float r = x[j] - float(q) * dq;
+                const float r = x[j] - float(q[j]) * dq;
                 e += r * r;
             }
             if (e < best_e) { best_e = e; best_d = dq; }
@@ -150,10 +164,9 @@ void q8_0_to_q2_0(const uint8_t* src, uint8_t* dst, size_t nblocks64) {
         dst[0] = uint8_t(dh & 0xff);
         dst[1] = uint8_t(dh >> 8);
         std::memset(dst + 2, 0, 16);
-        for (int j = 0; j < 64; ++j) {
-            const int q = best_d > 0.0f ? std::min(2, std::max(-1, int(std::lround(x[j] / best_d)))) : 0;
-            dst[2 + j / 4] |= uint8_t((q + 1) << (2 * (j % 4)));
-        }
+        if (best_d > 0.0f) q2_codes(x, best_d, q);
+        else std::fill(q, q + 64, 0);
+        for (int j = 0; j < 64; ++j) dst[2 + j / 4] |= uint8_t((q[j] + 1) << (2 * (j % 4)));
     }
 }
 
@@ -185,6 +198,16 @@ __global__ void k_gather_rows(const uint8_t* src, const int32_t* ids, uint8_t* d
 }
 
 }  // namespace
+
+void convert_q8_0_to_q2_0(const uint8_t* src, uint8_t* dst, size_t nblocks64, int threads) {
+    std::vector<std::thread> th;
+    for (int k = 0; k < threads; ++k)
+        th.emplace_back([=] {
+            const size_t a = nblocks64 * size_t(k) / size_t(threads), e = nblocks64 * size_t(k + 1) / size_t(threads);
+            q8_0_to_q2_0(src + a * 68, dst + a * 18, e - a);
+        });
+    for (auto& t : th) t.join();
+}
 
 MtpHead::MtpHead(const Gguf& g, const Spec& target, const GpuWeights& target_w, cudaStream_t stream, int max_ctx, int max_batch,
                  bool kv_q8, int kv_hot_blocks, int expert_bits)
@@ -290,15 +313,17 @@ void MtpHead::load_experts_q4(const Gguf& g, bool q2) {
                 if (got <= 0) throw std::runtime_error("short read of " + t.name);
                 r += size_t(got);
             }
-            const int nt = 8;
-            std::vector<std::thread> th;
-            for (int k = 0; k < nt; ++k)
-                th.emplace_back([&, k] {
-                    const size_t a = n * k / nt, e = n * (k + 1) / nt;
-                    if (q2) q8_0_to_q2_0(in.data() + a * in_blk, out.data() + a * out_blk, e - a);
-                    else q8_0_to_q4_0(in.data() + a * in_blk, out.data() + a * out_blk, e - a);
-                });
-            for (auto& x : th) x.join();
+            const int nt = int(std::max(8u, std::thread::hardware_concurrency()));
+            if (q2) convert_q8_0_to_q2_0(in.data(), out.data(), n, nt);
+            else {
+                std::vector<std::thread> th;
+                for (int k = 0; k < nt; ++k)
+                    th.emplace_back([&, k] {
+                        const size_t a = n * k / nt, e = n * (k + 1) / nt;
+                        q8_0_to_q4_0(in.data() + a * in_blk, out.data() + a * out_blk, e - a);
+                    });
+                for (auto& x : th) x.join();
+            }
             ck(cudaMemcpy(static_cast<uint8_t*>(exp_dev_) + off[i] + b0 * out_blk, out.data(), n * out_blk, cudaMemcpyHostToDevice),
                "upload MTP experts");
         }

@@ -172,6 +172,9 @@ if(FLASHRT_CUDA)
   target_link_libraries(test_moe_q2 PRIVATE flashrt_gemv flashrt_q2_0 flashrt_core flashrt_ggml_stubs)
   add_test(NAME moe_q2 COMMAND test_moe_q2)
   set_tests_properties(moe_q2 PROPERTIES SKIP_RETURN_CODE 77)   # needs FLASHRT_TEST_MODEL
+  add_executable(test_mtp_convert tests/test_mtp_convert.cu)
+  target_link_libraries(test_mtp_convert PRIVATE flashrt_qwen4exp_gpu flashrt_gemv flashrt_ggml_stubs)   # stubs last
+  add_test(NAME mtp_convert COMMAND test_mtp_convert)
   add_executable(test_sample tests/test_sample.cpp)
   target_link_libraries(test_sample PRIVATE flashrt_qwen4exp_gpu flashrt_gemv flashrt_ggml_stubs)   # stubs last
   add_test(NAME sample COMMAND test_sample)
@@ -179,7 +182,7 @@ if(FLASHRT_CUDA)
   target_link_libraries(test_spec_sample PRIVATE flashrt_qwen4exp_gpu flashrt_gemv flashrt_ggml_stubs)
   add_test(NAME spec_sample COMMAND test_spec_sample)
   # these need the GPU; CI compiles them and runs `ctest -L cpu`
-  set_tests_properties(moe_hits moe_q gemm gdn gdn_decode linear_multi hc_decode route_topk moe_q2 sample spec_sample PROPERTIES LABELS gpu)
+  set_tests_properties(moe_hits moe_q gemm gdn gdn_decode linear_multi hc_decode route_topk moe_q2 mtp_convert sample spec_sample PROPERTIES LABELS gpu)
   if(FLASHRT_LLAMA_DIR)
     set_tests_properties(gemv PROPERTIES LABELS gpu)
   endif()

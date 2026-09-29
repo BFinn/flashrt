@@ -35,6 +35,10 @@ struct Gguf;
 
 namespace flashrt::qwen4exp {
 
+// Q8_0 blocks, two per 64 values (68 bytes), to ggml Q2_0 blocks (18 bytes) on `threads` threads:
+// the head's experts at --mtp-bits 2, converted at load.
+void convert_q8_0_to_q2_0(const uint8_t* src, uint8_t* dst, size_t nblocks64, int threads);
+
 class MtpHead {
 public:
     // g: the draft GGUF; target, target_w: the target model (embedding, LM head, shapes). The KV
