@@ -16,11 +16,12 @@ against the best existing engines on that box.
 
 ## Results
 
-**Same prompts as the reference engines** (`bench/results/2026-09-29-sw91-depthbench`,
+**Same prompts as the reference engines** (`bench/results/2026-09-29-sw96-depthbench`,
 against `bench/results/2026-09-27-w9-validation`):
 - the same token ids (a synthetic prompt followed by an instruction, at 1K / 32K / 134K / 250K
   tokens);
-- the depths in one sequence, 384 generated tokens per depth, a fresh engine per run;
+- the depths in one sequence, each prompt reusing the previous one's shared prefix, 384 generated
+  tokens per depth, a fresh engine per run;
 - decode tok/s, mean ± sd over n runs.
 
 | Engine | n | 1K | 32K | 134K | 250K |
@@ -28,45 +29,49 @@ against `bench/results/2026-09-27-w9-validation`):
 | llama.cpp (expert cache, sparse attention; no MTP), greedy | 4 | 37.4 ± 0.6 | 37.2 ± 1.1 | 32.8 ± 1.6 | 30.7 ± 1.1 |
 | **greedy** | | | | | |
 | Strata 0.1.6, MTP (see the caveat below) | 4 | 87.0 ± 0.7 | 96.0 ± 2.2 | 85.0 ± 2.7 | 80.4 ± 3.6 |
-| flashrt, MTP (2 drafts per round) | 3 | 106.6 ± 1.5 | 83.7 ± 0.8 | 81.0 ± 0.4 | 74.8 ± 1.7 |
-| flashrt, no MTP | 3 | 94.7 ± 1.7 | 81.7 ± 1.0 | 77.4 ± 0.7 | 73.0 ± 1.2 |
+| flashrt, MTP (2 drafts per round) | 5 | 105.2 ± 2.6 | 84.0 ± 1.1 | 78.8 ± 1.8 | 75.2 ± 1.6 |
+| flashrt, no MTP | 5 | 94.5 ± 2.2 | 83.1 ± 0.6 | 78.3 ± 0.5 | 73.4 ± 0.7 |
 | **temperature 1.0** (top-p 0.95, top-k 20) | | | | | |
 | Strata 0.1.6, MTP (n=3 at 250K) | 4 | 80.5 ± 4.1 | 79.1 ± 1.3 | 73.9 ± 1.8 | 69.9 ± 7.2 |
-| flashrt, MTP, sampled drafts | 3 | 82.2 ± 4.2 | 77.7 ± 13.1 | 81.0 ± 0.9 | 76.4 ± 2.1 |
+| flashrt, MTP, sampled drafts | 5 | 100.7 ± 8.3 | 81.0 ± 4.3 | 79.5 ± 2.6 | 77.3 ± 4.8 |
 
-Two differences in how the engines ran this protocol:
-- **Prefix reuse.** Every prompt ends with the same instruction, so a deeper prompt shares only
-  its context with the previous one, not its end. Strata reused 32,768 tokens at 134K and
-  131,072 at 250K, and llama.cpp reused about 30,700 and 132,000. flashrt keeps one checkpoint,
-  at the end of the previous prompt, so it prefilled every depth from the start. Its expert
-  cache was primed from the whole prompt, not carried over from the previous answer. How much
-  this moves decode speed is not measured yet
-  ([docs/improvement-plan.md](docs/improvement-plan.md), phase 2).
-- **Strata's build warns that its cache path is not correct.** With `--expert-cache` on, its log says the
-  GPU hit path "is NOT CORRECT" and that its tokens diverge from a cache-off run. Its timings are
-  real. Its draft acceptance, and so its MTP speed, come from outputs that differ from the
-  model's.
+- **Prefix reuse.** Every prompt ends with the same instruction, so a deeper prompt shares only its
+  context with the previous one. flashrt reuses 32,768 tokens at 134K and 134,004 at 250K, from
+  host checkpoints taken during the previous prefill. Strata reused 32,768 and 131,072, and
+  llama.cpp about 30,700 and 132,000. The step to 32K prefills cold in flashrt: the engine takes
+  the checkpoint before a prompt's tail only after it has seen a prompt keep the text and change
+  the tail.
+- **Strata's build warns that its cache path is not correct.** With `--expert-cache` on, its log
+  says the GPU hit path "is NOT CORRECT" and that its tokens diverge from a cache-off run. Its
+  timings are real. Its draft acceptance, and so its MTP speed, come from outputs that differ from
+  the model's.
 
 What the table shows:
-- **Against llama.cpp:** 2.2-2.5x with neither engine drafting, 2.2-2.9x with flashrt's MTP head.
-- **Against Strata, greedy:** ahead at 1K; behind from 32K on, by 13% at 32K, 5% at 134K and 7%
+- **Against llama.cpp:** 2.2-2.5x with neither engine drafting, 2.3-2.8x with flashrt's MTP head.
+- **Against Strata, greedy:** ahead at 1K; behind from 32K on, by 12.5% at 32K, 7% at 134K and 6.5%
   at 250K.
-- **Against Strata, temperature 1.0:** ahead at 134K (81.0 against 73.9). At 1K, 32K and 250K
-  the gap is within the run-to-run spread, and flashrt's 32K cell varies ±13.
-- **The depth gap** has two candidate causes, not yet separated: the prefix reuse above, and the
-  expert cache's warm-up. The prompt predicts the answer's experts poorly here: a 66% hit rate
-  against 93% on natural text (`2026-09-29-sw88-w9-diag`, one run each).
+- **Against Strata, temperature 1.0:** ahead at 1K and 134K; at 32K and 250K the difference is
+  within the run-to-run spread.
+- **The depth gap is the expert cache,** not the prefill: reusing the prefix left decode where it
+  was (sw91, without reuse, is within the spread in every cell). The cache is filled from the
+  prompt's routing, and this generation routes elsewhere: 66-68% hits with the MTP head, 75-77%
+  without, against 93% on natural text (`2026-09-29-sw88-w9-diag`). How much a better cache policy
+  can recover is the next measurement.
 - **Tuned on this protocol:** the expert-cache swap budget of 32 was chosen here (+9-12%, sw89).
   It costs 1% on natural text (sw90).
+- **Time to the first token at 250K:** 25.8 s with the draft head and 22.3 s without it, for the
+  116,708 new tokens. Strata takes 123 s for its 119,640 new tokens.
 - **Prefill per new token,** from each engine's own log, at 32K / 134K / 250K:
-  - flashrt without the draft head: 5,760 / 5,955 / 5,690 tok/s;
-  - flashrt with the head: 4,120 / 2,430 / 2,150. The head's pass over the prompt runs on a
-    slower path, which is an open item;
+  - flashrt without the draft head: 5,662 / 5,756 / 5,232 tok/s;
+  - flashrt with the head: 4,988 / 5,031 / 4,529;
   - Strata: 1,173 / 1,090 / 969;
   - llama.cpp: 1,108 / 724 / 443.
 
-  At 250K, time to the first token is 44 s without the head and 117 s with it (all 250,712
-  tokens). Strata takes 123 s for its 119,640 new tokens.
+**An agentic coding session** (`bench/results/2026-09-29-sw97-agent`, `bench/agent_trace.py`): 12
+turns through the server, with the model reading this repository through tool calls, up to 77K
+tokens of context, with the MTP head. Every turn reuses the whole previous conversation. Time to
+first token is 1.0-2.6 s per turn, and decode about 102 tok/s. Decode varies with the expert
+cache's hit rate from turn to turn: 73 tok/s at 44% hits, 125 at 86%.
 
 **Continuing natural text** (`tools/fr_bench`, wikitext prompts from saved states, 6 windows of
 128 tokens; `2026-09-28-sw85-sampled-drafts`, one run per arm):
