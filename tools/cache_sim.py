@@ -19,6 +19,11 @@ Policies:
   static  the `slots` most-used pairs of the whole trace, never changed (an oracle profile:
           the best any fixed pre-fill can do)
   belady  evict the resident pair used furthest in the future (the optimum; needs the trace)
+  engine  flashrt-engine's policy: primed from the prompt's routing (--prime, a prefill trace:
+          the `slots` pairs of highest count, counts halved every --prime-half-life tokens from
+          the prompt's start, as the engine's prefill counts are), those counts seeding the
+          decayed LFU above; at most --budget uploads started per token, each resident from
+          the next token on. With --windows W, also the hit rate of each W-token window.
 
 Hits are counted per access. The hit rate is what one gets from the cache; misses are what
 the CPU or PCIe has to serve.
@@ -130,6 +135,65 @@ def sim_belady(keys, cap):
     return hits / n
 
 
+def prime_counts(prefill, n_exp, half_life):
+    """The engine's prefill routing counts over (layer, expert): halved every half_life tokens."""
+    n_tok, n_layer, k = prefill.shape
+    c = np.zeros(n_layer * n_exp)
+    base = np.arange(n_layer)[:, None] * n_exp
+    for t in range(n_tok):
+        if half_life and t and t % half_life == 0:
+            c *= 0.5
+        row = prefill[t]
+        ok = row >= 0
+        np.add.at(c, (base + row)[ok], 1.0)
+    return c
+
+
+def sim_engine(trace, cap, n_exp, prime=None, budget=32, decay=0.7, decay_every=4, admit=2.0, margin=1.5, windows=0):
+    """Returns (hit rate, per-window hit rates)."""
+    n_tok, n_layer, k = trace.shape
+    keys = (np.arange(n_layer)[None, :, None] * n_exp + trace).reshape(n_tok, n_layer * k)
+    count = np.zeros(n_layer * n_exp) if prime is None else prime.astype(float).copy()
+    resident = np.zeros(n_layer * n_exp, dtype=bool)
+    if prime is not None:
+        resident[np.argsort(-count, kind="stable")[:cap]] = True
+    pending = []
+    hits, total, win = 0, 0, []
+    wh = wt = 0
+    for t in range(n_tok):
+        resident[pending] = True   # last token's uploads have landed
+        pending = []
+        row = keys[t]
+        h = int(resident[row].sum())
+        hits += h
+        total += row.size
+        wh += h
+        wt += row.size
+        np.add.at(count, row, 1.0)
+        n_res = int(resident.sum())
+        missed = [key for key in dict.fromkeys(row.tolist()) if not resident[key]]
+        missed.sort(key=lambda key: -count[key])
+        for key in missed:
+            if len(pending) >= budget:
+                break
+            if n_res + len(pending) < cap:
+                pending.append(key)
+                continue
+            if count[key] < admit:
+                continue
+            res_idx = np.flatnonzero(resident)
+            victim = res_idx[np.argmin(count[res_idx])]
+            if count[key] >= margin * count[victim]:
+                resident[victim] = False
+                pending.append(key)
+        if (t + 1) % decay_every == 0:
+            count *= decay
+        if windows and (t + 1) % windows == 0:
+            win.append(wh / wt)
+            wh = wt = 0
+    return hits / total, win
+
+
 def synthetic(n_tok, n_layer=48, n_exp=512, k=10, seed=1):
     """Zipf-skewed popularity plus temporal locality: a crude stand-in until a real trace exists."""
     rng = np.random.default_rng(seed)
@@ -168,6 +232,11 @@ def main():
     ap.add_argument("--margin", type=float, default=1.5)
     ap.add_argument("--win", type=int, default=32)
     ap.add_argument("--win-admit", type=int, default=3)
+    ap.add_argument("--prime", help="engine policy: a prefill trace [N, n_layer, k] (route_trace --prefill-trace)")
+    ap.add_argument("--prime-half-life", type=int, default=4096)
+    ap.add_argument("--budget", type=int, default=32)
+    ap.add_argument("--n-expert", type=int, default=512)
+    ap.add_argument("--windows", type=int, default=0)
     a = ap.parse_args()
 
     if a.trace:
@@ -196,6 +265,13 @@ def main():
                 res.append(sim_static(keys, cap))
             elif p == "belady":
                 res.append(sim_belady(keys, cap))
+            elif p == "engine":
+                if not hasattr(a, "_prime"):
+                    a._prime = prime_counts(np.load(a.prime), a.n_expert, a.prime_half_life) if a.prime else None
+                r, win = sim_engine(trace, cap, a.n_expert, a._prime, a.budget, a.decay, a.decay_every, a.admit, a.margin, a.windows)
+                res.append(r)
+                if win:
+                    print(f"{'':>8} engine, {a.windows}-token windows: " + " ".join(f"{w:.3f}" for w in win))
             else:
                 sys.exit(f"unknown policy {p}")
         print(f"{cap:>8} " + " ".join(f"{r:8.3f}" for r in res), flush=True)
