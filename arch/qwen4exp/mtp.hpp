@@ -86,6 +86,10 @@ public:
     void save_checkpoint(const float* h_dev);
     void reserve_checkpoint();   // allocate it now (save_checkpoint otherwise does on first use)
     void restore_checkpoint(float* h_dev);
+    // The same to or from a caller's buffer of checkpoint_bytes() (device or pinned host memory).
+    size_t checkpoint_bytes() const;
+    void save_checkpoint_to(void* dst, const float* h_dev);
+    void restore_checkpoint_from(const void* src, float* h_dev);
     // The head's state after a prefill of pos positions (its KV cache, and the target's streams
     // at pos - 1, h_carry_dev [hc][n]), in a file of its own; load returns pos.
     void save_state(const std::string& path, int pos, const float* h_carry_dev);

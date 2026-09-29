@@ -112,6 +112,12 @@ public:
     void reserve_checkpoint();
     void restore_checkpoint();
     int checkpoint_pos() const { return ckpt_pos_; }
+    void drop_checkpoint() { ckpt_pos_ = -1; }
+    // The same state to or from a caller's buffer of checkpoint_bytes() (device or pinned host
+    // memory): the engine keeps more checkpoints in host RAM, taken during long prefills.
+    size_t checkpoint_bytes();
+    void save_checkpoint_to(void* dst);
+    void restore_checkpoint_from(const void* src, int pos);
 
     // Greedy token from a logits row on the device (GPU argmax; 4 bytes come back).
     int32_t argmax(const float* logits_row_dev);

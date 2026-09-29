@@ -4,8 +4,9 @@
 // CPU pool with its doorbell miss server, the forward pass, and the optional MTP draft head.
 //
 // generate() reuses the longest usable prefix of the previous sequence: the whole of it when the
-// new prompt extends it, else the checkpoint taken at the end of the previous prompt (the
-// recurrent state cannot be rewound to an arbitrary position), else nothing. The prompt's new
+// new prompt extends it, else the latest checkpoint inside the shared prefix (the recurrent state
+// cannot be rewound to an arbitrary position): the one at the end of the previous prompt, on the
+// GPU, or one of those taken during earlier prefills, in host RAM. Else nothing. The prompt's new
 // tokens are prefilled in batches (reference path), then decoding runs on the fast path, plain
 // or speculative (the MTP head drafts K tokens, the target verifies them in one window, exact
 // speculative sampling).
@@ -40,6 +41,13 @@ struct SessionOptions {
     int chunk_min = 256;              // (the experts stream to the GPU; the expert cache is rebuilt after);
     int prefill_chunk_max = 16384;    // 0: the longest that fits the free VRAM, up to prefill_chunk_max
     std::string cache_prior;          // routing counts of a calibration prefill (fr_bench --save-counts)
+    // Prefix reuse beyond the end of the previous prompt: up to `ckpts` recurrent-state
+    // checkpoints in pinned host RAM (~121 MiB each for qwen4exp), taken during a prefill at
+    // chunk ends at least ckpt_interval tokens apart, and before the prompt's last ckpt_tail
+    // tokens (a prompt that keeps a fixed tail after growing text reuses up to there).
+    int ckpts = 8;
+    int ckpt_interval = 4096;
+    int ckpt_tail = 64;
 };
 
 struct GenerateRequest {

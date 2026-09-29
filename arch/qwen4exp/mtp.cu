@@ -353,26 +353,39 @@ void MtpHead::set_vocab(const std::vector<int32_t>& ids) {
     head_.bytes = rb * ids.size();
 }
 
+size_t MtpHead::checkpoint_bytes() const {
+    return (size_t(qsa_ring_slots(s_)) * s_.idx_dim + size_t(s_.hc_count) * s_.d_model) * 4;
+}
+
 void MtpHead::reserve_checkpoint() {
+    if (!ckpt_) ck(cudaMalloc(&ckpt_, checkpoint_bytes()), "cudaMalloc MTP checkpoint");
+}
+
+void MtpHead::save_checkpoint_to(void* dst, const float* h_dev) {
     const size_t ring = size_t(qsa_ring_slots(s_)) * s_.idx_dim, h = size_t(s_.hc_count) * s_.d_model;
-    if (!ckpt_) ck(cudaMalloc(&ckpt_, (ring + h) * 4), "cudaMalloc MTP checkpoint");
+    float* d = static_cast<float*>(dst);
+    ck(cudaMemcpyAsync(d, kv_.idx_ring, ring * 4, cudaMemcpyDefault, stream_), "MTP checkpoint");
+    ck(cudaMemcpyAsync(d + ring, h_dev, h * 4, cudaMemcpyDefault, stream_), "MTP checkpoint");
+    ck(cudaStreamSynchronize(stream_), "MTP checkpoint");
 }
 
 void MtpHead::save_checkpoint(const float* h_dev) {
-    const size_t ring = size_t(qsa_ring_slots(s_)) * s_.idx_dim, h = size_t(s_.hc_count) * s_.d_model;
     reserve_checkpoint();
-    ck(cudaMemcpyAsync(ckpt_, kv_.idx_ring, ring * 4, cudaMemcpyDeviceToDevice, stream_), "MTP checkpoint");
-    ck(cudaMemcpyAsync(ckpt_ + ring, h_dev, h * 4, cudaMemcpyDeviceToDevice, stream_), "MTP checkpoint");
-    ck(cudaStreamSynchronize(stream_), "MTP checkpoint");
+    save_checkpoint_to(ckpt_, h_dev);
+}
+
+void MtpHead::restore_checkpoint_from(const void* src, float* h_dev) {
+    const size_t ring = size_t(qsa_ring_slots(s_)) * s_.idx_dim, h = size_t(s_.hc_count) * s_.d_model;
+    const float* c = static_cast<const float*>(src);
+    ck(cudaMemcpyAsync(kv_.idx_ring, c, ring * 4, cudaMemcpyDefault, stream_), "MTP restore");
+    ck(cudaMemcpyAsync(h_dev, c + ring, h * 4, cudaMemcpyDefault, stream_), "MTP restore");
+    reset_qsa_hot(s_, kv_, stream_);
+    ck(cudaStreamSynchronize(stream_), "MTP restore");
 }
 
 void MtpHead::restore_checkpoint(float* h_dev) {
     if (!ckpt_) throw std::runtime_error("MTP restore_checkpoint: none saved");
-    const size_t ring = size_t(qsa_ring_slots(s_)) * s_.idx_dim, h = size_t(s_.hc_count) * s_.d_model;
-    ck(cudaMemcpyAsync(kv_.idx_ring, ckpt_, ring * 4, cudaMemcpyDeviceToDevice, stream_), "MTP restore");
-    ck(cudaMemcpyAsync(h_dev, ckpt_ + ring, h * 4, cudaMemcpyDeviceToDevice, stream_), "MTP restore");
-    reset_qsa_hot(s_, kv_, stream_);
-    ck(cudaStreamSynchronize(stream_), "MTP restore");
+    restore_checkpoint_from(ckpt_, h_dev);
 }
 
 void MtpHead::save_state(const std::string& path, int pos, const float* h_carry_dev) {

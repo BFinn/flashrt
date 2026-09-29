@@ -83,6 +83,15 @@ struct Session::Impl {
     std::vector<float> prior;      // routing counts of a calibration prefill, scaled to 4,096 tokens
 
     std::vector<int32_t> seq;      // the tokens the target has processed: positions 0 .. pos() - 1
+    // Host checkpoints, taken during prefills (SessionOptions::ckpts). Each is valid for seq's
+    // first `pos` tokens: run() drops those past the prefix a new prompt shares with seq.
+    struct HostCkpt {
+        int pos = -1;
+        char* buf = nullptr;   // the target's state, then the head's
+    };
+    std::vector<HostCkpt> ring;
+    char* ring_mem = nullptr;
+    size_t ckpt_fwd = 0, ckpt_mtp = 0;
     bool healthy = true;
     size_t hrow = 0;
     float *logits = nullptr, *logits_win = nullptr, *h_carry = nullptr, *h_buf = nullptr;
@@ -130,6 +139,14 @@ struct Session::Impl {
         // server with the reserve at 256 MiB failed its first request allocating them)
         fwd->reserve_checkpoint();
         if (mtp) mtp->reserve_checkpoint();
+        if (o.ckpts > 0) {
+            ckpt_fwd = fwd->checkpoint_bytes();
+            ckpt_mtp = mtp ? mtp->checkpoint_bytes() : 0;
+            const size_t each = (ckpt_fwd + ckpt_mtp + 4095) & ~size_t(4095);
+            ck(cudaHostAlloc(&ring_mem, each * size_t(o.ckpts), cudaHostAllocDefault), "cudaHostAlloc checkpoints");
+            for (int i = 0; i < o.ckpts; ++i) ring.push_back({-1, ring_mem + each * size_t(i)});
+            std::fprintf(stderr, "flashrt: %d prefill checkpoints of %.1f MiB in host RAM\n", o.ckpts, double(each) / (1 << 20));
+        }
         // the expert cache takes the VRAM that is left; it is filled after the first prefill
         size_t free_b = 0, total_b = 0;
         ck(cudaMemGetInfo(&free_b, &total_b), "cudaMemGetInfo");
@@ -174,6 +191,7 @@ struct Session::Impl {
                         static_cast<void*>(tok_dev)})
             if (p) cudaFree(p);
         if (tok_host) cudaFreeHost(tok_host);
+        if (ring_mem) cudaFreeHost(ring_mem);
         pool.reset();
         arena_free(arena);
     }
@@ -234,11 +252,67 @@ struct Session::Impl {
             if (mtp) mtp->reset();
             ck(cudaMemset(h_carry, 0, hrow * 4), "memset h");
             seq.clear();
+            drop_checkpoints_after(0);
             ck(cudaDeviceSynchronize(), "recover");
         } catch (const std::exception& e) {
             std::fprintf(stderr, "flashrt: recovery failed: %s\n", e.what());
             healthy = false;
         }
+    }
+
+    // Checkpoints hold the state after seq's first pos tokens; those past L (the prefix a new
+    // prompt shares with seq) describe other tokens.
+    void drop_checkpoints_after(size_t L) {
+        if (fwd->checkpoint_pos() > 0 && size_t(fwd->checkpoint_pos()) > L) fwd->drop_checkpoint();
+        for (HostCkpt& c : ring)
+            if (c.pos > 0 && size_t(c.pos) > L) c.pos = -1;
+    }
+
+    // The latest checkpoint at or before `usable` restored, target and head; its position, or 0.
+    int restore_best(size_t usable) {
+        const HostCkpt* best = nullptr;
+        for (const HostCkpt& c : ring)
+            if (c.pos > 0 && size_t(c.pos) <= usable && (!best || c.pos > best->pos)) best = &c;
+        const int dev = fwd->checkpoint_pos() > 0 && size_t(fwd->checkpoint_pos()) <= usable ? fwd->checkpoint_pos() : 0;
+        if (dev > 0 && (!best || dev >= best->pos)) {
+            fwd->restore_checkpoint();
+            if (mtp) mtp->restore_checkpoint(h_carry);
+            return dev;
+        }
+        if (!best) return 0;
+        fwd->restore_checkpoint_from(best->buf, best->pos);
+        if (mtp) mtp->restore_checkpoint_from(best->buf + ckpt_fwd, h_carry);
+        return best->pos;
+    }
+
+    // A host checkpoint at the current position. When the ring is full, the entry whose removal
+    // leaves the smallest gap goes (the older one on a tie), so the kept positions thin out
+    // evenly over the prefix while the newest stays.
+    void save_host_checkpoint() {
+        if (ring.empty()) return;
+        const int pos = fwd->pos();
+        HostCkpt* slot = nullptr;
+        for (HostCkpt& c : ring)
+            if (c.pos <= 0 || c.pos == pos) {
+                slot = &c;
+                break;
+            }
+        if (!slot) {
+            std::vector<HostCkpt*> v;
+            for (HostCkpt& c : ring) v.push_back(&c);
+            std::sort(v.begin(), v.end(), [](const HostCkpt* a, const HostCkpt* b) { return a->pos < b->pos; });
+            long best_gap = -1;
+            for (size_t i = 0; i < v.size(); ++i) {   // the new one (at pos) follows v.back()
+                const long gap = long(i + 1 < v.size() ? v[i + 1]->pos : pos) - long(i > 0 ? v[i - 1]->pos : 0);
+                if (best_gap < 0 || gap < best_gap) {
+                    best_gap = gap;
+                    slot = v[i];
+                }
+            }
+        }
+        fwd->save_checkpoint_to(slot->buf);
+        if (mtp) mtp->save_checkpoint_to(slot->buf + ckpt_fwd, h_carry);
+        slot->pos = pos;
     }
 
     // Sampled drafts (temperature > 0; FLASHRT_ARGMAX_DRAFTS=1: argmax drafts): the verify rows
@@ -335,16 +409,16 @@ GenerateResult Session::run(const GenerateRequest& r, const std::function<void(i
     res.prompt_tokens = n;
     const int K = m.mtp ? m.o.spec_k : 0;
 
-    // 1. reuse: the whole previous sequence, or the last prompt's checkpoint, or nothing
+    // 1. reuse: the whole previous sequence, or the latest checkpoint inside the shared prefix, or
+    // nothing
     size_t L = 0;
     while (L < m.seq.size() && L < P.size() && m.seq[L] == P[L]) ++L;
     const size_t usable = std::min(L, size_t(n - 1));   // the last prompt token always runs, for its logits
+    m.drop_checkpoints_after(L);
     if (!m.seq.empty() && usable == m.seq.size()) {
         // continue from the current state
-    } else if (m.fwd->checkpoint_pos() > 0 && size_t(m.fwd->checkpoint_pos()) <= usable) {
-        m.fwd->restore_checkpoint();
-        if (m.mtp) m.mtp->restore_checkpoint(m.h_carry);
-        m.seq.resize(size_t(m.fwd->checkpoint_pos()));
+    } else if (const int c = m.restore_best(usable); c > 0) {
+        m.seq.resize(size_t(c));
     } else {
         m.fwd->reset();
         if (m.mtp) m.mtp->reset();
@@ -353,28 +427,38 @@ GenerateResult Session::run(const GenerateRequest& r, const std::function<void(i
     }
     res.reused = int(m.seq.size());
 
-    // 2. prefill every new prompt token but the last in batches (reference path), the head catching
-    // up on each batch; checkpoint there, so the same prompt again or one extending it reuses all
-    // of it; then the last token alone, for its logits
-    const int from = int(m.seq.size());
-    const bool chunked = n - 1 - from >= m.o.chunk_min;
+    // 2. prefill every new prompt token but the last in batches (reference path) or chunks, the head
+    // catching up on each; host checkpoints at chunk ends and before the prompt's tail; a device
+    // checkpoint at the end, so the same prompt again or one extending it reuses all of it; then
+    // the last token alone, for its logits
+    const int from = int(m.seq.size()), end = n - 1;
+    const bool chunked = end - from >= m.o.chunk_min;
+    // the tail runs in batches after the chunks, so a checkpoint can sit just before it
+    const int tail = chunked && !m.ring.empty() && m.o.ckpt_tail > 0 && end - from - m.o.ckpt_tail >= m.o.chunk_min ? m.o.ckpt_tail : 0;
     int step = m.o.prefill_batch;
     if (chunked) {   // experts stream to the GPU; the expert cache's memory is lent to the chunks
         m.cache_release();
-        m.fwd->set_prefill_lookahead(P.data(), n - 1);
+        m.fwd->set_prefill_lookahead(P.data(), end);
         size_t free_b = 0, total_b = 0;
         ck(cudaMemGetInfo(&free_b, &total_b), "cudaMemGetInfo");
-        step = m.o.prefill_chunk > 0 ? m.o.prefill_chunk : m.fwd->pick_chunk(n - 1 - from, n - 1, free_b, m.o.prefill_chunk_max);
-        std::fprintf(stderr, "flashrt: prefill of %d tokens in chunks of %d (%zu MiB free)\n", n - 1 - from, step, free_b >> 20);
+        step = m.o.prefill_chunk > 0 ? m.o.prefill_chunk
+                                     : m.fwd->pick_chunk(end - tail - from, end - tail, free_b, m.o.prefill_chunk_max);
+        std::fprintf(stderr, "flashrt: prefill of %d tokens in chunks of %d (%zu MiB free)\n", end - from, step, free_b >> 20);
     }
-    for (int p = from; p < n - 1; p += step) {
-        const int T = std::min(step, n - 1 - p);
+    int last_ckpt = from;
+    for (int p = from; p < end;) {
+        const int T = p < end - tail ? std::min(step, end - tail - p) : std::min(m.o.prefill_batch, end - p);
         m.fwd->forward(P.data(), T, T, nullptr);
         m.mtp_catchup(P.data(), p, T);
+        p += T;
         if (r.fail_at == 1) throw std::runtime_error("injected fault after a prefill step");
-        if (on_progress) on_progress(p + T, n);
+        if (p < end && ((tail > 0 && p == end - tail) || (chunked && p - last_ckpt >= m.o.ckpt_interval))) {
+            m.save_host_checkpoint();
+            last_ckpt = p;
+        }
+        if (on_progress) on_progress(p, n);
         if (cancel.load()) {
-            m.seq.assign(P.begin(), P.begin() + p + T);
+            m.seq.assign(P.begin(), P.begin() + p);
             if (chunked) m.cache_restore();
             res.finish = "cancelled";
             res.prompt_ms = ms_since(t0);
@@ -382,7 +466,7 @@ GenerateResult Session::run(const GenerateRequest& r, const std::function<void(i
         }
     }
     m.seq.assign(P.begin(), P.end() - 1);
-    m.fwd->save_checkpoint();
+    m.fwd->save_checkpoint();   // the device checkpoint: this prompt's end
     if (m.mtp) m.mtp->save_checkpoint(m.h_carry);
     if (chunked) m.cache_restore();   // refilled from the prefill's routing counts
     else if (!m.cache_filled || n - from >= 4096) m.refill_cache();
