@@ -118,6 +118,15 @@ unchanged (the fixes do not change outputs).
 
 ## Phase 3: tests and CI that can prove refactors (1 week)
 
+**Status (2026-09-29):** T-1 done: the `cuda` CI job builds the whole tree for sm_120 in
+`nvidia/cuda:12.9.1-devel-ubuntu24.04` (about 6 minutes) and runs `ctest -L cpu`; tests carry the
+label `cpu` or `gpu`. T-3 done except the state-file round trip: `test_json`, `test_gguf` and
+`test_row_reader`. Writing them found bugs, now fixed. `json`: `nan`, `inf`, `+1` and hex
+parsed as numbers; a surrogate that was not half of a pair decoded to garbage; dumps lost digits.
+`gguf`: alignment 0 divided by zero; an offset past the end underflowed; a huge array count ran
+into `bad_alloc`; shard 2 used shard 1's alignment. From S-7: the tokenizer accepts only the
+qwen35 pre-tokenizer and fails without a valid eos id.
+
 - **T-1:** compile the CUDA tree in CI, in the `nvidia/cuda:12.9` devel container or with the
   toolkit from NVIDIA's apt repo, for sm_120, and run the CPU tests from that build.
 - **T-2:** ASan+UBSan on the CPU tests; TSan on `test_cpu_pool` and `test_moe_cpu`.
@@ -153,7 +162,10 @@ Each step is proven by `fr_parity`, the KLD gate and a teacher-forced A/B showin
 4. **H-4, H-5, H-6:** name the magic numbers in one header; use `cuda::atomic_ref` for the
    doorbells; make `-march=native` opt-in; scope `--use_fast_math`; check the CUDA
    architecture at configure time.
-5. **E-3, E-4, S-3, S-8:** bound the host-side doorbell wait; shut the engine down cleanly;
+5. **E-3, E-4, S-3, S-8** (S-3 and S-8 done 2026-09-29: tokenization runs on the blocking pool with
+   the cache locked per word, BPE merges from a heap, byte-identical to llama.cpp on the wikitext
+   reference; content arrays join their text; bad tool arguments are a 400; template kwargs
+   cannot replace the conversation; S-9's body limit is 64 MiB): bound the host-side doorbell wait; shut the engine down cleanly;
    move tokenization to `spawn_blocking` with a per-word lock and a cap; fix the request-shape
    issues.
 
