@@ -375,6 +375,8 @@ struct Session::Impl {
         expert_cache_fill(s, cache, arena, order, fwd->stream());
         CachePolicyConfig cfg;
         cfg.budget = o.swap_budget;
+        cfg.admit = o.cache_admit;
+        cfg.margin = o.cache_margin;
         mgr = create_cache_manager(s, cache, arena, cfg, cnt);
         fwd->set_cache_manager(mgr);
         cache_filled = true;

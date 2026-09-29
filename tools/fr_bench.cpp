@@ -3,7 +3,7 @@
 //
 //   fr_bench MODEL.gguf --ids PROMPT.txt --n-prompt N --gen G [--slots S] [--reserve-mib R]
 //            [--reference] [--workers W] [--no-doorbell] [--spin-us U] [--windows N] [--trace FILE]
-//            [--static-cache] [--swap-budget B] [--pcie-frac F] [--save-state FILE | --load-state FILE] [--no-q3r]
+//            [--static-cache] [--swap-budget B] [--cache-admit A] [--cache-margin M] [--pcie-frac F] [--save-state FILE | --load-state FILE] [--no-q3r]
 //            [--no-graphs] [--kv q8] [--kv-hot BLOCKS] [--count-half-life N] [--mtp DRAFT.gguf [--draft K | --spec K]]
 //
 // Prefills N prompt tokens in 64-token batches (reference path; its routing counts pick the
@@ -94,6 +94,7 @@ int main(int argc, char** argv) {
     bool teacher = false;
     bool reference = false, doorbell = true, adaptive = true;
     int swap_budget = 32;   // as the engine (sw89, sw90)
+    float cache_admit = CachePolicyConfig{}.admit, cache_margin = CachePolicyConfig{}.margin;
     float pcie_frac = 0.0f;
     bool q3r = true, graphs = true, kv_q8 = false;
     int kv_hot = 0, half_life = 4096;
@@ -114,6 +115,8 @@ int main(int argc, char** argv) {
         else if (a == "--trace") trace_path = next();
         else if (a == "--static-cache") adaptive = false;
         else if (a == "--swap-budget") swap_budget = std::atoi(next());
+        else if (a == "--cache-admit") cache_admit = float(std::atof(next()));
+        else if (a == "--cache-margin") cache_margin = float(std::atof(next()));
         else if (a == "--pcie-frac") pcie_frac = float(std::atof(next()));
         else if (a == "--save-state") save_state = next();
         else if (a == "--no-q3r") q3r = false;
@@ -377,9 +380,12 @@ int main(int argc, char** argv) {
             const auto tr = Clock::now();
             CachePolicyConfig cfg;
             cfg.budget = swap_budget;
+            cfg.admit = cache_admit;
+            cfg.margin = cache_margin;
             mgr = create_cache_manager(s, cache, arena, cfg, fwd.counts());
             fwd.set_cache_manager(mgr);
-            std::printf("adaptive cache: decayed LFU, swap budget %d (set up in %.1f s)\n", swap_budget,
+            std::printf("adaptive cache: decayed LFU, admit %.2f, margin %.2f, swap budget %d (set up in %.1f s)\n", cache_admit,
+                        cache_margin, swap_budget,
                         std::chrono::duration<double>(Clock::now() - tr).count());
         }
     }

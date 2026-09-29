@@ -150,7 +150,7 @@ def prime_counts(prefill, n_exp, half_life):
 
 
 def sim_engine(trace, cap, n_exp, prime=None, budget=32, decay=0.7, decay_every=4, admit=2.0, margin=1.5, windows=0):
-    """Returns (hit rate, per-window hit rates)."""
+    """Returns (hit rate, per-window hit rates, uploads started)."""
     n_tok, n_layer, k = trace.shape
     keys = (np.arange(n_layer)[None, :, None] * n_exp + trace).reshape(n_tok, n_layer * k)
     count = np.zeros(n_layer * n_exp) if prime is None else prime.astype(float).copy()
@@ -158,10 +158,11 @@ def sim_engine(trace, cap, n_exp, prime=None, budget=32, decay=0.7, decay_every=
     if prime is not None:
         resident[np.argsort(-count, kind="stable")[:cap]] = True
     pending = []
-    hits, total, win = 0, 0, []
+    hits, total, win, uploads = 0, 0, [], 0
     wh = wt = 0
     for t in range(n_tok):
         resident[pending] = True   # last token's uploads have landed
+        uploads += len(pending)
         pending = []
         row = keys[t]
         h = int(resident[row].sum())
@@ -191,7 +192,7 @@ def sim_engine(trace, cap, n_exp, prime=None, budget=32, decay=0.7, decay_every=
         if windows and (t + 1) % windows == 0:
             win.append(wh / wt)
             wh = wt = 0
-    return hits / total, win
+    return hits / total, win, uploads
 
 
 def synthetic(n_tok, n_layer=48, n_exp=512, k=10, seed=1):
@@ -268,10 +269,10 @@ def main():
             elif p == "engine":
                 if not hasattr(a, "_prime"):
                     a._prime = prime_counts(np.load(a.prime), a.n_expert, a.prime_half_life) if a.prime else None
-                r, win = sim_engine(trace, cap, a.n_expert, a._prime, a.budget, a.decay, a.decay_every, a.admit, a.margin, a.windows)
+                r, win, up = sim_engine(trace, cap, a.n_expert, a._prime, a.budget, a.decay, a.decay_every, a.admit, a.margin, a.windows)
                 res.append(r)
-                if win:
-                    print(f"{'':>8} engine, {a.windows}-token windows: " + " ".join(f"{w:.3f}" for w in win))
+                print(f"{'':>8} engine: {up} uploads ({up / trace.shape[0]:.1f} per token)"
+                      + (f"; {a.windows}-token windows: " + " ".join(f"{w:.3f}" for w in win) if win else ""))
             else:
                 sys.exit(f"unknown policy {p}")
         print(f"{cap:>8} " + " ".join(f"{r:8.3f}" for r in res), flush=True)
