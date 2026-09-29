@@ -43,7 +43,23 @@ a 7.8 s cold prefill (`tail64-*.txt`).
 
 ## The tail's cost
 
-SW95_TAIL
+A cold 32,768-token prompt with the MTP head (`engine_smoke.py`, default mode, 3 runs per arm,
+alternating):
+
+| `--ckpt-tail` | Cold prompt (r1) | The same prompt after two extensions (r4) |
+|---|---|---|
+| 64 (the tail as a batch) | 7.8, 7.8, 7.8 s | reused 32,703: 0.6, 0.7, 0.6 s |
+| 0 | 7.2, 7.2, 7.1 s | reused 16,384 (a chunk end): 4.0, 4.0, 4.0 s |
+
+The 64-token batch costs 0.6 s: batches run the reference path, which computes every routed
+expert on the CPU from host DRAM. That is 8% of every long prefill, too much to pay when the
+pattern it serves is specific to some workloads. **So the tail is adaptive** (`sw95b.sh`, rerun
+of the checks): the engine takes the tail checkpoint only after a prompt has diverged from the
+previous one within the previous prompt's last `--ckpt-tail` tokens (a fixed tail after grown
+text). It then uses that tail's length, rounded up to 8: window 9's 19-token instruction gives
+a 24-token batch. The `--reuse` test's tail case first shows the engine that pattern.
+
+SW95B
 
 ## Files
 

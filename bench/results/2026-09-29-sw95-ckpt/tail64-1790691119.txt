@@ -1,0 +1,9 @@
+flashrt: 8 prefill checkpoints of 112.7 MiB in host RAM
+flashrt: qwen4exp, 48 layers, expert cache 7739 slots (31.5%), MTP drafts 2 per round
+flashrt: prefill of 32767 tokens in chunks of 16384 (10715 MiB free)
+ready after 271.1 s: {'ev': 'ready', 'version': '0.1.0', 'arch': 'qwen4exp', 'max_context': 65536, 'features': ['stop', 'sampling', 'prefix_reuse', 'mtp']}
+r1: prompt 32768 (reused 0) in 7.8 s, 16 tokens in 0.14 s (112.7 tok/s), finish length, drafts {'proposed': 16, 'accepted': 7}, first tokens [8660, 3807, 383, 279, 44798, 1116, 18961, 424]
+r2: prompt 32816 (reused 32783) in 0.3 s, 16 tokens in 0.12 s (135.6 tok/s), finish length, drafts {'proposed': 14, 'accepted': 10}, first tokens [506, 279, 2255, 314, 279, 23198, 641, 3095]
+r3: prompt 32832 (reused 32815) in 0.2 s, 16 tokens in 0.12 s (130.3 tok/s), finish length, drafts {'proposed': 14, 'accepted': 9}, first tokens [364, 2361, 52602, 3250, 864, 557, 1495, 1996]
+r4: prompt 32768 (reused 32703) in 0.6 s, 9 tokens in 0.05 s (172.4 tok/s), finish cancelled, drafts {'proposed': 6, 'accepted': 5}, first tokens [5820, 310, 4255, 303, 279, 44798, 641, 695]
+engine exited with 0

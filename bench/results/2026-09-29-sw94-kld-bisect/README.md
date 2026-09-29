@@ -34,7 +34,11 @@ expert cache, and the cache's content decides which experts the scored tokens fi
 which miss to the CPU. The two paths are not bit-identical (`docs/engine.md`, Correctness
 machinery). The swap count changes with the fill (12,021 against 11,974). The chunk-path KLD,
 which never uses the cache, stayed at 0.008879 over the same commits (sw81-sw83, sw92).
-SW94B
+
+**Confirmed on the current build** (`sw94b.sh`): with `FLASHRT_ROUTE_WARP=0` (the block kernel),
+the fast path gives back 0.008931 and 12,021 swaps exactly, so nothing else moved it. Plain
+`--fast` (no chunked prefill) measures 0.008688 and 26,147 swaps with either kernel. That
+configuration's prefill does not take the chunk path, where this routing kernel runs.
 
 **What it means for the gate.** The fast-path KLD is a deterministic function of the build, but a
 change that only reorders a sum in the prefill moves it by about 0.0002. A fast-path shift of

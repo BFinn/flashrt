@@ -1,0 +1,10 @@
+reuse-mtp rc=0
+reuse-plain rc=0
+faults-mtp rc=0
+faults-plain rc=0
+tail 64 rc=0
+tail 0 rc=0
+tail 64 rc=0
+tail 0 rc=0
+tail 64 rc=0
+tail 0 rc=0

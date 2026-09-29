@@ -1,0 +1,21 @@
+ready after 269.0 s: {'ev': 'ready', 'version': '0.1.0', 'arch': 'qwen4exp', 'max_context': 32768, 'features': ['stop', 'sampling', 'prefix_reuse', 'mtp']}
+PASS reference: length, 32 tokens
+PASS too-long rejected: prompt longer than the context
+PASS too-long: next request reused 2047 (want >= 2047), KL(top 8) 0.00006, relative logits within 0.3030 (shift -0.097); 27 of 32 tokens shared
+PASS bad-token rejected: token id out of range: 1000000000
+PASS bad-token: next request reused 2047 (want >= 2047), KL(top 8) 0.00002, relative logits within 0.2553 (shift -0.097); 4 of 32 tokens shared
+PASS bad-top-k rejected: top_k must be a whole number in 1..64
+PASS bad-top-k: next request reused 2047 (want >= 2047), KL(top 8) 0.00004, relative logits within 0.3281 (shift +0.011); 4 of 32 tokens shared
+PASS bad-temperature rejected: temperature must be >= 0
+PASS bad-temperature: next request reused 2047 (want >= 2047), KL(top 8) 0.00003, relative logits within 0.2461 (shift +0.005); 32 of 32 tokens shared
+PASS bad-top-p rejected: top_p must be in (0, 1]
+PASS bad-top-p: next request reused 2047 (want >= 2047), KL(top 8) 0.00003, relative logits within 0.2461 (shift +0.005); 13 of 32 tokens shared
+PASS fault-prefill reported: injected fault after a prefill step
+PASS fault-prefill: next request reused 0 (want 0), KL(top 8) 0.00002, relative logits within 0.2580 (shift -0.108); 13 of 32 tokens shared
+PASS fault-decode reported: injected fault in a verify window
+PASS fault-decode: next request reused 0 (want 0), KL(top 8) 0.00002, relative logits within 0.2183 (shift -0.037); 4 of 32 tokens shared
+PASS stop-in-prefill cancelled: cancelled
+PASS stop-in-prefill: next request reused 0 (want 0), KL(top 8) 0.00001, relative logits within 0.1093 (shift +0.006); 4 of 32 tokens shared
+PASS negative control detected: top token 6286 against 279
+info reference top 8: [[279, 22.65632438659668], [58773, 15.220513343811035], [25701, 14.683353424072266], [240991, 14.29146957397461], [243693, 13.534761428833008], [64570, 13.216967582702637], [17531, 12.946407318115234], [78229, 12.940338134765625]]
+engine exited with 0; 0 check(s) failed

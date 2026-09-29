@@ -1,0 +1,8 @@
+flashrt: 8 prefill checkpoints of 112.6 MiB in host RAM
+flashrt: qwen4exp, 48 layers, expert cache 8634 slots (35.1%), no speculation
+flashrt: prefill of 2047 tokens in chunks of 512 (11895 MiB free)
+flashrt: prefill of 2047 tokens in chunks of 512 (11723 MiB free)
+flashrt: prefill of 2047 tokens in chunks of 512 (11723 MiB free)
+flashrt: prefill of 2047 tokens in chunks of 512 (11723 MiB free)
+flashrt: prefill of 2047 tokens in chunks of 512 (11723 MiB free)
+flashrt: prefill of 2047 tokens in chunks of 512 (11723 MiB free)
