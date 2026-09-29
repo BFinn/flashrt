@@ -8,6 +8,8 @@
 | `engine_smoke.py` | `flashrt-engine` over its JSON-lines protocol | Requests, prefix reuse, cancellation |
 | `server_smoke.py` | a running `flashrt-server` | 11 end-to-end checks of the OpenAI and Anthropic APIs (tools, reasoning, streaming, stops, prefix reuse, disconnects) |
 | `kcmp2.py` | two nsys kernel summaries | Kernel time per token against per verify round |
+| `flashrt_depthbench.py` | `flashrt-engine` over its JSON-lines protocol | Window 9's protocol for flashrt: the same token ids and summary as `strata_depthbench.py` (sw87, sw91) |
+| `scrub.py` | result files | Replaces machine paths and names with the runbook's placeholders, from the untracked `.scrub.local` |
 | `mtp_vocab.py` | a GGUF tokenizer (llama.cpp's gguf-py) and corpora | The frequency ranking behind `--draft-vocab` |
 | `p0/` | the first measurement windows | Bandwidth probes, routing traces, llama.cpp sweeps (phase 0) |
 | `quant/` | calibration for model-side quantization research | See `docs/research/dynamic-quant.md` |
@@ -16,7 +18,7 @@ flashrt itself is measured with `tools/fr_bench` (decode and prefill at a depth,
 states or a fresh prefill; `--teacher` for paired A/B runs) and `tools/fr_kld` (the KLD gate).
 Each run's script, logs and README are in `results/<date>-<topic>/`, and `docs/engine.md` has
 the runbook. A same-protocol run of flashrt against the baselines below (greedy, 384 tokens,
-through the server) is still to do.
+through the engine) is in `results/2026-09-29-sw91-depthbench`.
 
 ## Baselines on the target box (RTX 5080 16 GB, Ryzen 9 7900X, DDR5-3600)
 

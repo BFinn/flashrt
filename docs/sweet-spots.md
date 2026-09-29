@@ -17,6 +17,7 @@ RTX 5080 16 GB, Ryzen 9 7900X, DDR5-3600 (EXPO off), Qwen3.8-Flash-Next GSQ Q2_0
 | Draft head | Q2_0 experts (`--mtp-bits 2`) | Acceptance equal to Q4_0/Q8_0; frees ~500 cache slots (+5%). | sw26, sw65 |
 | | LM head trimmed to 32,768 ranked + prompt tokens | Halves the draft step; no measurable acceptance loss. | sw26, sw84 |
 | KV | q8 host KV with a GPU hot set of 4,096 blocks at long context | | sw18, sw21 |
+| Expert-cache swap budget | 32 uploads per step (engine and `fr_bench`) | +9-12% when the generation routes unlike its prompt (window 9's protocol), -1% when it continues the prompt's text | sw89, sw90 |
 | VRAM reserve | 256 MiB in `fr_bench`, 512 MiB in the engine | Every MiB is expert-cache slots: about +0.3% speed per +1% of capacity. The engine keeps more for varied requests (a server at 256 failed its first request before the checkpoints were allocated up front; sw86). | sw64, sw86 |
 | CPU miss pool | 8 workers (6 is marginally better for plain decode, within noise) | | p1-moe-cpu, sw79 |
 | Kernels | all defaults on (see the toggles below) | | sw73-sw78 |
@@ -40,6 +41,17 @@ RTX 5080 16 GB, Ryzen 9 7900X, DDR5-3600 (EXPO off), Qwen3.8-Flash-Next GSQ Q2_0
 
 For comparison, at sw68 the same arms gave 99.6 / 106.4 / 82.9. The P2 gate (≥ 80 at 32K, ≥ 72 at
 250K, temperature 1.0) was already met by plain decoding (sw33).
+
+**On the reference engines' protocol** (window 9's prompts, 384 tokens per depth, 3 runs;
+`2026-09-29-sw91-depthbench`), decode at 1K / 32K / 134K / 250K:
+
+| Arm | 1K | 32K | 134K | 250K |
+|---|---|---|---|---|
+| greedy, `--spec 2` | 106.6 | 83.7 | 81.0 | 74.8 |
+| temperature 1.0, `--spec 2`, sampled drafts | 82.2 | 77.7 | 81.0 | 76.4 |
+
+Strata greedy there: 87.0 / 96.0 / 85.0 / 80.4. flashrt trails it from 32K on because the expert
+cache is warmed from a prompt that predicts the answer's routing poorly (sw88).
 
 **Prefill.** Automatic chunks (the longest that fits the free VRAM, up to 16,384) and q8 KV:
 32K 6,216 and 64K 6,239 tok/s (sw83). The last 245K measurement is 5,309 (sw61), before the
@@ -94,13 +106,15 @@ Ranked by expected value. None of these has been implemented or measured end to 
 | ~~Sampled drafts with speculative sampling~~ | **Done (sw85): +20% at 32K (119.0 → 143.1 tok/s), +6% at 245K (91.7 → 97.1)**, `--spec 1`, temperature 1.0 | | |
 | **Adaptive draft length** from the head's calibrated q and the round's expected new experts | Unknown; depends on the above | Gating on the argmax head's probability did not beat a fixed K (sw29); a sampled q is better calibrated. The MoE literature reports verify cost 2.4x → ~1.5x (vault: "Speculative Decoding with MoE"). | Medium. |
 | **N-gram / prompt-lookup drafts stacked with the MTP head** | Large on repetitive content (code, RAG, long documents), none on fresh prose | Greedy at 245K keeps 3.5 tokens per round because the text repeats earlier context (sw33). | Medium. |
+| **Expert-cache warm-up for answers that route unlike the prompt** (an adaptive swap budget, larger while the hit rate is low; the routing of the prompt's last part, such as an instruction, weighted up) | Up to the 5-13% gap to Strata at 32K-250K on window 9's protocol | The hit rate there is 66% against 93% on wikitext (sw88); swap budget 32 recovered 9-12% (sw89) | Small-medium; needs both kinds of prompt measured |
+| **The MTP head's pass over the prompt on the chunk path** | Prefill with the head 2,150 → toward 5,700 tok/s at 250K | The head runs over every prompt token on a slower path (sw87, sw91) | Medium |
 | **Worker count per mode** (6 for one token, 8-11 for windows) | ~1-2% | Plain decode with 6 workers measured best but within noise (sw79). | Small. |
 | **The grouped window hit kernels** | Only zero-miss layers of verify rounds | 39 µs at T = 2 against 25 µs at T = 1 for the same 10 experts (`test_moe_hits`). | Small-medium. |
 | **GDN prep traffic** (raw Q/K^T per key group; V and T applied in the state step) | ~1-2% of prefill | Prep is DRAM-bound at ~70 MB per 512-token slab (sw71). | Medium. |
 | **BF16 xn in the prefill gated mean** | ~1.5% of prefill | The kernel is at bandwidth; this removes 20 of 70 KB per token and mix. | Small; needs a KLD gate. |
 | **A custom int8 dense GEMM** for prefill (Q8_0 / IQ4_XS shapes) | up to ~10% of prefill | ggml MMQ at 120-167 TOPS against 490 int8 peak; our moe_q2 reached ~175 with the same scale arithmetic. | Large. |
 | **Distilling the MTP head against the quantized target** | Unknown | The head was trained against the full-precision model, not this 2-bit target. The head's MoE is ~2.5B parameters. | Large; needs training data from the target and more than this box. |
-| **Re-measure 245K prefill and the server end to end** on the current defaults | (validation) | Last 245K prefill: sw61; server smoke: sw35. | Small. |
+| ~~Re-measure the server end to end; compare on the reference protocol~~ | Done: server smoke 11/11 (sw86); window 9's protocol (sw87-sw91) | | |
 | **Faster host memory (EXPO)** | Estimated ~10% decode at 245K, a few % at 32K (misses scale with DRAM bandwidth) | STREAM 33.6 GB/s at DDR5-3600. | Owner decision: a BIOS change and reboot. |
 
 ## Toggles

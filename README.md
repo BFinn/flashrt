@@ -16,26 +16,43 @@ against the best existing engines on that box.
 
 ## Results
 
-Decode and prefill in tok/s on the target box. Prompts are wikitext, the context is the given
-depth, and the KV cache is q8.
+**Same protocol as the reference engines** (`bench/results/2026-09-29-sw91-depthbench`,
+against `bench/results/2026-09-27-w9-validation`):
+- the same token ids (a synthetic prompt followed by an instruction, at 1K / 32K / 134K / 250K
+  tokens);
+- one growing conversation, 384 generated tokens per depth, a fresh engine per run;
+- mean decode tok/s over 3-4 runs.
 
-| Engine | Decode at 32K | Decode at 245-250K | Prefill at 32K | Prefill at 245-250K |
+| Engine | 1K | 32K | 134K | 250K |
 |---|---:|---:|---:|---:|
-| llama.cpp, stock (2026-09) | 28.8 | 14.5 | 1,133 | 478 |
-| llama.cpp, patched (expert cache, sparse attention) | 38.2 | 31.9 | 1,117 | 444 |
-| Strata, tuned, MTP, greedy | 83.3 | 74.9 | 1,171 | 989 |
-| **flashrt**, plain decode | ~107 | 78.5 | **6,216** | **5,309** |
-| **flashrt**, MTP `--spec 1`, sampled drafts | **143.1** | **97.1** | | |
+| llama.cpp (expert cache, sparse attention; no MTP) | 37.4 | 37.2 | 32.8 | 30.7 |
+| **greedy** | | | | |
+| Strata 0.1.6, MTP | 87.0 | **96.0** | **85.0** | **80.4** |
+| **flashrt**, MTP (2 drafts per round) | **106.6** | 83.7 | 81.0 | 74.8 |
+| **temperature 1.0** (top-p 0.95, top-k 20) | | | | |
+| Strata 0.1.6, MTP | 80.5 | 79.1 | 73.9 | 69.9 |
+| **flashrt**, MTP, sampled drafts | **82.2** | 77.7 | **81.0** | **76.4** |
+| flashrt, no MTP, greedy | 94.7 | 81.7 | 77.4 | 73.0 |
 
-**Caveats:**
-- **Different protocols.** The baselines (`bench/README.md`) are greedy, 384 tokens per depth,
-  through each engine's server. flashrt's rows come from `tools/fr_bench`: temperature 1.0,
-  top-k 20, top-p 0.95, means of 6 windows of 128 tokens, from saved states. A same-protocol
-  run is still to do.
-- **Measurement dates.** flashrt's 245K plain decode and prefill figures predate the last
-  rounds of work (sw31, sw61).
-- **Evidence** for each number is in [docs/sweet-spots.md](docs/sweet-spots.md), which points
-  to the `bench/results/` folder.
+- **Decode against llama.cpp:** 2.2-2.6x at every depth.
+- **Decode against Strata:** ahead at 1K; behind by 5-13% from 32K on when greedy; level to
+  ahead at temperature 1.0.
+- **Where the depth gap comes from:** the expert cache is warmed from the prompt's routing,
+  which on this synthetic prompt predicts the answer's experts poorly (a 66% hit rate against 93%
+  on natural text; `2026-09-29-sw88-w9-diag`).
+- **Prefill:** 5,570-5,950 tok/s at 32K-250K without the draft head (Strata: 1,170-2,030). The
+  draft head's own pass over the prompt runs on a slower path and brings it to 2,150-4,130; that
+  path is an open item.
+
+**Continuing natural text** (`tools/fr_bench`, wikitext prompts from saved states, 6 windows of
+128 tokens; `2026-09-28-sw85-sampled-drafts`):
+- at temperature 1.0 with sampled drafts, 143 tok/s at 32K and 97 at 245K;
+- plain greedy decode, about 107 at 32K.
+
+The prompt predicts the generation well there, and the expert cache hits 90-95%.
+
+**Evidence** for every number is in `bench/results/`. [docs/sweet-spots.md](docs/sweet-spots.md)
+maps each result to its folder.
 
 **Quality.** Every output-affecting change is gated on KL divergence against an FP16-KV
 llama.cpp reference (2 × 8K wikitext chunks):
