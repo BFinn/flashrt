@@ -2,7 +2,9 @@
 // linear_multi (several BF16 mat-vecs of one input in one launch) against separate ggml MMVF
 // calls, on decode's shapes: router + shared-expert gate (512 + 1 rows), GDN alpha + beta
 // (48 + 48), indexer q + k (512 + 128), K = 2560, for 1..8 tokens. Checks the outputs (no
-// epilogue) and times both, weights rotated through > 256 MB so they come from VRAM.
+// epilogue) and times both, weights rotated through > 256 MB so they come from VRAM. For alpha +
+// beta, also the epilogues decode uses: the GDN decay softplus(z + dt_bias) * a, and sigmoid,
+// against the same applied in double to the separate calls' outputs.
 //
 //   test_linear_multi
 #include "arch/qwen4exp/blocks.hpp"
@@ -112,6 +114,37 @@ int main() {
             }
             std::printf("%-20s T %d: error %.1e %s; fused %.2f us, separate %.2f us\n", sh.name, T, err, ok ? "ok" : "FAIL",
                         1e3 * ms[0] / iters, 1e3 * ms[1] / iters);
+            if (sh.r0 == 48 && sh.r1 == 48) {   // the GDN gates' epilogues
+                std::vector<float> bias(48), aa(48);
+                for (int h = 0; h < 48; ++h) {
+                    bias[h] = 0.5f * nd(rng) + (h % 7 == 0 ? 25.0f : 0.0f);   // some past softplus's linear threshold
+                    aa[h] = -std::exp(0.5f * nd(rng));
+                }
+                float *pb, *pa;
+                cudaMalloc(&pb, 48 * 4);
+                cudaMalloc(&pa, 48 * 4);
+                cudaMemcpy(pb, bias.data(), 48 * 4, cudaMemcpyHostToDevice);
+                cudaMemcpy(pa, aa.data(), 48 * 4, cudaMemcpyHostToDevice);
+                tensors(0, a, b);
+                LinearOut oe[2] = {{&a, y0, 1, pb, pa}, {&b, y1, 2}};
+                linear_multi(c, oe, 2, x, T);
+                cudaStreamSynchronize(st);
+                std::vector<float> g(size_t(T) * 48), be(size_t(T) * 48);
+                cudaMemcpy(g.data(), y0, g.size() * 4, cudaMemcpyDeviceToHost);
+                cudaMemcpy(be.data(), y1, be.size() * 4, cudaMemcpyDeviceToHost);
+                double emax = 0;
+                for (size_t i = 0; i < g.size(); ++i) {
+                    const int h = int(i % 48);
+                    const double z = double(b0[i]) + bias[h];
+                    const double gr = (z > 20.0 ? z : std::log1p(std::exp(z))) * aa[h], br = 1.0 / (1.0 + std::exp(-double(b1[i])));
+                    emax = std::max({emax, std::fabs(g[i] - gr) / std::max(1e-3, std::fabs(gr)), std::fabs(be[i] - br)});
+                }
+                const bool eok = emax < 2e-5;
+                fail += !eok;
+                std::printf("%-20s T %d: epilogues (decay, sigmoid) max error %.1e %s\n", sh.name, T, emax, eok ? "ok" : "FAIL");
+                cudaFree(pb);
+                cudaFree(pa);
+            }
         }
         for (void* p : wd) cudaFree(p);
         for (float* p : {y0, y1, z0, z1}) cudaFree(p);
