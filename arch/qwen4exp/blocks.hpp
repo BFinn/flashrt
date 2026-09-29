@@ -175,6 +175,11 @@ void gdn_mixer(const BlockCtx& c, int il, const float* x, int T, GdnState& st, f
 size_t gdn_chunk_ws_bytes(const Spec& s);
 void gdn_delta_prefill(const Spec& s, float* S, const float* conv, const float* g, const float* beta, float* o, int T, bool chunked,
                        void* ws, cudaStream_t stream);
+// The decode form of the same delta rule (T up to a verify window's length), the state in
+// registers: S_in -> S_out (the same buffer in a plain call); with S_bak, the state before the
+// call is saved there as well. Inputs as for gdn_delta_prefill; dk must be 128.
+void gdn_delta_decode(const Spec& s, const float* S_in, float* S_out, float* S_bak, const float* conv, const float* g, const float* beta,
+                      float* o, int T, cudaStream_t stream);
 // Rewinds the last gdn_mixer call (T tokens, with win) to its first n tokens (n < T; n == T is a
 // no-op): the state is replayed from the backup over n tokens, the conv history rebuilt.
 void gdn_rewind(const BlockCtx& c, GdnState& st, const GdnWindow& win, int T, int n);

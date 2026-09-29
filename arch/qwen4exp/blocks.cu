@@ -2047,8 +2047,7 @@ void gdn_mixer(const BlockCtx& c, int il, const float* x, int T, GdnState& st, f
         k_gdn_delta_col<128><<<dim3(H, 128 / (16 * kGdnColWarps)), 32 * kGdnColWarps, 0, c.stream>>>(st.S, st.S, win ? win->S_bak : nullptr, conv, alpha, beta, o, T,
                                                                      s.ssm_groups, H, ch);
     else if (dk == 128)
-        k_gdn_delta_reg<128><<<dim3(H, 128 / 32), dim3(32, 8), 0, c.stream>>>(st.S, st.S, win ? win->S_bak : nullptr, conv, alpha, beta, o, T,
-                                                                          s.ssm_groups, H, ch);
+        gdn_delta_decode(s, st.S, st.S, win ? win->S_bak : nullptr, conv, alpha, beta, o, T, c.stream);
     else k_gdn_delta<<<H, dk, size_t(2) * dk * 4, c.stream>>>(st.S, conv, alpha, beta, o, T, s.ssm_groups, H, dk, ch);
     if (o_inner) ck(cudaMemcpyAsync(o_inner, o, size_t(T) * inner * 4, cudaMemcpyDeviceToDevice, c.stream), "copy o");
     const GpuTensor& w_out = c.w.layer(il, "ssm_out.weight");
@@ -2063,14 +2062,21 @@ void gdn_mixer(const BlockCtx& c, int il, const float* x, int T, GdnState& st, f
     ck(cudaGetLastError(), "gdn_mixer");
 }
 
+void gdn_delta_decode(const Spec& s, const float* S_in, float* S_out, float* S_bak, const float* conv, const float* g, const float* beta,
+                      float* o, int T, cudaStream_t stream) {
+    if (s.ssm_state != 128) throw std::runtime_error("gdn_delta_decode: state size must be 128");
+    k_gdn_delta_reg<128><<<dim3(s.ssm_heads, 128 / 32), dim3(32, 8), 0, stream>>>(S_in, S_out, S_bak, conv, g, beta, o, T, s.ssm_groups,
+                                                                                s.ssm_heads, gdn_channels(s));
+    ck(cudaGetLastError(), "gdn_delta_decode");
+}
+
 void gdn_rewind(const BlockCtx& c, GdnState& st, const GdnWindow& win, int T, int n) {
     if (n >= T) return;
     const Spec& s = c.s;
-    const int ch = gdn_channels(s), H = s.ssm_heads;
+    const int ch = gdn_channels(s);
     if (n < 0 || T > win.max_tokens) throw std::runtime_error("gdn_rewind: bad window");
     float* o = c.scratch.f32;   // the replay's outputs are not needed
-    k_gdn_delta_reg<128><<<dim3(H, 128 / 32), dim3(32, 8), 0, c.stream>>>(win.S_bak, st.S, nullptr, win.conv, win.g, win.beta, o, n,
-                                                                      s.ssm_groups, H, ch);
+    gdn_delta_decode(s, win.S_bak, st.S, nullptr, win.conv, win.g, win.beta, o, n, c.stream);
     k_hist_rewind<<<dim3((ch + 255) / 256, s.ssm_conv - 1), 256, 0, c.stream>>>(st.conv, win.conv_old, win.qkv, s.ssm_conv - 1, ch, n);
     ck(cudaGetLastError(), "gdn_rewind");
 }
