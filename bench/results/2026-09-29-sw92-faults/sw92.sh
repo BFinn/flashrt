@@ -17,6 +17,13 @@ run() {   # label, engine args...
     --ctx 32768 --prefill-chunk 512 "$@" > $O/$label.txt 2> $O/$label.log
   echo "$label rc=$?"
 }
-run mtp --mtp $D --spec 2 --draft-vocab $V
-run plain
+if [ "${KLD:-0}" != only ]; then
+  run mtp --mtp $D --spec 2 --draft-vocab $V
+  run plain
+fi
+# KLD gate, unchanged outputs expected (the fast path, and the chunk path as in sw83)
+if [ "${KLD:-0}" != 0 ]; then
+  wait_vram; (cd $BENCH/kld && timeout 2400 $B/fr_kld $M kl8k-f16.bin --ctx 8192 --chunks 2 --batch 64 --fast > $O/kld-fast.log 2>&1); echo "kld fast rc=$?"
+  wait_vram; (cd $BENCH/kld && timeout 2400 $B/fr_kld $M kl8k-f16.bin --ctx 8192 --chunks 2 --prefill-chunk 1024 > $O/kld-chunk.log 2>&1); echo "kld chunk rc=$?"
+fi
 echo done > $O/DONE
