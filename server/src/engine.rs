@@ -213,7 +213,7 @@ mod tests {
         let e = Engine::spawn("sh", &["-c".into(), format!("echo '{READY}'")]).await.unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(1), e.wait_down()).await.expect("down within 1 s");
         assert!(!e.alive());
-        let err = e.generate(&params()).await.err().expect("an error");
+        let err = e.generate(&params()).await.expect_err("an error");
         assert!(err.is::<EngineDown>());
     }
 
@@ -224,7 +224,7 @@ mod tests {
         let (_, mut rx) = e.generate(&params()).await.unwrap();
         let ev = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv()).await.expect("an event within 1 s").unwrap();
         assert_eq!(ev["ev"], "error");
-        assert!(e.generate(&params()).await.err().unwrap().is::<EngineDown>());
+        assert!(e.generate(&params()).await.expect_err("an error").is::<EngineDown>());
     }
 
     #[tokio::test]
