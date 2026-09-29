@@ -1,0 +1,16 @@
+w9-a2-m1.5-b32-r1 rc=0 76.80 tok/s expert cache hit rate 69.49% (106730 hits, 46870 misses: 468
+wiki-a2-m1.5-b32-r1 rc=0 103.47 tok/s expert cache hit rate 92.19% (141598 hits, 12002 misses: 120
+w9-a1.5-m1.5-b32-r1 rc=0 78.37 tok/s expert cache hit rate 72.03% (110634 hits, 42966 misses: 429
+wiki-a1.5-m1.5-b32-r1 rc=0 106.47 tok/s expert cache hit rate 92.63% (142279 hits, 11321 misses: 113
+w9-a1-m1.2-b32-r1 rc=0 79.70 tok/s expert cache hit rate 74.19% (113952 hits, 39648 misses: 396
+wiki-a1-m1.2-b32-r1 rc=0 103.59 tok/s expert cache hit rate 93.41% (143483 hits, 10117 misses: 101
+w9-a1-m1.2-b64-r1 rc=0 79.51 tok/s expert cache hit rate 75.54% (116033 hits, 37567 misses: 375
+wiki-a1-m1.2-b64-r1 rc=0 103.82 tok/s expert cache hit rate 93.40% (143461 hits, 10139 misses: 101
+w9-a2-m1.5-b32-r2 rc=0 77.35 tok/s expert cache hit rate 69.41% (106611 hits, 46989 misses: 469
+wiki-a2-m1.5-b32-r2 rc=0 101.68 tok/s expert cache hit rate 92.20% (141622 hits, 11978 misses: 119
+w9-a1.5-m1.5-b32-r2 rc=0 78.41 tok/s expert cache hit rate 72.15% (110818 hits, 42782 misses: 427
+wiki-a1.5-m1.5-b32-r2 rc=0 102.76 tok/s expert cache hit rate 92.65% (142317 hits, 11283 misses: 112
+w9-a1-m1.2-b32-r2 rc=0 79.16 tok/s expert cache hit rate 74.86% (114980 hits, 38620 misses: 386
+wiki-a1-m1.2-b32-r2 rc=0 104.87 tok/s expert cache hit rate 93.38% (143427 hits, 10173 misses: 101
+w9-a1-m1.2-b64-r2 rc=0 79.86 tok/s expert cache hit rate 75.48% (115933 hits, 37667 misses: 376
+wiki-a1-m1.2-b64-r2 rc=0 104.45 tok/s expert cache hit rate 93.43% (143501 hits, 10099 misses: 100
