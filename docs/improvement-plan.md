@@ -74,8 +74,13 @@ test for E-1 compares the state after the prompt by its logits, not by tokens: g
 depend on the expert cache's content, so they differ from a fresh engine's even when nothing
 failed (sw92). E-3 (a bounded host-side doorbell wait) was done with it.
 Found on the way: the fast-path KLD (window 3, hot set 512) moved from 0.008931 (sw78) to 0.009124
-before phase 1, still inside the gate band. Bisect it over sw79-sw91 before phase 4's refactors,
-which need a stable baseline.
+before phase 1, still inside the gate band. **Bisected (sw94):** the step is a97bac1, the
+warp-per-token prefill routing, whose softmax sums in another order. A last-bit change in the
+routing probabilities changes the expert cache's first fill, and so which tokens hit on the GPU
+and which miss to the CPU. `FLASHRT_ROUTE_WARP=0` on the current build gives back 0.008931 and
+12,021 swaps exactly. Not a bug. The fast-path KLD moves by about 0.0002 under such perturbations
+while the chunk path does not, so phase 4's refactors, which should be bit-identical, are checked
+by exact equality of both.
 
 | Item | Change | Test |
 |---|---|---|
