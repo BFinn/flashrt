@@ -35,20 +35,24 @@ fn finish_str(f: Finish) -> &'static str {
     }
 }
 
-/// OpenAI messages to the template's form: text parts kept, tool-call arguments parsed into
-/// objects, reasoning under reasoning_content.
+/// OpenAI messages to the template's form: text parts joined into a string (as this model's
+/// template joins them, with nothing between; a template that expects strings works too),
+/// tool-call arguments parsed into objects, reasoning under reasoning_content.
 fn normalize_messages(msgs: &Value) -> Result<Value, String> {
     let arr = msgs.as_array().ok_or("messages must be an array")?;
     let mut out = Vec::new();
-    for m in arr {
+    for (i, m) in arr.iter().enumerate() {
         let mut m = m.as_object().ok_or("each message must be an object")?.clone();
         if let Some(Value::Array(parts)) = m.get("content") {
+            let mut text = String::new();
             for p in parts {
                 let ty = p.get("type").and_then(Value::as_str).unwrap_or("text");
                 if ty != "text" {
                     return Err(format!("content part type '{ty}' is not supported"));
                 }
+                text.push_str(p.get("text").and_then(Value::as_str).ok_or("a text part without text")?);
             }
+            m.insert("content".into(), Value::String(text));
         }
         if m.get("reasoning_content").is_none() {
             if let Some(r) = m.remove("reasoning") {
@@ -59,8 +63,13 @@ fn normalize_messages(msgs: &Value) -> Result<Value, String> {
             for c in calls.iter_mut() {
                 if let Some(f) = c.get_mut("function") {
                     if let Some(Value::String(a)) = f.get("arguments") {
-                        let parsed = if a.trim().is_empty() { json!({}) } else { serde_json::from_str::<Value>(a).unwrap_or(json!({})) };
-                        f["arguments"] = parsed;
+                        // the template renders the arguments' keys: a string that is not a JSON
+                        // object would render as something else than what the model produced
+                        let parsed = if a.trim().is_empty() { Some(json!({})) } else { serde_json::from_str::<Value>(a).ok() };
+                        match parsed {
+                            Some(v @ Value::Object(_)) => f["arguments"] = v,
+                            _ => return Err(format!("messages[{i}]: tool call arguments are not a JSON object: {a}")),
+                        }
                     }
                 }
             }
@@ -296,4 +305,35 @@ pub async fn completions(st: Arc<AppState>, req: Value) -> Response {
         }
     }
     api_error(500, "server_error", "generation ended without a result")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn text_parts_join_and_tool_arguments_parse() {
+        let m = normalize_messages(&json!([
+            {"role": "user", "content": [{"type": "text", "text": "a"}, {"type": "text", "text": "b"}]},
+            {"role": "assistant", "content": null, "reasoning": "r",
+             "tool_calls": [{"id": "1", "type": "function", "function": {"name": "f", "arguments": "{\"x\": 1}"}},
+                            {"id": "2", "type": "function", "function": {"name": "g", "arguments": " "}}]},
+        ]))
+        .unwrap();
+        assert_eq!(m[0]["content"], "ab");
+        assert_eq!(m[1]["reasoning_content"], "r");
+        assert_eq!(m[1]["tool_calls"][0]["function"]["arguments"], json!({"x": 1}));
+        assert_eq!(m[1]["tool_calls"][1]["function"]["arguments"], json!({}));
+    }
+
+    #[test]
+    fn rejects_what_would_render_wrong() {
+        let call = |a: &str| json!([{"role": "assistant", "tool_calls": [{"id": "1", "function": {"name": "f", "arguments": a}}]}]);
+        for bad in ["{not json", "[1, 2]", "3", "\"s\""] {
+            let e = normalize_messages(&call(bad)).unwrap_err();
+            assert!(e.contains("messages[0]") && e.contains("not a JSON object"), "{e}");
+        }
+        assert!(normalize_messages(&json!([{"role": "user", "content": [{"type": "image_url", "image_url": {}}]}])).is_err());
+        assert!(normalize_messages(&json!([{"role": "user", "content": [{"type": "text"}]}])).is_err());
+    }
 }

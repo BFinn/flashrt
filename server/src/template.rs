@@ -70,15 +70,14 @@ impl ChatTemplate {
     /// Renders the conversation. `messages` and `tools` are OpenAI-style JSON (tool-call
     /// arguments as objects); `extra` holds template variables such as enable_thinking.
     pub fn render(&self, messages: &Value, tools: Option<&Value>, extra: &serde_json::Map<String, Value>) -> Result<String> {
-        let mut ctx = serde_json::Map::new();
+        // the extras first, so they cannot replace the conversation itself
+        let mut ctx = extra.clone();
         ctx.insert("messages".into(), messages.clone());
-        if let Some(t) = tools {
-            ctx.insert("tools".into(), t.clone());
-        }
+        match tools {
+            Some(t) => ctx.insert("tools".into(), t.clone()),
+            None => ctx.remove("tools"),
+        };
         ctx.insert("add_generation_prompt".into(), Value::Bool(true));
-        for (k, v) in extra {
-            ctx.insert(k.clone(), v.clone());
-        }
         let t = self.env.get_template("chat")?;
         t.render(JValue::from_serialize(Value::Object(ctx))).map_err(|e| {
             let mut msg = e.to_string();
@@ -119,6 +118,15 @@ mod tests {
         // trim_blocks (as Hugging Face renders chat templates): the newline right after a block
         // tag ({% endif %} in the loop) is dropped; the one after an expression is kept
         assert_eq!(out, "<system>be brief<user>hi there!T=[{\"name\": \"f\", \"parameters\": {\"x\": 1}}]\n<assistant>");
+    }
+
+    #[test]
+    fn template_kwargs_cannot_replace_the_conversation() {
+        let t = ChatTemplate::new("{{ messages | length }} {{ tools is defined }} {{ add_generation_prompt }} {{ enable_thinking }}").unwrap();
+        let msgs = json!([{"role": "user", "content": "hi"}]);
+        let extra = json!({"messages": [], "tools": [{"name": "x"}], "add_generation_prompt": false, "enable_thinking": false});
+        let out = t.render(&msgs, None, extra.as_object().unwrap()).unwrap();
+        assert_eq!(out, "1 false true false");
     }
 
     #[test]
