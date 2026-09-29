@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
-// qwen4exp forward blocks on the GPU, correctness first: plain kernels plus flashrt::gemv,
-// one call per block, each checked against llama.cpp's intermediates (tools/fr_parity).
-// Fusion and graph capture come after parity.
+// qwen4exp forward blocks on the GPU: norms, hyper-connections, GDN, QSA attention and its
+// indexer, the reference MoE, PLE and embeddings. They began as plain kernels, one call per block,
+// checked against llama.cpp's intermediates (tools/fr_parity). Most now also have fused decode
+// and tensor-core prefill variants, checked the same way and by the KLD gate (tools/fr_kld).
 //
 // Layouts (row-major, token-major): residual streams x[T][hc][d_model]; block activations
 // [T][d_model]; inject weights [T][hc]. Device pointers throughout.

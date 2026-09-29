@@ -1,4 +1,6 @@
-# flashrt engine as built (2026-09-28)
+# flashrt engine as built
+
+Last updated 2026-09-29 (through sw91).
 
 This describes what the code does today, why each piece is shaped the way it is, what was tried
 and rejected, and how to measure it. `design.md` holds the plan and the phase gates. The
@@ -334,7 +336,7 @@ cache after, from the prefill's routing counts and the startup prior.
 | **Window 9's protocol** (the reference engines' prompts, 384 tokens, 3 runs), 1K / 32K / 134K / 250K: greedy `--spec 2` | 106.6 / 83.7 / 81.0 / 74.8 | `2026-09-29-sw91-depthbench` |
 | same, temperature 1.0 `--spec 2` (sampled drafts) | 82.2 / 77.7 / 81.0 / 76.4 | same |
 | same, no MTP, greedy | 94.7 / 81.7 / 77.4 / 73.0 | same |
-| same, Strata greedy / temperature 1.0; llama.cpp | 87.0 / 96.0 / 85.0 / 80.4; 80.5 / 79.1 / 73.9 / 69.9; 37.4 / 37.2 / 32.8 / 30.7 | `2026-09-27-w9-validation` |
+| same, Strata greedy / temperature 1.0 (its build warns that its cache path changes outputs; Strata and llama.cpp reused prefixes, flashrt did not); llama.cpp | 87.0 / 96.0 / 85.0 / 80.4; 80.5 / 79.1 / 73.9 / 69.9; 37.4 / 37.2 / 32.8 / 30.7 | `2026-09-27-w9-validation` |
 
 **Where the time goes at 245K with the hot set** (nsys `--cuda-graph-trace=node`, sw20):
 - 14.1 ms of GPU kernel time per token;
@@ -477,7 +479,7 @@ list, are done (sw85: 32K `--spec 1` 119.0 → 143.1 tok/s, 245K 91.7 → 97.1).
    mat-vec, are fused (sw73, sw74: plain +4.3%, `--spec 1` +1.9-2.3%). What is left there is
    mostly the hc kernels and the MoE combine.
 3. **Tuning:** multi-CTA select, a parallel hot-set CLOCK, an adaptive swap budget (larger
-   while the hit rate is low: the gap to Strata at 32K-250K on window 9's protocol is the
-   cache warm-up, sw88).
+   while the hit rate is low). Decide after phase 2 of `docs/improvement-plan.md`: the gap to
+   Strata at 32K-250K on window 9's protocol is the cache warm-up (sw88), prefix reuse, or both.
 4. **The MTP head's pass over the prompt:** prefill with the head runs 2,150-4,130 tok/s
-   against 5,570-5,950 without it (sw87, sw91).
+   against 5,690-5,960 without it (sw87, sw91).

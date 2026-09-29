@@ -9,6 +9,11 @@ wikitext-2 (raw test + valid) as the prompt, not the filler depth prompts. Scrip
   live server was restarted cleanly.
 - Rerun, `p0c2.out` (15:02-15:52): `SKIP_DONE=1`, with a 10-minute VRAM wait.
 
+**Caveat on Strata's numbers (added 2026-09-29, after an external review).** With
+`--expert-cache` on, Strata 0.1.6 logs a warning that its GPU hit path "is NOT CORRECT": its
+tokens diverge from a cache-off run. Its timings are real, but its draft acceptance, and so its
+MTP speed, come from outputs that differ from the model's.
+
 ## 1. Strata's own breakdown, 32K prompt, generate mode, tuned flags, greedy with MTP (1 run each)
 
 From `gen-stats.first.log` (`--stats`):

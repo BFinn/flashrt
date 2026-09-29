@@ -41,7 +41,8 @@ robustness bugs (E-*, S-*). I checked the main ones against the tree before buil
 
 ## Phase 0: correct the published claims (hours, docs only)
 
-Do this first: these statements are wrong or incomplete today.
+**Status: done 2026-09-29.** The README, the docs and the affected result READMEs carry the
+corrections; the numbers themselves are unchanged until phase 2 re-measures them.
 
 1. **R-2:** add the Strata caveat everywhere its numbers appear (`README.md`, `docs/sweet-spots.md`,
    `docs/engine.md`, `bench/README.md`, the w9 and sw87-sw91 READMEs): "timing as measured; the
@@ -153,7 +154,7 @@ Each step is proven by `fr_parity`, the KLD gate and a teacher-forced A/B showin
 In expected-value order. Each needs its KLD check and a `bench/results` folder.
 
 1. **P-1: a chunk path for the MTP head's prompt pass** (all three reviews). Prefill with the
-   head runs at 2,150-4,130 tok/s against 5,570-5,950 without it. The head's experts are
+   head runs at 2,150-4,130 tok/s against 5,690-5,960 without it. The head's experts are
    already in VRAM, so it needs the batched kernels, overlapped with the target's next chunk.
    Expected: 250K TTFT from about 117 s toward 45 s (estimate).
 2. **P-2** as decided in phase 2.

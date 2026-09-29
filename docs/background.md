@@ -42,6 +42,9 @@ P0 windows A and B (`bench/results/2026-09-27-p0/`) replaced several estimates b
   - Speed at depth follows draft acceptance (95% greedy at 245K), so report acceptance
     too.
   - Greedy Strata output is not reproducible run to run.
+  - Strata 0.1.6 with `--expert-cache` logs that its GPU hit path is not correct (its tokens
+    diverge from a cache-off run), so its MTP speed rests on outputs that differ from the model's
+    (noted 2026-09-29).
 - **Strata's 32K prefill is 45% PLE stalls.** Its n-gram-table reads run at queue depth 1
   (16K IOPS). The 990 PRO does 714K IOPS at depth 64 (`tools/ssdrand`).
 - **Strata's dense GPU path takes 7.65 ms per token,** against about 3.6 ms at full VRAM

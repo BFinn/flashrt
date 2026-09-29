@@ -8,7 +8,7 @@ against the best existing engines on that box.
   a 512-expert top-10 MoE, hyper-connections, a multi-token-prediction head). The weights are
   the ISTA-DASLab GSQ-RCO Q2_0 GGUF, about 62 GB.
 - **Box:** RTX 5080 16 GB (sm_120), Ryzen 9 7900X (AVX-512), 64 GB DDR5-3600, PCIe Gen5.
-- **Status (2026-09-28):** decode, speculative decoding with the model's MTP head, chunked
+- **Status (2026-09-29):** decode, speculative decoding with the model's MTP head, chunked
   prefill, an engine process and an OpenAI/Anthropic-compatible server work end to end.
   - The phase gates P1-P3 in [docs/design.md](docs/design.md) are met; P4 is done in part.
   - This is research code: one architecture and one quantization, built and tested on one
@@ -16,40 +16,68 @@ against the best existing engines on that box.
 
 ## Results
 
-**Same protocol as the reference engines** (`bench/results/2026-09-29-sw91-depthbench`,
+**Same prompts as the reference engines** (`bench/results/2026-09-29-sw91-depthbench`,
 against `bench/results/2026-09-27-w9-validation`):
 - the same token ids (a synthetic prompt followed by an instruction, at 1K / 32K / 134K / 250K
   tokens);
-- one growing conversation, 384 generated tokens per depth, a fresh engine per run;
-- mean decode tok/s over 3-4 runs.
+- the depths in one sequence, 384 generated tokens per depth, a fresh engine per run;
+- decode tok/s, mean ± sd over n runs.
 
-| Engine | 1K | 32K | 134K | 250K |
-|---|---:|---:|---:|---:|
-| llama.cpp (expert cache, sparse attention; no MTP) | 37.4 | 37.2 | 32.8 | 30.7 |
-| **greedy** | | | | |
-| Strata 0.1.6, MTP | 87.0 | **96.0** | **85.0** | **80.4** |
-| **flashrt**, MTP (2 drafts per round) | **106.6** | 83.7 | 81.0 | 74.8 |
-| **temperature 1.0** (top-p 0.95, top-k 20) | | | | |
-| Strata 0.1.6, MTP | 80.5 | 79.1 | 73.9 | 69.9 |
-| **flashrt**, MTP, sampled drafts | **82.2** | 77.7 | **81.0** | **76.4** |
-| flashrt, no MTP, greedy | 94.7 | 81.7 | 77.4 | 73.0 |
+| Engine | n | 1K | 32K | 134K | 250K |
+|---|---:|---:|---:|---:|---:|
+| llama.cpp (expert cache, sparse attention; no MTP), greedy | 4 | 37.4 ± 0.6 | 37.2 ± 1.1 | 32.8 ± 1.6 | 30.7 ± 1.1 |
+| **greedy** | | | | | |
+| Strata 0.1.6, MTP (see the caveat below) | 4 | 87.0 ± 0.7 | 96.0 ± 2.2 | 85.0 ± 2.7 | 80.4 ± 3.6 |
+| flashrt, MTP (2 drafts per round) | 3 | 106.6 ± 1.5 | 83.7 ± 0.8 | 81.0 ± 0.4 | 74.8 ± 1.7 |
+| flashrt, no MTP | 3 | 94.7 ± 1.7 | 81.7 ± 1.0 | 77.4 ± 0.7 | 73.0 ± 1.2 |
+| **temperature 1.0** (top-p 0.95, top-k 20) | | | | | |
+| Strata 0.1.6, MTP (n=3 at 250K) | 4 | 80.5 ± 4.1 | 79.1 ± 1.3 | 73.9 ± 1.8 | 69.9 ± 7.2 |
+| flashrt, MTP, sampled drafts | 3 | 82.2 ± 4.2 | 77.7 ± 13.1 | 81.0 ± 0.9 | 76.4 ± 2.1 |
 
-- **Decode against llama.cpp:** 2.2-2.6x at every depth.
-- **Decode against Strata:** ahead at 1K; behind by 5-13% from 32K on when greedy; level to
-  ahead at temperature 1.0.
-- **Where the depth gap comes from:** the expert cache is warmed from the prompt's routing,
-  which on this synthetic prompt predicts the answer's experts poorly (a 66% hit rate against 93%
-  on natural text; `2026-09-29-sw88-w9-diag`).
-- **Prefill:** 5,570-5,950 tok/s at 32K-250K without the draft head (Strata: 1,170-2,030). The
-  draft head's own pass over the prompt runs on a slower path and brings it to 2,150-4,130; that
-  path is an open item.
+Two differences in how the engines ran this protocol:
+- **Prefix reuse.** Every prompt ends with the same instruction, so a deeper prompt shares only
+  its context with the previous one, not its end. Strata reused 32,768 tokens at 134K and
+  131,072 at 250K, and llama.cpp reused about 30,700 and 132,000. flashrt keeps one checkpoint,
+  at the end of the previous prompt, so it prefilled every depth from the start. Its expert
+  cache was primed from the whole prompt, not carried over from the previous answer. How much
+  this moves decode speed is not measured yet
+  ([docs/improvement-plan.md](docs/improvement-plan.md), phase 2).
+- **Strata's build warns that its cache path is not correct.** With `--expert-cache` on, its log says the
+  GPU hit path "is NOT CORRECT" and that its tokens diverge from a cache-off run. Its timings are
+  real. Its draft acceptance, and so its MTP speed, come from outputs that differ from the
+  model's.
+
+What the table shows:
+- **Against llama.cpp:** 2.2-2.5x with neither engine drafting, 2.2-2.9x with flashrt's MTP head.
+- **Against Strata, greedy:** ahead at 1K; behind from 32K on, by 13% at 32K, 5% at 134K and 7%
+  at 250K.
+- **Against Strata, temperature 1.0:** ahead at 134K (81.0 against 73.9). At 1K, 32K and 250K
+  the gap is within the run-to-run spread, and flashrt's 32K cell varies ±13.
+- **The depth gap** has two candidate causes, not yet separated: the prefix reuse above, and the
+  expert cache's warm-up. The prompt predicts the answer's experts poorly here: a 66% hit rate
+  against 93% on natural text (`2026-09-29-sw88-w9-diag`, one run each).
+- **Tuned on this protocol:** the expert-cache swap budget of 32 was chosen here (+9-12%, sw89).
+  It costs 1% on natural text (sw90).
+- **Prefill per new token,** from each engine's own log, at 32K / 134K / 250K:
+  - flashrt without the draft head: 5,760 / 5,955 / 5,690 tok/s;
+  - flashrt with the head: 4,120 / 2,430 / 2,150. The head's pass over the prompt runs on a
+    slower path, which is an open item;
+  - Strata: 1,173 / 1,090 / 969;
+  - llama.cpp: 1,108 / 724 / 443.
+
+  At 250K, time to the first token is 44 s without the head and 117 s with it (all 250,712
+  tokens). Strata takes 123 s for its 119,640 new tokens.
 
 **Continuing natural text** (`tools/fr_bench`, wikitext prompts from saved states, 6 windows of
-128 tokens; `2026-09-28-sw85-sampled-drafts`):
+128 tokens; `2026-09-28-sw85-sampled-drafts`, one run per arm):
 - at temperature 1.0 with sampled drafts, 143 tok/s at 32K and 97 at 245K;
 - plain greedy decode, about 107 at 32K.
 
-The prompt predicts the generation well there, and the expert cache hits 90-95%.
+The prompt predicts the generation well there: the expert cache hits 93-95% at 32K and 83-89% at
+245K. For context only, Strata on wikitext measured 74.7 / 62.2 tok/s at temperature 1.0 and
+90.1 / 103.0 greedy at 32K / 245K (`2026-09-27-p0c`, 2 runs). That was a different harness (a
+growing conversation through its server, 384 tokens), so it is not a like-for-like comparison.
+A same-harness wikitext run is part of phase 2 of the plan.
 
 **Evidence** for every number is in `bench/results/`. [docs/sweet-spots.md](docs/sweet-spots.md)
 maps each result to its folder.

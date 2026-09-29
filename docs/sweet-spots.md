@@ -1,4 +1,6 @@
-# flashrt sweet spots (2026-09-28)
+# flashrt sweet spots
+
+Last updated 2026-09-29 (through sw91).
 
 Where tuning stopped and why, the configurations that came out best, and the paths not yet
 tested. Numbers come from `bench/results/<folder>` as cited. The rationale for each piece of the
@@ -50,8 +52,11 @@ For comparison, at sw68 the same arms gave 99.6 / 106.4 / 82.9. The P2 gate (≥
 | greedy, `--spec 2` | 106.6 | 83.7 | 81.0 | 74.8 |
 | temperature 1.0, `--spec 2`, sampled drafts | 82.2 | 77.7 | 81.0 | 76.4 |
 
-Strata greedy there: 87.0 / 96.0 / 85.0 / 80.4. flashrt trails it from 32K on because the expert
-cache is warmed from a prompt that predicts the answer's routing poorly (sw88).
+Strata greedy there: 87.0 / 96.0 / 85.0 / 80.4 (its build warns that its cache path changes its
+outputs; timings as measured). flashrt trails it from 32K on. Two candidate causes are not yet
+separated: the expert cache is warmed from a prompt that predicts the answer's routing poorly
+(sw88), and Strata reused the shared prefix of each deeper prompt while flashrt re-prefilled it
+(`docs/improvement-plan.md`, R-1). The swap budget of 32 was tuned on this protocol.
 
 **Prefill.** Automatic chunks (the longest that fits the free VRAM, up to 16,384) and q8 KV:
 32K 6,216 and 64K 6,239 tok/s (sw83). The last 245K measurement is 5,309 (sw61), before the

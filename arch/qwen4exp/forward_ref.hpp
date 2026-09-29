@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
-// qwen4exp reference forward pass: the correctness-first blocks chained over one sequence, with
-// the caches and recurrent states it needs. Every routed expert runs on the CPU (no VRAM expert
-// cache yet). Used by the KL gate (tools/fr_kld) and as the baseline for the fast path.
+// qwen4exp forward pass over one sequence, with its caches and recurrent states. The name is
+// historical: it began as the correctness-first reference and is now the engine's whole forward
+// pass (a rename is planned: docs/improvement-plan.md, H-2). Its modes:
+// - decode, one token or a verify window (forward_window, commit), captured as CUDA graphs; routed
+//   experts hit the VRAM expert cache and misses run on the CPU through doorbells (moe_fast.hpp);
+// - prefill chunks (T above max_batch), each layer's experts streamed to the GPU (moe_stream.hpp);
+// - without a cache manager, the reference path: every routed expert on the CPU.
+// Checkpoints and state files save and restore the recurrent state.
 #pragma once
 
 #include "arch/qwen4exp/blocks.hpp"

@@ -5,6 +5,11 @@ server was stopped for both windows. Scripts: `bench/p0/window_a.sh` and `window
 Logs: `p0a.out` and `p0b.out`. The routing traces (`.npy`, about 1 GB) are not in git.
 They are in `$BENCH/p0{a,b}-20260927/` on the box.
 
+**Caveat on Strata's numbers (added 2026-09-29, after an external review).** With
+`--expert-cache` on, Strata 0.1.6 logs a warning that its GPU hit path "is NOT CORRECT": its
+tokens diverge from a cache-off run. Its timings are real, but its draft acceptance, and so its
+MTP speed, come from outputs that differ from the model's.
+
 ## 1. Host memory and the link [M]
 
 | Probe | Result |

@@ -1,5 +1,25 @@
 # Interfaces: how generic flashrt is, and where
 
+**Status: a design sketch, not implemented.** None of the types below (`ArchModule`,
+`ModelSpec`, `QuantPack`, `MoeBlock`, `StateSpec`, `Forward`) exists in the tree. The engine
+(`engine/session.cpp`) uses the qwen4exp classes directly, and the offload machinery this page
+calls generic lives in `arch/qwen4exp/`. `CLAUDE.md`'s rule stands: the API is designed when a
+second architecture arrives. The plan for getting there is in `docs/improvement-plan.md`
+(G-2, G-3).
+
+Shapes the current code assumes (a fast path needs them, or the code throws):
+
+| Assumption | Where |
+|---|---|
+| Experts are Q2_0 (GGUF type 42), planar-repacked; the arena, cache slots, CPU kernel and GPU hit kernels assume it | `arch/qwen4exp/spec.cpp`, `quant/q2_0/`, `moe_fast.cu`, `kernels/cuda/moe_q2.cu` |
+| `d_model % 512 == 0`, the expert FFN within 64 quant blocks, top-k ≤ 16, experts ≤ 1024 | `moe_fast.cu`, `blocks.cu` (routing) |
+| Hyper-connections: the fused decode kernels need `hc == 4` (and rank 320 for the v2 up-mix) | `blocks.cu` |
+| Attention head_dim 256 and a GQA group within `kAttnMaxGroup`; the q8 hot set needs head_dim 256 | `blocks.cu` |
+| GDN conv ≤ 8, key dim ≤ 1024 | `blocks.cu` |
+| Verify windows of at most 8 tokens | `moe_fast.cu`, `blocks.hpp` |
+
+The rest of this page is the intended design.
+
 ## The decision
 
 flashrt is **model-agnostic at the runtime level and model-specific inside compiled-in

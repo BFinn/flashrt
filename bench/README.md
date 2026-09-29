@@ -31,3 +31,10 @@ Decode tok/s at 1K / 32K / 134K / 250K, 384 generated tokens, measured 2026-09-2
 | Strata, tuned, MTP, greedy | 79.1 | 83.3 | 76.8 | 74.9 | 1171 / 1098 / 989 |
 
 These are the numbers flashrt's phase gates (docs/design.md) are set against.
+
+The Strata builds measured here (0.1.4 above; 0.1.6 in `results/2026-09-27-p0c` and
+`results/2026-09-27-w9-validation`) ran with `--expert-cache`. Strata 0.1.6 logs a warning that its
+GPU hit path with the cache on is not correct: its tokens diverge from a cache-off run. Its
+timings are real; its draft acceptance, and so its MTP speed, come from outputs that differ from
+the model's. Prefill figures for all engines are per new token: Strata and llama.cpp reused part
+of each deeper prompt, and flashrt did not (`docs/improvement-plan.md`, R-1).

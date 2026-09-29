@@ -15,6 +15,19 @@ answers with a thinking block and an essay. None of the engines reused a prefix:
 with that instruction, so a longer prompt is not a continuation of a shorter one. llama.cpp reused
 part of the prompt at the two deepest depths.
 
+**Correction (2026-09-29, after an external review).** The paragraph above is wrong about
+Strata. Strata checkpoints during prefill, and reused 32,768 tokens at 134K and 131,072 at 250K
+(its logs in `2026-09-27-w9-validation`, "prompt ... tokens = N reused + M read"). llama.cpp
+reused about 30,700 and 132,000. Only flashrt re-prefilled every depth: it keeps one checkpoint,
+at the end of the previous prompt. So Strata's and llama.cpp's expert caches carried over from
+the previous answer, while flashrt's was primed from the whole prompt. How much of the gap at
+depth this explains is not measured yet (`docs/improvement-plan.md`, phase 2).
+
+**Caveat on Strata's numbers (added 2026-09-29, after an external review).** With
+`--expert-cache` on, Strata 0.1.6 logs a warning that its GPU hit path "is NOT CORRECT": its
+tokens diverge from a cache-off run. Its timings are real, but its draft acceptance, and so its
+MTP speed, come from outputs that differ from the model's.
+
 Decode tok/s, mean ± sd (`sw87-summary.txt`; window 9's rows for comparison):
 
 | Arm | 1K | 32K | 134K | 250K |

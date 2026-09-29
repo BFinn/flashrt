@@ -26,14 +26,18 @@ Measured baselines on the target box are in `bench/README.md`.
 
 ## Layers
 
-| Layer | Generic or specialised | Contents |
-|---|---|---|
-| `core/` | Generic, stable | Memory tiers (VRAM expert cache, pinned host arena, SSD), cache policies (decayed-LFU, profile prefill, slot borrowing for prefill buffers), CPU worker pool and GPU↔CPU doorbells (mapped memory, in-graph waits), verify-window scheduler, exact speculative sampling, KV cache and page tables, GGUF loading |
-| `kernels/cuda`, `kernels/cpu` | Shared building blocks | Norms, rope, flash-decode, top-k, sampling, GEMV/GEMM primitives |
-| `quant/<type>/` | Specialised per format | CPU kernel (e.g. AVX-512 VBMI+VNNI for Q2_0), GPU GEMV and grouped GEMM, repack tool, parity tests |
-| `arch/<name>/` | Specialised per architecture | A hand-written forward program: which fused kernels run in which order, captured as one CUDA graph per window. Hot kernels are templated on the architecture's shapes, weight map, and parity tests against llama.cpp. |
-| box profile | Configurable | VRAM reserve, PCIe miss share, worker count, prefill chunk size; written by `flashrt autotune` |
-| `server/` (Rust) | Separate process | OpenAI and Anthropic APIs, chat templates, tool-call parsing, auth; talks to the engine over the protocol below |
+The table is the intended layering. The code does not have it yet: most of what it assigns to
+`core/` lives in `arch/qwen4exp/` today, and the engine instantiates the qwen4exp classes
+directly. The last column says where each piece is now.
+
+| Layer | Generic or specialised | Contents (intended) | Where it is today |
+|---|---|---|---|
+| `core/` | Generic, stable | Memory tiers (VRAM expert cache, pinned host arena, SSD), cache policies (decayed-LFU, profile prefill, slot borrowing for prefill buffers), CPU worker pool and GPU↔CPU doorbells (mapped memory, in-graph waits), verify-window scheduler, exact speculative sampling, KV cache and page tables, GGUF loading | `core/` has GGUF loading, the expert arena, the CPU pool, the row reader, JSON and platform helpers. The expert cache, its policy, the doorbells and the miss server are in `arch/qwen4exp/moe_fast.cu`; windows, checkpoints and the KV caches in `forward_ref.cu` and `blocks.cu`; speculative sampling in `kernels/cuda/sample.cu` |
+| `kernels/cuda`, `kernels/cpu` | Shared building blocks | Norms, rope, flash-decode, top-k, sampling, GEMV/GEMM primitives | `kernels/cuda`: ggml wrappers (GEMV, MMQ), `moe_q2`, Q3R, sampling. Norms, rope, attention and the other mixer kernels are in `arch/qwen4exp/blocks.cu` |
+| `quant/<type>/` | Specialised per format | CPU kernel (e.g. AVX-512 VBMI+VNNI for Q2_0), GPU GEMV and grouped GEMM, repack tool, parity tests | `quant/q2_0/` has the CPU kernel and repack; the GPU expert kernels are in `kernels/cuda/moe_q2.cu` and `moe_fast.cu`. Q2_0 is the only pack |
+| `arch/<name>/` | Specialised per architecture | A hand-written forward program: which fused kernels run in which order, captured as one CUDA graph per window. Hot kernels are templated on the architecture's shapes, weight map, and parity tests against llama.cpp. | `arch/qwen4exp/`, as intended, plus the pieces above |
+| box profile | Configurable | VRAM reserve, PCIe miss share, worker count, prefill chunk size | Command-line flags and `FLASHRT_*` variables; there is no profile file and no autotune tool |
+| `server/` (Rust) | Separate process | OpenAI and Anthropic APIs, chat templates, tool-call parsing, auth; talks to the engine over the protocol below | `server/`, as intended |
 
 **Rule:** no general graph IR and no dynamic scheduler in the hot path. An architecture is
 explicit code. The add-on API gets designed when the second architecture arrives, not

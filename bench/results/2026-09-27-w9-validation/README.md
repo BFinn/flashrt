@@ -12,6 +12,11 @@ interruption). Summaries: `w9-summary.txt` (from `w9_summary.py` over `w9-all.ou
 | S | as G, temperature 1.0, top_p 0.95, top_k 20 | 4 |
 | S06 | as G, temperature 0.6, top_p 0.95, top_k 20 | 2 |
 
+**Caveat on Strata's numbers (added 2026-09-29, after an external review).** With
+`--expert-cache` on, Strata 0.1.6 logs a warning that its GPU hit path "is NOT CORRECT": its
+tokens diverge from a cache-off run. Its timings are real, but its draft acceptance, and so its
+MTP speed, come from outputs that differ from the model's.
+
 Decode tok/s, mean ± sd:
 
 | Arm | 1K | 32K | 134K | 250K |
@@ -22,7 +27,9 @@ Decode tok/s, mean ± sd:
 | S06 | 75.7 ± 1.1 | 80.3 ± 4.8 | 74.6 ± 3.6 | 72.2 ± 0.9 |
 
 Prefill tok/s of the new tokens: L 616 / 1107 / 723 / 442; Strata (all arms) 677 / 1134 /
-1089 / 945.
+1089 / 945. These count the depth increase as new tokens. From the engines' own logs, the new
+tokens at 134K and 250K were 103,288 and 118,735 for llama.cpp (724 and 443 tok/s), and 101,261
+and 119,640 for Strata (1,090 and 969 tok/s).
 
 Notes:
 - Strata 0.1.6 greedy is 10-15% faster than the 0.1.4 numbers in `docs/background.md`
