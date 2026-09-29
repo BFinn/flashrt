@@ -31,8 +31,8 @@ reused) as its reference, then after the prompt it should reuse from; the second
 at least the expected prefix and match the reference's state (as for --faults):
   - tail: A with text inserted before its last 19 tokens (window 9's shape: a growing text with
     a fixed instruction at the end) reuses up to the checkpoint before A's tail. The engine takes
-    that checkpoint once it has seen the pattern, so A follows a prompt that differs from it in
-    its last 19 tokens only;
+    that checkpoint once it has seen the pattern, so the sequence starts with a prompt that
+    differs from A in its last 19 tokens only, then A;
   - middle: A with one token changed half way reuses from a checkpoint before the change;
   - cancelled: after A, a different text stopped late in its prefill, past A's length, then
     that text's first N + 8 tokens and something else: it must reuse its own checkpoints, never
@@ -192,6 +192,12 @@ def reuse(a, ids, p, read):
             check(rid + " cold reference", False, ev.get("msg") or f"reused {ev['reused']}")
         return ev.get("first_top", [])
 
+    # the fixed-tail pattern first (a prompt with A's text and another 19-token tail, then A): the
+    # engine then ends every chunked prefill with a 24-token batch after a checkpoint, the cold
+    # references included. That batch runs the reference path (experts on the CPU), so a reference
+    # prefilled without it would differ in its last positions' arithmetic, not in its state.
+    request("pattern-X", A[:-19] + other[2000:2019])
+    request("pattern-A", A)
     tail = A[:-19] + other[1000:1000 + N // 4] + A[-19:]
     mid = list(A)
     mid[N // 2] = (mid[N // 2] + 1) % 1000 + 10
@@ -201,8 +207,6 @@ def reuse(a, ids, p, read):
 
     for name, prompt, lo, hi in [("tail", tail, N - 1 - 24, N - 19), ("middle", mid, 1, N // 2)]:
         request(name + "-flush", other[:300])
-        if name == "tail":   # a prompt with A's text and another 19-token tail: the pattern
-            request(name + "-pattern", A[:-19] + other[2000:2019])
         request(name + "-A", A)   # its prefill leaves the checkpoints
         ev = request(name, prompt)
         if ev["ev"] != "done":
