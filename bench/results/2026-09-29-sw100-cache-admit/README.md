@@ -11,12 +11,12 @@ same tokens. Window 9's 32K prompt, and 32K of wikitext. Plain decode, no MTP he
 slots). New flags `--cache-admit` and `--cache-margin` (engine and `fr_bench`). Two runs per arm,
 alternating.
 
-| Admit / margin / budget | Window 9 decode | hits | swaps | Wikitext decode | hits |
+| Admit / margin / budget | Window 9 decode | hits | swaps (window 9) | Wikitext decode | hits |
 |---|---:|---:|---:|---:|---:|
-| 2 / 1.5 / 32 (the old default) | 76.8, 77.4 tok/s | 69.5% | | 103.5, 101.7 tok/s | 92.2% |
+| 2 / 1.5 / 32 (the old default) | 76.8, 77.4 tok/s | 69.5% | 3,799-3,825 | 103.5, 101.7 tok/s | 92.2% |
 | 1.5 / 1.5 / 32 | 78.4, 78.4 (+1.7%) | 72.1% | 4,824-4,846 | 106.5, 102.8 (+2.0%) | 92.6% |
 | **1 / 1.2 / 32** | **79.7, 79.2 (+3.0%)** | **74.5%** | 6,458-6,836 | **103.6, 104.9 (+1.6%)** | **93.4%** |
-| 1 / 1.2 / 64 | 79.5, 79.9 (+3.4%) | 75.5% | | 103.8, 104.5 (+1.5%) | 93.4% |
+| 1 / 1.2 / 64 | 79.5, 79.9 (+3.4%) | 75.5% | 7,435-7,460 | 103.8, 104.5 (+1.5%) | 93.4% |
 
 - **The hit rates move as simulated:** window 9 +5.0 points at admit 1 (sw99 predicted +5.0).
 - **Decode gains less than the hits:** +3.0% on window 9 for 5 points fewer misses. The extra
