@@ -184,6 +184,11 @@ impl Engine {
         Ok((id, rx))
     }
 
+    #[cfg(test)]
+    pub fn has_route(&self, id: &str) -> bool {
+        self.routes.lock().unwrap().contains_key(id)
+    }
+
     /// Cancels a queued or running generation (its done event still arrives).
     pub async fn stop(&self, id: &str) {
         if let Err(e) = self.send(&json!({"op": "stop", "id": id})).await {

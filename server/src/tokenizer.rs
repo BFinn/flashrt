@@ -249,6 +249,26 @@ impl Decoder {
     }
 }
 
+/// A byte-level tokenizer for tests: ids 0..255 are the bytes, then <think> (256), </think>,
+/// <tool_call>, </tool_call> (user-defined), <|im_start|> (260) and <|im_end|> (control).
+#[cfg(test)]
+pub fn test_tokenizer() -> Tokenizer {
+    let b2c = byte_to_char();
+    let mut tokens: Vec<Value> = (0..256).map(|b| Value::Str(b2c[b].to_string())).collect();
+    let mut types = vec![Value::Int(1); 256];
+    for (t, ty) in [("<think>", 4), ("</think>", 4), ("<tool_call>", 4), ("</tool_call>", 4), ("<|im_start|>", 3), ("<|im_end|>", 3)] {
+        tokens.push(Value::Str(t.into()));
+        types.push(Value::Int(ty));
+    }
+    let kv = HashMap::from([
+        ("tokenizer.ggml.model".to_string(), Value::Str("gpt2".into())),
+        ("tokenizer.ggml.tokens".to_string(), Value::Arr(tokens)),
+        ("tokenizer.ggml.token_type".to_string(), Value::Arr(types)),
+        ("tokenizer.ggml.eos_token_id".to_string(), Value::Int(261)),
+    ]);
+    Tokenizer::from_gguf(&kv).unwrap()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

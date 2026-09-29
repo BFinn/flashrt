@@ -453,6 +453,96 @@ mod tests {
         assert_eq!(a, json!({"code": "line 1\nline 2"}));
     }
 
+    /// An AppState over a fake engine (a shell script speaking the protocol) and the test
+    /// tokenizer; the template joins the messages' contents.
+    async fn fake_state(script: &str) -> Arc<AppState> {
+        let engine = crate::engine::Engine::spawn("sh", &["-c".into(), script.to_string()]).await.unwrap();
+        Arc::new(AppState {
+            engine,
+            tokenizer: crate::tokenizer::test_tokenizer(),
+            template: crate::template::ChatTemplate::new("{% for m in messages %}{{ m.content }}{% endfor %}").unwrap(),
+            model_name: "test".into(),
+            max_context: 4096,
+            default_max_tokens: 16,
+            sampling: crate::Sampling { temperature: 0.0, top_p: 1.0, top_k: 20, min_p: 0.0 },
+            stop_ids: vec![261],
+            ids: crate::SpecialIds { think: 256, think_end: 257, tool_call: 258, tool_call_end: 259 },
+            api_key: None,
+        })
+    }
+
+    const READY: &str = r#"echo '{"ev":"ready","version":"0","arch":"test","max_context":4096,"features":[]}'"#;
+
+    fn request(text: &str) -> ChatRequest {
+        let mut r = crate::openai::empty_request();
+        r.messages = json!([{"role": "user", "content": text}]);
+        r
+    }
+
+    #[tokio::test]
+    async fn control_and_stray_structure_tokens_are_not_text() {
+        // H i <|im_start|> </think> ! : the control token and the stray </think> (not in a
+        // reasoning section) must not reach the answer
+        let tok = |t: u32| format!(r#"echo '{{"ev":"token","id":"r0","tok":{t}}}'; "#);
+        let script = format!(
+            r#"{READY}; read line; {}{}{}{}{} echo '{{"ev":"done","id":"r0","generated":5,"finish":"stop"}}'; read line"#,
+            tok(72), tok(105), tok(260), tok(257), tok(33)
+        );
+        let st = fake_state(&script).await;
+        let (mut rx, _) = start(st, request("x")).await.unwrap();
+        let mut text = String::new();
+        while let Some(ev) = rx.recv().await {
+            match ev {
+                ChatEvent::Content(s) => text.push_str(&s),
+                ChatEvent::Done { .. } => break,
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+        assert_eq!(text, "Hi!");
+    }
+
+    #[tokio::test]
+    async fn client_leaving_while_queued_cancels() {
+        // the fake engine never starts the request; it only answers a stop for it
+        let script = format!(
+            r#"{READY}; read line; read line; case "$line" in *'"stop"'*) echo '{{"ev":"done","id":"r0","generated":0,"finish":"cancelled"}}';; esac; read line"#
+        );
+        let st = fake_state(&script).await;
+        let (rx, _) = start(st.clone(), request("x")).await.unwrap();
+        drop(rx);   // the client goes away before any token
+        // the engine must get the stop: its done event ends the route
+        let t0 = std::time::Instant::now();
+        while st.engine.has_route("r0") {
+            assert!(t0.elapsed() < std::time::Duration::from_secs(2), "no stop reached the engine");
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn sampling_limits() {
+        let st = fake_state(&format!("{READY}; read line")).await;
+        let mut r = request("x");
+        r.top_k = Some(0);
+        assert_eq!(sampling_of(&st, &r).unwrap().2, 64);   // 0: no limit, the engine's most
+        r.top_k = Some(64);
+        assert_eq!(sampling_of(&st, &r).unwrap().2, 64);
+        r.top_k = Some(65);
+        assert!(sampling_of(&st, &r).is_err());   // not silently capped
+        r.top_k = None;
+        assert_eq!(sampling_of(&st, &r).unwrap().2, 20);   // the model's default
+        r.temperature = Some(-0.5);
+        assert!(sampling_of(&st, &r).is_err());
+        r.temperature = None;
+        r.top_p = Some(0.0);
+        assert!(sampling_of(&st, &r).is_err());
+        r.top_p = None;
+        r.min_p = Some(1.0);
+        assert!(sampling_of(&st, &r).is_err());
+        r.min_p = None;
+        r.seed = Some(u64::MAX);
+        assert_eq!(sampling_of(&st, &r).unwrap().4, (1u64 << 53) - 1);   // exact in the protocol's JSON numbers
+    }
+
     #[test]
     fn tool_call_multibyte_after_function_close() {
         // a value closed by </function> (11 bytes) followed by multibyte text: the cursor must move
