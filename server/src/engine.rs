@@ -48,6 +48,7 @@ pub struct Engine {
     stdin: Mutex<ChildStdin>,
     routes: Routes,
     alive: Arc<AtomicBool>, // false once the engine's output ended; changed under the routes lock
+    quitting: Arc<AtomicBool>,
     down: Arc<tokio::sync::Notify>,
     child: Mutex<Child>,
     next_id: AtomicU64,
@@ -89,7 +90,8 @@ impl Engine {
         let routes: Routes = Arc::new(StdMutex::new(HashMap::new()));
         let alive = Arc::new(AtomicBool::new(true));
         let down = Arc::new(tokio::sync::Notify::new());
-        let (r2, alive2, down2) = (routes.clone(), alive.clone(), down.clone());
+        let quitting = Arc::new(AtomicBool::new(false));
+        let (r2, alive2, down2, quitting2) = (routes.clone(), alive.clone(), down.clone(), quitting.clone());
         tokio::spawn(async move {
             while let Ok(Some(line)) = lines.next_line().await {
                 let Ok(v) = serde_json::from_str::<Value>(&line) else {
@@ -108,7 +110,11 @@ impl Engine {
                     tracing::error!("engine: {}", v.get("msg").and_then(|x| x.as_str()).unwrap_or(""));
                 }
             }
-            tracing::error!("engine exited");
+            if quitting2.load(Ordering::SeqCst) {
+                tracing::info!("engine output ended");
+            } else {
+                tracing::error!("engine exited");
+            }
             {
                 let mut routes = r2.lock().unwrap();
                 alive2.store(false, Ordering::SeqCst);
@@ -118,7 +124,7 @@ impl Engine {
             }
             down2.notify_waiters();
         });
-        Ok(Self { ready, stdin: Mutex::new(stdin), routes, alive, down, child: Mutex::new(child), next_id: AtomicU64::new(0) })
+        Ok(Self { ready, stdin: Mutex::new(stdin), routes, alive, quitting, down, child: Mutex::new(child), next_id: AtomicU64::new(0) })
     }
 
     pub fn alive(&self) -> bool {
@@ -148,6 +154,7 @@ impl Engine {
 
     /// Asks the engine to finish the running request and exit; kills it after `grace`.
     pub async fn shutdown(&self, grace: std::time::Duration) {
+        self.quitting.store(true, Ordering::SeqCst);
         if self.alive() {
             let _ = self.send(&json!({"op": "quit"})).await;
         }
