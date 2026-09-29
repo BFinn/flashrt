@@ -62,11 +62,12 @@ What the table shows:
   can recover is the next measurement.
 - **Tuned on this protocol:** the expert-cache swap budget of 32 was chosen here (+9-12%, sw89).
   It costs 1% on natural text (sw90).
-- **Time to the first token at 250K:** 25.8 s with the draft head and 22.3 s without it, for the
-  116,708 new tokens. Strata takes 123 s for its 119,640 new tokens.
+- **Time to the first token at 250K:** 24.0 s with the draft head (sw102) and 22.3 s without it,
+  for the 116,708 new tokens. Strata takes 123 s for its 119,640 new tokens.
 - **Prefill per new token,** from each engine's own log, at 32K / 134K / 250K:
   - flashrt without the draft head: 5,662 / 5,756 / 5,232 tok/s;
-  - flashrt with the head: 4,988 / 5,031 / 4,529;
+  - flashrt with the head: 5,405 / 5,424 / 4,856 (sw102: its prompt pass in chunk calls with grouped
+    expert GEMMs; 4,988 / 5,031 / 4,529 in sw96);
   - Strata: 1,173 / 1,090 / 969;
   - llama.cpp: 1,108 / 724 / 443.
 
