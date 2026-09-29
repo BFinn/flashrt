@@ -13,8 +13,10 @@
 // resets itself). After a failure the process cannot recover from, the error event says so and
 // the engine exits with status 3; the server sees its output end.
 //
-// FLASHRT_FAULT_INJECTION=1 honours a request's "debug_fail" (1: after the first prefill step,
-// 2: in the first decode step), for bench/engine_smoke.py --faults.
+// FLASHRT_TEST_HOOKS=1 honours two request fields for bench/engine_smoke.py --faults:
+// "debug_fail" (1: throw after the first prefill step, 2: in the first decode step) and
+// "debug_first_top" (the done event carries "first_top", the first generated position's top 8
+// [id, logit]).
 #include "core/json.hpp"
 #include "engine/session.hpp"
 
@@ -99,11 +101,14 @@ GenerateRequest to_request(const Json& op) {
         if (!t.is_number()) throw std::runtime_error("stop_ids must be an array of token ids");
         r.stop_ids.push_back(int32_t(whole(t, "a stop id", 0, kIdMax, 0)));
     }
-    static const bool faults = [] {
-        const char* e = std::getenv("FLASHRT_FAULT_INJECTION");
+    static const bool hooks = [] {
+        const char* e = std::getenv("FLASHRT_TEST_HOOKS");
         return e && e[0] == '1';
     }();
-    if (faults) r.fail_at = int(whole(op["debug_fail"], "debug_fail", 0, 2, 0));
+    if (hooks) {
+        r.fail_at = int(whole(op["debug_fail"], "debug_fail", 0, 2, 0));
+        r.first_top = op["debug_first_top"].boolean(false);
+    }
     return r;
 }
 
@@ -210,7 +215,13 @@ int main(int argc, char** argv) {
                 q.cancel);
             Json drafts = Json::object();
             drafts.set("proposed", int64_t(res.drafts_proposed)).set("accepted", int64_t(res.drafts_accepted));
-            emit(event("done", id)
+            Json done = event("done", id);
+            if (!res.first_top.empty()) {
+                Json top = Json::array();
+                for (const auto& [t, l] : res.first_top) top.push(Json::array().push(int(t)).push(double(l)));
+                done.set("first_top", top);
+            }
+            emit(done
                      .set("generated", res.generated)
                      .set("prompt_tokens", res.prompt_tokens)
                      .set("reused", res.reused)

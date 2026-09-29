@@ -12,13 +12,16 @@ Runs four requests against one engine process and prints each one's events summa
      the checkpoint is at the end of request 3's prompt).
 
 With --faults it instead checks that bad and failing requests leave the engine serving (the
-engine runs with FLASHRT_FAULT_INJECTION=1). A greedy reference request A comes first; then:
+engine runs with FLASHRT_TEST_HOOKS=1). A greedy reference request A comes first; then:
   - invalid requests (a prompt longer than the context, a token id out of range, bad sampling):
     an error each, and A again reuses the previous sequence (nothing changed);
   - a fault injected after the first prefill chunk, and one in the first decode step, and a
     "stop" during the prefill: A again runs cold (reused 0) and succeeds.
-Each follow-up's first 8 greedy tokens must match the reference (later ones may differ: the
-expert cache's content decides GPU or CPU arithmetic). Exits 1 when a check fails.
+Each follow-up's state after the prompt must match the reference's: the same top token at the
+first generated position, and the reference's top 4 logits there within --logit-tol. Tokens are
+not compared: a GPU hit and a CPU miss differ in the last bits, so greedy tokens depend on the
+expert cache's content (docs/engine.md), and the reference and a follow-up see different caches.
+The number of leading tokens they share is printed for information. Exits 1 when a check fails.
 
   engine_smoke.py ENGINE MODEL --ids IDS [--n 2048] [--gen 64] [--temp 1.0] [--seed 1] [--faults] -- [engine args]
 
@@ -43,12 +46,13 @@ def main():
     ap.add_argument("--temp", type=float, default=1.0)
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--faults", action="store_true")
+    ap.add_argument("--logit-tol", type=float, default=0.25)
     argv = sys.argv[1:]
     cut = argv.index("--") if "--" in argv else len(argv)
     a = ap.parse_args(argv[:cut])
     extra = argv[cut + 1:]
     ids = [int(x) for x in open(a.ids).read().split()]
-    env = dict(os.environ, FLASHRT_FAULT_INJECTION="1") if a.faults else None
+    env = dict(os.environ, FLASHRT_TEST_HOOKS="1") if a.faults else None
     p = subprocess.Popen([a.engine, a.model] + extra, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1, env=env)
 
     def read():
@@ -111,7 +115,8 @@ def faults(a, ids, ready, p, read):
         p.stdin.flush()
 
     def request(rid, prompt, sampling=greedy, stop_on_progress=False, **extra):
-        send(dict({"op": "generate", "id": rid, "prompt": prompt, "max_new": a.gen, "sampling": sampling, "stop_ids": []}, **extra))
+        send(dict({"op": "generate", "id": rid, "prompt": prompt, "max_new": a.gen, "sampling": sampling, "stop_ids": [],
+                   "debug_first_top": True}, **extra))
         toks, stopped = [], False
         while True:
             ev = read()
@@ -131,7 +136,16 @@ def faults(a, ids, ready, p, read):
             failed.append(name)
 
     ev, ref = request("ref", A)
-    check("reference", ev["ev"] == "done" and len(ref) > 0, f"{ev.get('finish') or ev.get('msg')}, {len(ref)} tokens")
+    check("reference", ev["ev"] == "done" and len(ref) > 0 and "first_top" in ev, f"{ev.get('finish') or ev.get('msg')}, {len(ref)} tokens")
+    ref_top = ev.get("first_top", [])
+
+    def same_state(ev):
+        """(ok, max logit difference) of a follow-up's first position against the reference's."""
+        top = {t: l for t, l in ev.get("first_top", [])}
+        if not top or not ref_top or ev["first_top"][0][0] != ref_top[0][0]:
+            return False, float("inf")
+        d = max((abs(top[t] - l) if t in top else float("inf")) for t, l in ref_top[:4])
+        return d <= a.logit_tol, d
 
     def follow_up(name, want_reused):
         ev, toks = request(name + "-next", A)
@@ -139,9 +153,10 @@ def faults(a, ids, ready, p, read):
             return check(name, False, f"the next request failed: {ev.get('msg')}")
         same = next((i for i, (x, y) in enumerate(zip(toks, ref)) if x != y), min(len(toks), len(ref)))
         reuse_ok = ev["reused"] == 0 if want_reused == 0 else ev["reused"] >= want_reused
-        check(name, reuse_ok and same >= min(8, len(ref)),
+        state_ok, d = same_state(ev)
+        check(name, reuse_ok and state_ok,
               f"next request reused {ev['reused']} (want {'0' if want_reused == 0 else '>= %d' % want_reused}), "
-              f"first {same} of {len(ref)} tokens as the reference")
+              f"top logits within {d:.4f} of the reference's; {same} of {len(ref)} tokens shared")
 
     n_ctx = ready["max_context"]
     for name, prompt, sampling in [
@@ -160,8 +175,12 @@ def faults(a, ids, ready, p, read):
         follow_up(name, 0)
     ev, _ = request("stop-in-prefill", ids[a.n:2 * a.n], stop_on_progress=True)
     check("stop-in-prefill cancelled", ev["ev"] == "done" and ev["finish"] == "cancelled", ev.get("finish") or ev.get("msg"))
-    ev, toks = request("stop-in-prefill-next", A)
-    check("stop-in-prefill", ev["ev"] == "done" and toks[:8] == ref[:8], f"{ev.get('finish') or ev.get('msg')}, reused {ev.get('reused')}")
+    follow_up("stop-in-prefill", 0)
+    # how sensitive the state check is: A with one token 2,000 positions back changed
+    ev, _ = request("sensitivity", A[:10] + [(A[10] + 1) % 1000 + 1000] + A[11:])
+    ok, d = same_state(ev)
+    print(f"info sensitivity: A with its 11th token changed: top logits within {d:.4f} of the reference's "
+          f"({'undetected' if ok else 'detected'} at --logit-tol {a.logit_tol})")
     send({"op": "quit"})
     p.wait(timeout=60)
     print(f"engine exited with {p.returncode}; {len(failed)} check(s) failed{': ' + ', '.join(failed) if failed else ''}")

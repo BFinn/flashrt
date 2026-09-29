@@ -48,7 +48,9 @@ struct GenerateRequest {
     sample::Params sampling;
     uint64_t seed = 0;
     std::vector<int32_t> stop_ids;
-    int fail_at = 0;                  // tests only (engine_smoke.py --faults): throw after the first prefill chunk (1) or window (2)
+    // tests only (engine_smoke.py --faults, FLASHRT_TEST_HOOKS=1):
+    int fail_at = 0;                  // throw after the first prefill step (1) or in the first decode step (2)
+    bool first_top = false;           // report the first generated position's top logits
 };
 
 struct GenerateResult {
@@ -56,6 +58,7 @@ struct GenerateResult {
     double prompt_ms = 0, decode_ms = 0;
     std::string finish;               // "stop", "length", "cancelled"
     long drafts_proposed = 0, drafts_accepted = 0;
+    std::vector<std::pair<int32_t, float>> first_top;   // with GenerateRequest::first_top: (id, logit), best first
 };
 
 class Session {

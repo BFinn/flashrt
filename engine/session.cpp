@@ -387,6 +387,14 @@ GenerateResult Session::run(const GenerateRequest& r, const std::function<void(i
     if (chunked) m.cache_restore();   // refilled from the prefill's routing counts
     else if (!m.cache_filled || n - from >= 4096) m.refill_cache();
     m.fwd->forward(P.data(), 1, 0, m.logits);
+    if (r.first_top) {   // tests: the state after the prompt, independent of the sampling path
+        std::vector<float> lg(m.s.n_vocab);
+        ck(cudaMemcpy(lg.data(), m.logits, lg.size() * 4, cudaMemcpyDeviceToHost), "logits");
+        std::vector<int32_t> idx(lg.size());
+        std::iota(idx.begin(), idx.end(), 0);
+        std::partial_sort(idx.begin(), idx.begin() + 8, idx.end(), [&](int32_t a, int32_t b) { return lg[a] > lg[b]; });
+        for (int i = 0; i < 8; ++i) res.first_top.push_back({idx[i], lg[idx[i]]});
+    }
     m.mtp_catchup(P.data(), n - 1, 1);
     m.seq = P;
     if (on_progress) on_progress(n, n);

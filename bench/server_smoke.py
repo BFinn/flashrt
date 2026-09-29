@@ -11,6 +11,7 @@ import argparse
 import json
 import sys
 import time
+import urllib.error
 import urllib.request
 
 A = None
@@ -171,6 +172,19 @@ def main():
     r = post("/v1/chat/completions", {"messages": [{"role": "user", "content": "Say OK."}], "max_tokens": 16, "temperature": 0,
                                       "chat_template_kwargs": {"enable_thinking": False}})
     check("disconnect cancels", time.time() - t < 30, f"next request answered in {time.time() - t:.1f} s: {r['choices'][0]['message']['content']!r}")
+
+    # 11. sampling limits: top_k above the engine's 64 and a negative temperature are 400s, not
+    # silent caps; top_k 0 means no limit
+    for name, extra in [("top_k 65", {"top_k": 65}), ("temperature -1", {"temperature": -1})]:
+        try:
+            post("/v1/chat/completions", dict({"messages": [{"role": "user", "content": "Hi"}], "max_tokens": 4}, **extra))
+            check(f"{name} rejected", False, "accepted")
+        except urllib.error.HTTPError as e:
+            check(f"{name} rejected", e.code == 400, f"HTTP {e.code}: {json.loads(e.read())['error']['message']}")
+    r = post("/v1/chat/completions", {"messages": [{"role": "user", "content": "Say OK."}], "max_tokens": 16, "top_k": 0,
+                                      "temperature": 1.0, "chat_template_kwargs": {"enable_thinking": False}})
+    text = r["choices"][0]["message"]["content"] or ""
+    check("top_k 0 accepted", "<|im" not in text, repr(text))
 
     print("FAILED: " + ", ".join(FAILED) if FAILED else "all checks passed")
     sys.exit(1 if FAILED else 0)
