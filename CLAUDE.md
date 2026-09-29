@@ -37,6 +37,8 @@ cargo test --release --manifest-path server/Cargo.toml
   - Quote measured numbers, not estimates, unless an estimate is labelled as one.
   - Paths in scripts use the placeholders defined in `docs/engine.md` (Runbook), never a
     home directory.
+  - Before committing results, run `bench/scrub.py <folder>`: it replaces machine paths and
+    names in logs using the rules in the untracked `.scrub.local`.
 - **Correctness gate.** Changes that affect outputs need a KL-divergence check against the
   llama.cpp reference (`tools/fr_kld`) before any speed number counts.
 - **Paired decode comparisons.** A/B decode runs use `fr_bench --teacher`, so every arm routes

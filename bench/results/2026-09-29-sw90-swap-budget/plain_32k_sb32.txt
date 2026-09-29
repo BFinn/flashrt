@@ -1,0 +1,28 @@
+expert arena registered in 1.6 s
+KV cache: q8_0, host-resident, hot set of 4096 blocks per layer
+VRAM before prefill: 12015 MiB free
+state: loaded $BENCH/state-32k-q8-mtp.bin (32767 positions) in 0.2 s
+expert cache: 8918 slots (36.3% of experts), filled in 0.3 s from 12014 MiB free
+adaptive cache: decayed LFU, swap budget 32 (set up in 0.0 s)
+decode: 128 tokens at depth 32768 in 1.19 s: 107.63 tok/s (fast path, doorbell), window 1, hit rate 94.42%, swaps 314
+decode: 128 tokens at depth 32896 in 1.22 s: 104.51 tok/s (fast path, doorbell), window 2, hit rate 96.37%, swaps 485
+decode: 128 tokens at depth 33024 in 1.18 s: 108.72 tok/s (fast path, doorbell), window 3, hit rate 95.22%, swaps 675
+decode: 128 tokens at depth 33152 in 1.17 s: 109.12 tok/s (fast path, doorbell), window 4, hit rate 94.11%, swaps 1006
+decode: 128 tokens at depth 33280 in 1.17 s: 109.04 tok/s (fast path, doorbell), window 5, hit rate 94.79%, swaps 1258
+decode: 128 tokens at depth 33408 in 1.25 s: 102.73 tok/s (fast path, doorbell), window 6, hit rate 91.57%, swaps 1691
+expert cache hit rate 94.42% (348054 hits, 20586 misses: 20586 on the CPU, 0 read over PCIe)
+host per token: 7.50 ms waiting for routing, 1.16 ms running misses
+misses per layer: count (share of layers) and mean host miss time
+   0 :  65.0%     0.5 us
+   1 :  23.0%    50.9 us
+   2 :   7.4%    76.1 us
+   3 :   2.6%   116.7 us
+   4 :   1.0%   137.4 us
+   5 :   0.5%   168.5 us
+   6 :   0.3%   201.5 us
+   7 :   0.1%   231.3 us
+   8 :   0.1%   263.9 us
+   9 :   0.0%   300.6 us
+  10 :   0.0%   335.1 us
+CUDA graphs: on (1 capture(s))
+tokens: 945 35166 383 264 40143 1496 13907 55893 10663 1550 9393 383 4855 22950 359 82 44798 321 8308 22120 2980 6121 641 561

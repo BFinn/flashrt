@@ -14,8 +14,8 @@
 // miss-server thread on the pool's first CPU) unless --no-doorbell. --windows N decodes N
 // consecutive windows of G tokens after the one prefill and reports each (deep prompts).
 // --trace writes the decode's routing, int16 [tokens][n_layer][top_k], for tools/cache_sim.py.
-// The expert cache adapts during decode (decayed LFU, up to B uploads in flight, default 8)
-// unless --static-cache (up to B uploads in flight, default 8). --pcie-frac F (default 0 = off; it did not help at 2K or 245K, sw15) lets the GPU read floor(F * misses)
+// The expert cache adapts during decode (decayed LFU, up to B uploads in flight, default 32)
+// unless --static-cache (up to B uploads in flight, default 32). --pcie-frac F (default 0 = off; it did not help at 2K or 245K, sw15) lets the GPU read floor(F * misses)
 // of each layer's misses straight from host memory, up to 4 per layer. --save-state writes the
 // state after the prefill; --load-state restores it instead of prefilling (the prompt file is
 // still read, for the n-gram context): decode at 250K without the 35-minute prefill.
@@ -93,7 +93,7 @@ int main(int argc, char** argv) {
     int n_prompt = 1024, gen = 128, slots = 0, reserve_mib = 256, workers = 8, windows = 1;
     bool teacher = false;
     bool reference = false, doorbell = true, adaptive = true;
-    int swap_budget = 8;
+    int swap_budget = 32;   // as the engine (sw89, sw90)
     float pcie_frac = 0.0f;
     bool q3r = true, graphs = true, kv_q8 = false;
     int kv_hot = 0, half_life = 4096;

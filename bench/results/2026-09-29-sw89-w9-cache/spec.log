@@ -1,0 +1,7 @@
+CMD $FLASHRT/build/flashrt-engine $MODELS/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf --cache-prior $BENCH/cache-prior-calib32k.bin --swap-budget 32 --mtp $MODELS/mtp-Flash-Next-Q8_0-noembd.gguf --spec 2 --draft-vocab $BENCH/mtp-vocab/ranks.txt
+flashrt: expert cache filled from $BENCH/cache-prior-calib32k.bin (32768 tokens)
+flashrt: qwen4exp, 48 layers, expert cache 7500 slots (30.5%), MTP drafts 2 per round
+flashrt: prefill of 1054 tokens in chunks of 1054 (10399 MiB free)
+flashrt: prefill of 32792 tokens in chunks of 11008 (10287 MiB free)
+flashrt: prefill of 134028 tokens in chunks of 15104 (10269 MiB free)
+flashrt: prefill of 250711 tokens in chunks of 12032 (10249 MiB free)

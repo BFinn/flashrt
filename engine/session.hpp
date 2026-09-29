@@ -34,7 +34,7 @@ struct SessionOptions {
     int kv_hot = 4096;                // q8 host KV with this many GPU blocks per layer (0 = all in VRAM)
     int workers = 8;
     int reserve_mib = 512;            // VRAM left free after the expert cache: requests vary more than fr_bench's runs (256 there; sw64, sw86)
-    int swap_budget = 8;
+    int swap_budget = 32;             // expert-cache uploads per step: 32 adapts to a generation that routes unlike its prompt (sw89: +9-12%; sw90: -1% on wikitext continuation)
     int prefill_batch = 64;
     int prefill_chunk = 0;            // prompts adding at least chunk_min tokens prefill in chunks of this
     int chunk_min = 256;              // (the experts stream to the GPU; the expert cache is rebuilt after);

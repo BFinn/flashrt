@@ -1,0 +1,37 @@
+expert arena registered in 1.6 s
+KV cache: q8_0, host-resident, hot set of 4096 blocks per layer
+MTP draft head: layer 48, 774 MiB of weights in VRAM, 2 drafts per verify round
+VRAM before prefill: 11001 MiB free
+prefill chunk: 11008 tokens (auto; estimated 6360 MiB)
+  chunk at      0: 11008 tokens in 2.27 s (4859 tok/s)
+prefill: 32793 tokens in 7.8 s (4229.3 tok/s, chunks of 11008, experts streamed to the GPU)
+VRAM after prefill: 11062 MiB used, 4777 MiB free (chunk buffers 5420 MiB)
+MTP draft vocabulary: 32794 tokens (32768 ranked, 26 from the prompt)
+expert cache: 8037 slots (32.7% of experts), filled in 0.3 s from 10852 MiB free
+adaptive cache: decayed LFU, swap budget 8 (set up in 0.0 s)
+drafts: the head's argmax, kept while the sampled token equals them
+decode: 386 tokens at depth 32793 in 5.34 s: 72.34 tok/s (speculative, MTP drafts), swaps 1177
+expert cache hit rate 52.46% (131438 hits, 119122 misses: 119122 on the CPU, 0 read over PCIe)
+host per token: 3.99 ms waiting for routing, 8.55 ms running misses
+misses per layer: count (share of layers) and mean host miss time
+   0 :   0.3%     1.6 us
+   1 :   0.8%   159.7 us
+   2 :   2.1%   159.6 us
+   3 :   3.1%   146.1 us
+   4 :   4.2%   164.6 us
+   5 :   4.9%   196.4 us
+   6 :   6.3%   240.9 us
+   7 :   5.8%   266.6 us
+   8 :   7.0%   291.7 us
+   9 :   7.7%   323.8 us
+  10 :   7.1%   365.1 us
+  11 :   7.1%   389.6 us
+  12 :   6.6%   422.6 us
+  13 :   6.1%   455.3 us
+  14 :   5.8%   492.5 us
+  15 :   5.0%   518.1 us
+  16+:  20.0%   636.7 us
+CUDA graphs: on (1 capture(s))
+speculative: 174 rounds, 2.218 tokens per round, 2.00 drafts verified per round; accepted drafts: 0:28.2% 1:21.8% 2:50.0%
+  per round: draft 1.95 ms, verify 28.45 ms, commit 0.26 ms
+tokens: 271 248068 198 760 1156 6587 728 310 2962 279 1414 440 264 11346 11 491 13901 883 1204 1439 7189 513 5944 1552

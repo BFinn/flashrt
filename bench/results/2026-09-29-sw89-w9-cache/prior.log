@@ -1,0 +1,7 @@
+CMD $FLASHRT/build/flashrt-engine $MODELS/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf --cache-prior $BENCH/cache-prior-calib32k.bin
+flashrt: expert cache filled from $BENCH/cache-prior-calib32k.bin (32768 tokens)
+flashrt: qwen4exp, 48 layers, expert cache 8373 slots (34.1%), no speculation
+flashrt: prefill of 1054 tokens in chunks of 1054 (11549 MiB free)
+flashrt: prefill of 32792 tokens in chunks of 11008 (11521 MiB free)
+flashrt: prefill of 134028 tokens in chunks of 15104 (11505 MiB free)
+flashrt: prefill of 250711 tokens in chunks of 14848 (11499 MiB free)

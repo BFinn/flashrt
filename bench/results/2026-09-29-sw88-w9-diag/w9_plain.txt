@@ -1,0 +1,26 @@
+expert arena registered in 1.5 s
+KV cache: q8_0, host-resident, hot set of 4096 blocks per layer
+VRAM before prefill: 12015 MiB free
+prefill chunk: 11008 tokens (auto; estimated 6360 MiB)
+  chunk at      0: 11008 tokens in 1.90 s (5801 tok/s)
+prefill: 32793 tokens in 5.5 s (5973.7 tok/s, chunks of 11008, experts streamed to the GPU)
+VRAM after prefill: 9986 MiB used, 5853 MiB free (chunk buffers 5420 MiB)
+expert cache: 8895 slots (36.2% of experts), filled in 0.3 s from 11984 MiB free
+adaptive cache: decayed LFU, swap budget 8 (set up in 0.0 s)
+decode: 384 tokens at depth 32793 in 5.25 s: 73.11 tok/s (fast path, doorbell), swaps 2637
+expert cache hit rate 65.87% (121412 hits, 62908 misses: 62908 on the CPU, 0 read over PCIe)
+host per token: 6.94 ms waiting for routing, 5.95 ms running misses
+misses per layer: count (share of layers) and mean host miss time
+   0 :  10.6%     0.7 us
+   1 :  15.6%    48.8 us
+   2 :  16.0%    82.6 us
+   3 :  14.1%   113.5 us
+   4 :  12.4%   142.5 us
+   5 :  10.1%   176.6 us
+   6 :   8.3%   207.2 us
+   7 :   5.9%   237.6 us
+   8 :   4.1%   269.4 us
+   9 :   2.0%   301.2 us
+  10 :   0.9%   338.6 us
+CUDA graphs: on (1 capture(s))
+tokens: 271 248068 198 760 1156 6587 728 310 2962 279 1414 440 264 11346 11 491 13901 883 1204 1439 7189 513 5944 1552
