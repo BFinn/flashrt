@@ -16,7 +16,7 @@ for i in $(seq 300); do curl -sf $URL/v1/models > /dev/null && { echo "ready aft
 python3 $FLASHRT/bench/server_smoke.py --url $URL > $O/smoke.txt 2>&1; echo "smoke rc=$? $(tail -1 $O/smoke.txt)"
 python3 - > $O/long.txt 2>&1 <<PY
 import json, time, urllib.error, urllib.request
-text = open("$BENCH/p0b-20260927/wiki.txt").read() * 2   # ~95K tokens of text
+text = open("$BENCH/p0b-20260927/wiki.txt").read()[:200000] * 2   # ~95K tokens (47.7K per 200,000 characters)
 body = {"messages": [{"role": "user", "content": text + "\n\nSummarise the text above in three sentences."}], "max_tokens": 256,
         "temperature": 0, "chat_template_kwargs": {"enable_thinking": False}}
 t = time.time()
