@@ -447,9 +447,13 @@ The scripts run with `set -u`, so they stop if one is unset.
 - **Prefix reuse follows one sequence.** A prompt reuses the latest recurrent-state checkpoint
   inside the prefix it shares with the previous sequence: the one at the end of the previous
   prompt (on the GPU), or one of up to 8 taken during earlier prefills (host RAM, 113 MiB each):
-  at chunk ends 4,096 or more tokens apart, and before the prompt's last 64 tokens, which then
-  run as one batch (sw95). The KV cache holds one sequence, so two conversations interleaved on
-  one server still re-prefill each time.
+  at chunk ends 4,096 or more tokens apart, and, once prompts show a fixed tail after grown
+  text, before each prompt's last tokens (the tail's length rounded up to 8), which then run as
+  one batch (a 64-token batch costs 0.6 s; sw95). A restore reproduces the state bit for bit. The
+  tokens after it are prefilled in chunks that start at the checkpoint, not where a cold run's
+  would, and chunks, slabs and batches round differently: up to KL 0.008 at a position against a
+  cold run, the same as changing the chunk length (sw95b-sw95f). The KV cache holds one sequence,
+  so two conversations interleaved on one server still re-prefill each time.
 - **The engine refills the expert cache from the prefill's routing counts** after the first
   prompt and after any prompt that adds 4,096 or more tokens. For short prompts the adaptive
   policy alone moves it.
