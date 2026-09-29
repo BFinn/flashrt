@@ -81,6 +81,12 @@ public:
     int32_t argmax(const float* logits_row_dev, float* p_top = nullptr);
 
     void reset();   // a new sequence
+    // During a chunked prefill ending at end_pos: a VRAM mirror of the head's KV (hot-set mode;
+    // the target's chunks have theirs), so the head's pass over the prompt attends on tensor
+    // cores instead of through the hot set, whose cost grows with depth (P-1). prefill_end()
+    // frees it; both are no-ops without a hot set.
+    void prefill_begin(int pos, int end_pos);
+    void prefill_end();
     // The indexer ring and the streams the next catch-up starts from (h [hc][n]): what a
     // restored checkpoint of the target also needs from the head.
     void save_checkpoint(const float* h_dev);

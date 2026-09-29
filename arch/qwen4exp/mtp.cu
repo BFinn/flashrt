@@ -517,6 +517,13 @@ MtpHead::~MtpHead() {
         if (p) cudaFree(p);
 }
 
+void MtpHead::prefill_begin(int pos, int end_pos) { qsa_mirror_begin(s_, kv_, pos, end_pos, stream_); }
+
+void MtpHead::prefill_end() {
+    ck(cudaStreamSynchronize(stream_), "MTP prefill end");
+    qsa_mirror_end(kv_);
+}
+
 void MtpHead::reset() {
     ck(cudaMemsetAsync(kv_.idx_ring, 0, size_t(qsa_ring_slots(s_)) * s_.idx_dim * 4, stream_), "memset MTP ring");
     reset_qsa_hot(s_, kv_, stream_);
