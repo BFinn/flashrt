@@ -1,0 +1,6 @@
+Traceback (most recent call last):
+  File "~/scratch/flashrt/bench/results/2026-09-29-sw99-cache-ceiling/primes.py", line 19, in <module>
+    run("prompt, half-life 4096 (engine)", p, base)
+  File "~/scratch/flashrt/bench/results/2026-09-29-sw99-cache-ceiling/primes.py", line 14, in run
+    r, win = sim_engine(dec[p], CAP, E, prime, windows=64, **kw)
+ValueError: too many values to unpack (expected 2)

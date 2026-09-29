@@ -1,0 +1,6 @@
+trace: 384 tokens x 48 layers x top-10
+   slots   engine
+         engine, 64-token windows: 0.892 0.881 0.864 0.936 0.959 0.580
+    7780    0.852
+         engine, 64-token windows: 0.910 0.900 0.882 0.950 0.968 0.603
+    8634    0.869

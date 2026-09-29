@@ -1,0 +1,6 @@
+trace: 384 tokens x 48 layers x top-10
+   slots   engine   static   belady
+         engine, 64-token windows: 0.463 0.688 0.732 0.791 0.835 0.871
+    7780    0.730    0.896    0.905
+         engine, 64-token windows: 0.508 0.716 0.755 0.808 0.848 0.889
+    8634    0.754    0.922    0.910
