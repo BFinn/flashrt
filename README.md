@@ -52,6 +52,9 @@ What the table shows:
   at 250K.
 - **Against Strata, temperature 1.0:** ahead at 1K and 134K; at 32K and 250K the difference is
   within the run-to-run spread.
+- **With the cache's newer admission default** (sw101, n = 3, MTP greedy): 112.1 / 87.0 / 83.7 /
+  74.6 tok/s at the four depths. That is +6.6%, +3.6% and +6.2% at 1K-134K, with 250K flat, and
+  behind Strata by 1.5% at 134K.
 - **The depth gap is the expert cache,** not the prefill: reusing the prefix left decode where it
   was (sw91, without reuse, is within the spread in every cell). The cache is filled from the
   prompt's routing, and this generation routes elsewhere: 66-68% hits with the MTP head, 75-77%

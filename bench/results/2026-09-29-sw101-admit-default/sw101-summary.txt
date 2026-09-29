@@ -1,0 +1,31 @@
+DECODE tok/s (wall clock) (mean +- sd)
+arm                                      1055            32793           134029           250712
+sw101-G-spec2-greedy (n=3)       112.1 +- 1.7      87.0 +- 0.5      83.7 +- 0.1      74.6 +- 0.8
+sw101-S-spec2-t1.0 (n=3)        102.3 +- 13.2      83.8 +- 3.2      82.2 +- 3.9      76.9 +- 3.4
+
+PROMPT seconds (engine prompt_ms) (mean +- sd)
+arm                                      1055            32793           134029           250712
+sw101-G-spec2-greedy (n=3)       1.31 +- 0.04     6.56 +- 0.00    20.13 +- 0.03    25.77 +- 0.02
+sw101-S-spec2-t1.0 (n=3)         1.28 +- 0.03     6.56 +- 0.00    20.12 +- 0.02    25.79 +- 0.02
+
+PREFILL tok/s of the new tokens (mean +- sd)
+arm                                      1055            32793           134029           250712
+sw101-G-spec2-greedy (n=3)          805 +- 26        4999 +- 3        5031 +- 7        4528 +- 4
+sw101-S-spec2-t1.0 (n=3)            824 +- 22        5000 +- 2        5032 +- 4        4526 +- 3
+
+REUSED prompt tokens (mean +- sd)
+arm                                      1055            32793           134029           250712
+sw101-G-spec2-greedy (n=3)             0 +- 0           0 +- 0       32768 +- 0      134004 +- 0
+sw101-S-spec2-t1.0 (n=3)               0 +- 0           0 +- 0       32768 +- 0      134004 +- 0
+
+EXPERT-CACHE hit rate in the decode, % (mean +- sd)
+arm                                      1055            32793           134029           250712
+sw101-G-spec2-greedy (n=3)        80.2 +- 0.0      68.4 +- 0.0      69.0 +- 0.0      70.2 +- 0.0
+sw101-S-spec2-t1.0 (n=3)          78.9 +- 1.5      66.9 +- 1.6      67.5 +- 3.4      69.1 +- 0.4
+
+DRAFT acceptance, % (mean +- sd)
+arm                                      1055            32793           134029           250712
+sw101-G-spec2-greedy (n=3)        54.9 +- 0.0      56.1 +- 0.0      61.3 +- 0.0      53.5 +- 0.0
+sw101-S-spec2-t1.0 (n=3)         49.9 +- 12.0      54.0 +- 5.2     62.2 +- 11.0      59.1 +- 4.5
+
+GPU at the rows' ends: SM clock 2805-2812 MHz, 48-52 C, 147-185 W
