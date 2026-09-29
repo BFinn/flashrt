@@ -89,7 +89,7 @@ impl Tokenizer {
                 token_bytes.push(bytes);
             }
         }
-        specials.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+        specials.sort_by_key(|a| std::cmp::Reverse(a.0.len()));
         let mut byte_token = [0u32; 256];
         for b in 0..256 {
             byte_token[b] = *id_of
