@@ -17,7 +17,7 @@ from collections import defaultdict
 
 import numpy as np
 
-sys.path.insert(0, os.path.expanduser("$FLASHRT/tools"))
+sys.path.insert(0, os.path.expandvars("$FLASHRT/tools"))
 from frd import records  # noqa: E402
 
 

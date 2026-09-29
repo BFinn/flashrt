@@ -12,12 +12,12 @@ import argparse, json, os, random, signal, subprocess, sys, time, urllib.request
 ap = argparse.ArgumentParser()
 ap.add_argument("--label", required=True)
 ap.add_argument("--bin", required=True)
-ap.add_argument("--model", default=os.path.expanduser(
+ap.add_argument("--model", default=os.path.expandvars(
     "$MODELS/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf"))
 ap.add_argument("--depths", default="1000,32000,128000,240000")
 ap.add_argument("--gen", type=int, default=128)
 ap.add_argument("--port", type=int, default=8299)
-ap.add_argument("--out", default=os.path.expanduser("$BENCH"))
+ap.add_argument("--out", default=os.path.expandvars("$BENCH"))
 ap.add_argument("--env", action="append", default=[])
 ap.add_argument("--ids", help='JSON [{"depth": D, "ids": [...]}] (strata_depthbench format): send these '
                 'token ids instead of the built-in filler text; --depths is then ignored')
