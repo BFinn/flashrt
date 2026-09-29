@@ -126,7 +126,7 @@ mod tests {
         let msgs = json!([{"role": "user", "content": "hi"}]);
         let extra = json!({"messages": [], "tools": [{"name": "x"}], "add_generation_prompt": false, "enable_thinking": false});
         let out = t.render(&msgs, None, extra.as_object().unwrap()).unwrap();
-        assert_eq!(out, "1 false true false");
+        assert_eq!(out, "1 False True False");   // booleans print as Python does
     }
 
     #[test]
