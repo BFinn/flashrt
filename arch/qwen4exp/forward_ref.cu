@@ -156,6 +156,10 @@ void ForwardRef::reset() {
     }
     ck(cudaStreamSynchronize(stream_), "reset");
     pos_ = 0;
+    // what a call that threw may have left behind (Session::generate recovers through here)
+    window_pos0_ = -1;
+    in_window_ = in_chunk_ = combine_pending_ = have_access_ = false;
+    if (counts_dev_) ck(cudaMemset(counts_dev_, 0, counts_.size() * 4), "memset routing counts");
 }
 
 // embedding, hyper-connection streams, and the layers before the first PLE layer

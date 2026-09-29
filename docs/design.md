@@ -83,6 +83,14 @@ Engine to server, while generating:
 The engine keeps the last conversation's state and reuses the longest matching prompt
 prefix. `reused` reports how many tokens were reused.
 
+Requests are checked before anything runs; a bad one gets an `error` event and changes no state.
+The limits: token ids within the vocabulary; `max_new` ≥ 1; `temperature` ≥ 0 (0 is greedy);
+`top_k` 1..64; `top_p` in (0, 1]; `min_p` in [0, 1); `seed` a whole number in 0..2^53.
+A request that fails while running gets an `error` event, and the engine resets to an empty
+sequence, so the next request starts cold. After a failure the process cannot recover from (a
+doorbell timeout, a sticky CUDA error), the `error` message ends with "(fatal: the engine
+exits)", and the engine exits with status 3.
+
 ## Phases and gates
 
 Gates are measured on the target box with `bench/`. Speeds are decode tok/s at 32K / 250K

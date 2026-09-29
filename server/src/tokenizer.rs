@@ -24,6 +24,7 @@ pub struct Tokenizer {
     merges: HashMap<(u32, u32), (u32, u32)>, // pair -> (rank, merged id)
     specials: Vec<(String, u32)>,           // longest first
     special_ids: Vec<bool>,
+    control_ids: Vec<bool>,
     pretok: Regex,
     cache: Mutex<HashMap<String, Vec<u32>>>,
 }
@@ -71,9 +72,11 @@ impl Tokenizer {
         let mut token_bytes = Vec::with_capacity(tokens.len());
         let mut specials = Vec::new();
         let mut special_ids = vec![false; tokens.len()];
+        let mut control_ids = vec![false; tokens.len()];
         for (i, t) in tokens.iter().enumerate() {
             id_of.insert(t, i as u32);
             let special = types.get(i).is_some_and(|&ty| ty == 3 || ty == 4);   // control, user-defined
+            control_ids[i] = types.get(i) == Some(&3);
             if special {
                 specials.push((t.to_string(), i as u32));
                 special_ids[i] = true;
@@ -116,6 +119,7 @@ impl Tokenizer {
             merges,
             specials,
             special_ids,
+            control_ids,
             pretok: Regex::new(QWEN35_PATTERN)?,
             cache: Mutex::new(HashMap::new()),
         })
@@ -127,6 +131,11 @@ impl Tokenizer {
 
     pub fn is_special(&self, id: u32) -> bool {
         self.special_ids.get(id as usize).copied().unwrap_or(false)
+    }
+
+    /// A control token (GGUF token type 3, such as <|im_start|>): structure, never output text.
+    pub fn is_control(&self, id: u32) -> bool {
+        self.control_ids.get(id as usize).copied().unwrap_or(false)
     }
 
     pub fn token_bytes(&self, id: u32) -> &[u8] {

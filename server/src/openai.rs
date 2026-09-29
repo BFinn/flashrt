@@ -16,6 +16,13 @@ use tokio_stream::StreamExt;
 use crate::chat::{self, ChatEvent, ChatRequest, Finish};
 use crate::{api_error, AppState};
 
+fn start_error(e: &anyhow::Error) -> Response {
+    match crate::start_error_status(e) {
+        503 => api_error(503, "server_error", &e.to_string()),
+        st => api_error(st, "invalid_request_error", &e.to_string()),
+    }
+}
+
 fn now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
@@ -137,7 +144,7 @@ pub async fn chat_completions(st: Arc<AppState>, req: Value) -> Response {
     let model = st.model_name.clone();
     let rx = match chat::start(st, r).await {
         Ok((rx, _)) => rx,
-        Err(e) => return api_error(400, "invalid_request_error", &e.to_string()),
+        Err(e) => return start_error(&e),
     };
     let id = chat::new_id("chatcmpl-");
     let created = now();
@@ -240,7 +247,7 @@ pub async fn completions(st: Arc<AppState>, req: Value) -> Response {
     let model = st.model_name.clone();
     let mut rx = match chat::start(st, r).await {
         Ok((rx, _)) => rx,
-        Err(e) => return api_error(400, "invalid_request_error", &e.to_string()),
+        Err(e) => return start_error(&e),
     };
     let id = chat::new_id("cmpl-");
     let created = now();

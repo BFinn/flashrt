@@ -43,7 +43,8 @@ public:
     ForwardRef(const ForwardRef&) = delete;
     ForwardRef& operator=(const ForwardRef&) = delete;
 
-    // Clears every cache and state: the next forward() starts a new sequence at position 0.
+    // Clears every cache and state: the next forward() starts a new sequence at position 0. Also
+    // drops an uncommitted window and what a forward() that threw left half done.
     void reset();
 
     // Runs seq[pos() .. pos() + T) (seq holds the whole sequence so far, for the n-gram context)

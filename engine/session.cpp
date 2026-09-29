@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <cstdio>
 #include <fstream>
@@ -34,6 +35,32 @@ void ck(cudaError_t e, const char* what) {
     if (e != cudaSuccess) throw std::runtime_error(std::string(what) + ": " + cudaGetErrorString(e));
 }
 double ms_since(Clock::time_point t) { return std::chrono::duration<double, std::milli>(Clock::now() - t).count(); }
+
+// Everything generate() can check before it changes any state.
+void validate(const GenerateRequest& r, int n_vocab, int max_ctx, int K) {
+    const int n = int(r.prompt.size());
+    if (n < 1) throw std::runtime_error("empty prompt");
+    for (int32_t t : r.prompt)
+        if (t < 0 || t >= n_vocab) throw std::runtime_error("token id out of range: " + std::to_string(t));
+    for (int32_t t : r.stop_ids)
+        if (t < 0 || t >= n_vocab) throw std::runtime_error("stop id out of range: " + std::to_string(t));
+    if (n + K + 2 > max_ctx) throw std::runtime_error("prompt longer than the context");
+    if (r.max_new < 1) throw std::runtime_error("max_new must be at least 1");
+    const sample::Params& p = r.sampling;
+    if (!std::isfinite(p.temperature) || p.temperature < 0.0f) throw std::runtime_error("temperature must be >= 0");
+    if (p.top_k < 1 || p.top_k > sample::kMaxTopK)
+        throw std::runtime_error("top_k must be 1.." + std::to_string(sample::kMaxTopK));
+    if (!(p.top_p > 0.0f && p.top_p <= 1.0f)) throw std::runtime_error("top_p must be in (0, 1]");
+    if (!(p.min_p >= 0.0f && p.min_p < 1.0f)) throw std::runtime_error("min_p must be in [0, 1)");
+}
+
+// True when the device is usable: waits for the queued work, clears a one-off error, and fails
+// on a sticky one (it reports again).
+bool cuda_usable() {
+    const cudaError_t e = cudaDeviceSynchronize();
+    (void)cudaGetLastError();
+    return e == cudaSuccess || cudaDeviceSynchronize() == cudaSuccess;
+}
 }  // namespace
 
 struct Session::Impl {
@@ -56,6 +83,7 @@ struct Session::Impl {
     std::vector<float> prior;      // routing counts of a calibration prefill, scaled to 4,096 tokens
 
     std::vector<int32_t> seq;      // the tokens the target has processed: positions 0 .. pos() - 1
+    bool healthy = true;
     size_t hrow = 0;
     float *logits = nullptr, *logits_win = nullptr, *h_carry = nullptr, *h_buf = nullptr;
     int32_t *tok_dev = nullptr, *tok_host = nullptr;
@@ -193,6 +221,26 @@ struct Session::Impl {
         refill_cache();
     }
 
+    // After a request threw: an empty sequence, the expert cache back in place, no open window or
+    // half-done chunk. Leaves healthy false when that is impossible.
+    void recover() {
+        if (!cuda_usable() || doorbell_failed(host)) {
+            healthy = false;
+            return;
+        }
+        try {
+            if (!cache.slots) cache_restore();   // the failure came during a chunked prefill
+            fwd->reset();
+            if (mtp) mtp->reset();
+            ck(cudaMemset(h_carry, 0, hrow * 4), "memset h");
+            seq.clear();
+            ck(cudaDeviceSynchronize(), "recover");
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "flashrt: recovery failed: %s\n", e.what());
+            healthy = false;
+        }
+    }
+
     // Sampled drafts (temperature > 0; FLASHRT_ARGMAX_DRAFTS=1: argmax drafts): the verify rows
     // through speculative sampling with the head's q; a = the drafts kept (sw85)
     std::vector<int32_t> spec_pick(const float* lg, int R, int64_t pos0, const GenerateRequest& r, int& a) {
@@ -261,20 +309,31 @@ int Session::max_context() const { return m_->o.max_ctx; }
 int Session::n_vocab() const { return m_->s.n_vocab; }
 std::string Session::arch() const { return m_->s.arch; }
 bool Session::speculative() const { return m_->mtp != nullptr; }
+bool Session::healthy() const { return m_->healthy; }
 
 GenerateResult Session::generate(const GenerateRequest& r, const std::function<void(int32_t)>& on_token,
                                  const std::function<void(int, int)>& on_progress, const std::atomic<bool>& cancel) {
+    Impl& m = *m_;
+    if (!m.healthy) throw std::runtime_error("the engine failed earlier and must be restarted");
+    const int K = m.mtp ? m.o.spec_k : 0;
+    validate(r, m.s.n_vocab, m.o.max_ctx, K);
+    try {
+        return run(r, on_token, on_progress, cancel);
+    } catch (...) {
+        m.recover();
+        throw;
+    }
+}
+
+GenerateResult Session::run(const GenerateRequest& r, const std::function<void(int32_t)>& on_token,
+                            const std::function<void(int, int)>& on_progress, const std::atomic<bool>& cancel) {
     Impl& m = *m_;
     GenerateResult res;
     const auto t0 = Clock::now();
     const std::vector<int32_t>& P = r.prompt;
     const int n = int(P.size());
     res.prompt_tokens = n;
-    if (n < 1) throw std::runtime_error("empty prompt");
-    for (int32_t t : P)
-        if (t < 0 || t >= m.s.n_vocab) throw std::runtime_error("token id out of range: " + std::to_string(t));
     const int K = m.mtp ? m.o.spec_k : 0;
-    if (n + K + 2 > m.o.max_ctx) throw std::runtime_error("prompt longer than the context");
 
     // 1. reuse: the whole previous sequence, or the last prompt's checkpoint, or nothing
     size_t L = 0;
@@ -312,6 +371,7 @@ GenerateResult Session::generate(const GenerateRequest& r, const std::function<v
         const int T = std::min(step, n - 1 - p);
         m.fwd->forward(P.data(), T, T, nullptr);
         m.mtp_catchup(P.data(), p, T);
+        if (r.fail_at == 1) throw std::runtime_error("injected fault after a prefill step");
         if (on_progress) on_progress(p + T, n);
         if (cancel.load()) {
             m.seq.assign(P.begin(), P.begin() + p + T);
@@ -374,6 +434,7 @@ GenerateResult Session::generate(const GenerateRequest& r, const std::function<v
         seqw.push_back(y);
         if (K == 0) {
             m.fwd->forward(seqw.data(), 1, 0, m.logits);
+            if (r.fail_at == 2) throw std::runtime_error("injected fault in a decode step");
             m.seq.push_back(y);
             y = m.pick(m.logits, 1, p + 1, r)[0];
             emit(y);
@@ -385,6 +446,7 @@ GenerateResult Session::generate(const GenerateRequest& r, const std::function<v
         seqw.insert(seqw.end(), d.begin(), d.end());
         // verify, sample every row, keep drafts while they match
         m.fwd->forward_window(seqw.data(), K + 1, m.logits_win);
+        if (r.fail_at == 2) throw std::runtime_error("injected fault in a verify window");
         int a = 0;
         std::vector<int32_t> ys;
         if (sampled) ys = m.spec_pick(m.logits_win, K + 1, p + 1, r, a);

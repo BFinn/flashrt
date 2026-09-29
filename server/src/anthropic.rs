@@ -167,6 +167,7 @@ pub async fn messages(st: Arc<AppState>, req: Value) -> Response {
     let stream = req.get("stream").and_then(Value::as_bool).unwrap_or(false);
     let (mut rx, n_prompt) = match chat::start(st, r).await {
         Ok(x) => x,
+        Err(e) if crate::start_error_status(&e) == 503 => return anth_error(503, "api_error", &e.to_string()),
         Err(e) => return anth_error(400, "invalid_request_error", &e.to_string()),
     };
     let id = chat::new_id("msg_");

@@ -940,17 +940,32 @@ void doorbell_begin_token(MoeFastHost& h, int T) {
 void doorbell_end_token(MoeFastHost& h, const Spec& s) {
     for (int il = 0; il < s.n_layer; ++il) {
         const uint32_t err = __atomic_load_n(reinterpret_cast<uint32_t*>(h.mbox + size_t(il) * h.mbox_stride + kMbErr), __ATOMIC_ACQUIRE);
-        if (err)
+        if (err) {
+            h.db_failed = true;
             throw std::runtime_error("doorbell: the GPU gave up waiting for layer " + std::to_string(il) + " of token " +
                                      std::to_string(err) + "; miss server at layer " + std::to_string(h.server->cur_layer.load()) +
                                      ", phase " + std::to_string(h.server->cur_phase.load()) + ", served " +
                                      std::to_string(h.server->served.load()) + ", posted " + std::to_string(h.server->post.load()) +
                                      (h.server->failed.load() ? ", server failed: " + h.server->error : std::string()));
+        }
     }
     // the GPU has consumed every done flag; the server's bookkeeping after the last one is brief
-    while (h.server->served.load(std::memory_order_acquire) != h.seq)
-        if (h.server->failed.load()) throw std::runtime_error(h.server->error);
+    const auto t0 = std::chrono::steady_clock::now();
+    for (uint32_t k = 0; h.server->served.load(std::memory_order_acquire) != h.seq; ++k) {
+        if (h.server->failed.load()) {
+            h.db_failed = true;
+            throw std::runtime_error(h.server->error);
+        }
+        if ((k & 4095) == 4095 && std::chrono::steady_clock::now() - t0 > std::chrono::seconds(10)) {
+            h.db_failed = true;
+            throw std::runtime_error("doorbell: the miss server did not finish token " + std::to_string(h.seq) + " in 10 s (layer " +
+                                     std::to_string(h.server->cur_layer.load()) + ", phase " + std::to_string(h.server->cur_phase.load()) +
+                                     ", served " + std::to_string(h.server->served.load()) + ")");
+        }
+    }
 }
+
+bool doorbell_failed(const MoeFastHost& h) { return h.db_failed || (h.server && h.server->failed.load()); }
 
 void free_moe_fast_host(MoeFastHost& h) {
     if (h.server) {

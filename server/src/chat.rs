@@ -90,11 +90,12 @@ fn parse_tool_call(body: &str, types: &std::collections::HashMap<String, Map<Str
         let Some(pe) = rest[ps..].find('>') else { break };
         let pname = rest[ps..ps + pe].trim().to_string();
         let vstart = ps + pe + 1;
-        let vend = rest[vstart..]
-            .find("</parameter>")
-            .or_else(|| rest[vstart..].find("</function>"))
-            .map(|i| vstart + i)
-            .unwrap_or(rest.len());
+        // the value ends at the first closing tag; the cursor moves past the tag actually found
+        let (vend, tag_len) = ["</parameter>", "</function>"]
+            .iter()
+            .filter_map(|tag| rest[vstart..].find(tag).map(|i| (vstart + i, tag.len())))
+            .min()
+            .unwrap_or((rest.len(), 0));
         let mut v = &rest[vstart..vend];
         v = v.strip_prefix('\n').unwrap_or(v);
         v = v.strip_suffix('\n').unwrap_or(v);
@@ -104,7 +105,7 @@ fn parse_tool_call(body: &str, types: &std::collections::HashMap<String, Map<Str
             _ => serde_json::from_str::<Value>(v.trim()).unwrap_or_else(|_| Value::String(v.to_string())),
         };
         args.insert(pname, value);
-        rest = &rest[(vend + "</parameter>".len()).min(rest.len())..];
+        rest = &rest[vend + tag_len..];
     }
     Some((name, Value::Object(args)))
 }
@@ -193,10 +194,37 @@ pub fn prompt_of(st: &AppState, req: &ChatRequest) -> Result<(String, Vec<u32>)>
     Ok((text, toks))
 }
 
+/// A request's sampling settings, checked against what the engine accepts. `top_k` 0 means no
+/// limit, which is the engine's most (64); more than 64 is an error, not a silent cap. Seeds keep
+/// their low 53 bits (the engine protocol carries them as JSON numbers).
+fn sampling_of(st: &AppState, req: &ChatRequest) -> Result<(f32, f32, u32, f32, u64)> {
+    let temperature = req.temperature.unwrap_or(st.sampling.temperature);
+    let top_p = req.top_p.unwrap_or(st.sampling.top_p);
+    let min_p = req.min_p.unwrap_or(st.sampling.min_p);
+    let top_k = match req.top_k.unwrap_or(st.sampling.top_k) {
+        0 => 64,
+        k if k <= 64 => k,
+        k => bail!("top_k {k} is above 64, the most this engine samples from (0 means 64)"),
+    };
+    if !(temperature.is_finite() && temperature >= 0.0) {
+        bail!("temperature must be >= 0");
+    }
+    if !(top_p > 0.0 && top_p <= 1.0) {
+        bail!("top_p must be in (0, 1]");
+    }
+    if !(0.0..1.0).contains(&min_p) {
+        bail!("min_p must be in [0, 1)");
+    }
+    let seed = req.seed.unwrap_or_else(random_u64) & ((1u64 << 53) - 1);
+    Ok((temperature, top_p, top_k, min_p, seed))
+}
+
 /// Renders, tokenizes and queues a chat request; events arrive on the receiver. Also returns
-/// the prompt's length in tokens.
+/// the prompt's length in tokens. Errors are the request's fault (HTTP 400), except
+/// `engine::EngineDown` (503).
 pub async fn start(st: Arc<AppState>, req: ChatRequest) -> Result<(mpsc::Receiver<ChatEvent>, u32)> {
     let raw = req.raw_prompt.is_some();
+    let (temperature, top_p, top_k, min_p, seed) = sampling_of(&st, &req)?;
     let (prompt_text, prompt) = prompt_of(&st, &req)?;
     let ctx = st.max_context;
     if prompt.len() as u64 + 16 >= ctx {
@@ -207,11 +235,11 @@ pub async fn start(st: Arc<AppState>, req: ChatRequest) -> Result<(mpsc::Receive
     let params = GenerateParams {
         prompt: prompt.clone(),
         max_new,
-        temperature: req.temperature.unwrap_or(st.sampling.temperature),
-        top_p: req.top_p.unwrap_or(st.sampling.top_p),
-        top_k: req.top_k.unwrap_or(st.sampling.top_k).clamp(1, 64),
-        min_p: req.min_p.unwrap_or(st.sampling.min_p),
-        seed: req.seed.unwrap_or_else(random_u64),
+        temperature,
+        top_p,
+        top_k,
+        min_p,
+        seed,
         stop_ids: st.stop_ids.clone(),
     };
     let (id, mut rx) = st.engine.generate(&params).await?;
@@ -222,8 +250,11 @@ pub async fn start(st: Arc<AppState>, req: ChatRequest) -> Result<(mpsc::Receive
     let stops = req.stop;
     tokio::spawn(async move {
         let tok = &st.tokenizer;
-        let (think_end, tool_start, tool_end) =
-            if raw { (u32::MAX, u32::MAX, u32::MAX) } else { (st.ids.think_end, st.ids.tool_call, st.ids.tool_call_end) };
+        let (think_start, think_end, tool_start, tool_end) = if raw {
+            (u32::MAX, u32::MAX, u32::MAX, u32::MAX)
+        } else {
+            (st.ids.think, st.ids.think_end, st.ids.tool_call, st.ids.tool_call_end)
+        };
         let mut mode = if thinking { Mode::Reasoning } else { Mode::Content };
         let mut dec = Decoder::default();
         let mut reasoning = Section::new();
@@ -240,7 +271,18 @@ pub async fn start(st: Arc<AppState>, req: ChatRequest) -> Result<(mpsc::Receive
                 }
             };
         }
-        while let Some(ev) = rx.recv().await {
+        loop {
+            let ev = tokio::select! {
+                ev = rx.recv() => ev,
+                // the client left (also while the request waits in the engine's queue): cancel it
+                // now, then drain its events to the done
+                _ = tx.closed(), if !gone => {
+                    gone = true;
+                    st.engine.stop(&id).await;
+                    continue;
+                }
+            };
+            let Some(ev) = ev else { break };
             match ev.get("ev").and_then(Value::as_str) {
                 Some("token") if stopped.is_none() => {
                     let t = ev.get("tok").and_then(Value::as_u64).unwrap_or(0) as u32;
@@ -274,6 +316,11 @@ pub async fn start(st: Arc<AppState>, req: ChatRequest) -> Result<(mpsc::Receive
                             send!(ChatEvent::ToolCall { id: new_id("call_"), name, arguments });
                         }
                         mode = Mode::Content;
+                        continue;
+                    }
+                    // control tokens (<|im_start|> and the like) and structure tokens the state
+                    // machine did not consume (a stray </think>) are not text
+                    if tok.is_control(t) || [think_start, think_end, tool_start, tool_end].contains(&t) {
                         continue;
                     }
                     let text = dec.push(tok.token_bytes(t));
@@ -404,6 +451,32 @@ mod tests {
     fn tool_call_multiline_value_and_missing_close() {
         let (_, a) = parse_tool_call("<function=f>\n<parameter=code>\nline 1\nline 2\n</function>", &Default::default()).unwrap();
         assert_eq!(a, json!({"code": "line 1\nline 2"}));
+    }
+
+    #[test]
+    fn tool_call_multibyte_after_function_close() {
+        // a value closed by </function> (11 bytes) followed by multibyte text: the cursor must move
+        // by the tag found, not by "</parameter>" (12 bytes), which would split a character
+        let (_, a) = parse_tool_call("<function=f>\n<parameter=x>\n1\n</function>é<parameter=y>\n2\n</parameter>", &Default::default())
+            .unwrap();
+        assert_eq!(a, json!({"x": "1", "y": "2"}));
+    }
+
+    #[test]
+    fn tool_call_parser_never_panics() {
+        // random UTF-8 around the tags (a small deterministic fuzz)
+        let parts = ["<function=f>", "<parameter=", "p>", "</parameter>", "</function>", "é", "日本", "🦀", "\n", "x", ">", "<"];
+        let mut state = 0x9E3779B97F4A7C15u64;
+        for _ in 0..20_000 {
+            let mut body = String::new();
+            for _ in 0..12 {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                body.push_str(parts[(state % parts.len() as u64) as usize]);
+            }
+            let _ = parse_tool_call(&body, &Default::default());
+        }
     }
 
     #[test]

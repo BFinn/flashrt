@@ -8,12 +8,20 @@
 //
 // One sequence at a time: generate requests queue in arrival order. A reader thread takes the
 // input lines, so a "stop" for the running request cancels it between decode steps.
+//
+// A request that fails gets an error event and leaves the engine serving (Session::generate
+// resets itself). After a failure the process cannot recover from, the error event says so and
+// the engine exits with status 3; the server sees its output end.
+//
+// FLASHRT_FAULT_INJECTION=1 honours a request's "debug_fail" (1: after the first prefill step,
+// 2: in the first decode step), for bench/engine_smoke.py --faults.
 #include "core/json.hpp"
 #include "engine/session.hpp"
 
 #include <cuda_runtime.h>
 
 #include <atomic>
+#include <cmath>
 #include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
@@ -52,20 +60,50 @@ struct Queue {
     std::atomic<bool> cancel{false};
 };
 
+// A whole number in lo..hi; absent: the fallback.
+int64_t whole(const Json& v, const char* what, int64_t lo, int64_t hi, int64_t fallback) {
+    if (v.is_null()) return fallback;
+    const double d = v.num();
+    if (!v.is_number() || d != std::floor(d) || d < double(lo) || d > double(hi))
+        throw std::runtime_error(std::string(what) + " must be a whole number in " + std::to_string(lo) + ".." + std::to_string(hi));
+    return int64_t(d);
+}
+// A finite number; absent: the fallback. Session::generate checks the ranges.
+float real(const Json& v, const char* what, double fallback) {
+    if (v.is_null()) return float(fallback);
+    if (!v.is_number() || !std::isfinite(v.num())) throw std::runtime_error(std::string(what) + " must be a number");
+    return float(v.num());
+}
+const std::vector<Json>& id_list(const Json& v, const char* what) {
+    if (!v.is_null() && !v.is_array()) throw std::runtime_error(std::string(what) + " must be an array of token ids");
+    return v.items();
+}
+
 GenerateRequest to_request(const Json& op) {
+    constexpr int64_t kIdMax = 0x7fffffff, kSeedMax = int64_t(1) << 53;   // seeds: exact in a double
     GenerateRequest r;
+    if (!op["prompt"].is_array()) throw std::runtime_error("prompt must be an array of token ids");
     for (const Json& t : op["prompt"].items()) {
         if (!t.is_number()) throw std::runtime_error("prompt must be an array of token ids");
-        r.prompt.push_back(int32_t(t.num()));
+        r.prompt.push_back(int32_t(whole(t, "a prompt token id", 0, kIdMax, 0)));
     }
-    r.max_new = int(op["max_new"].num(256));
+    r.max_new = int(whole(op["max_new"], "max_new", 1, kIdMax, 256));
     const Json& sp = op["sampling"];
-    r.sampling.temperature = float(sp["temperature"].num(0.0));
-    r.sampling.top_k = int(sp["top_k"].num(20));
-    r.sampling.top_p = float(sp["top_p"].num(1.0));
-    r.sampling.min_p = float(sp["min_p"].num(0.0));
-    r.seed = uint64_t(sp["seed"].num(0));
-    for (const Json& t : op["stop_ids"].items()) r.stop_ids.push_back(int32_t(t.num()));
+    if (!sp.is_null() && !sp.is_object()) throw std::runtime_error("sampling must be an object");
+    r.sampling.temperature = real(sp["temperature"], "temperature", 0.0);
+    r.sampling.top_k = int(whole(sp["top_k"], "top_k", 1, sample::kMaxTopK, 20));
+    r.sampling.top_p = real(sp["top_p"], "top_p", 1.0);
+    r.sampling.min_p = real(sp["min_p"], "min_p", 0.0);
+    r.seed = uint64_t(whole(sp["seed"], "seed", 0, kSeedMax, 0));
+    for (const Json& t : id_list(op["stop_ids"], "stop_ids")) {
+        if (!t.is_number()) throw std::runtime_error("stop_ids must be an array of token ids");
+        r.stop_ids.push_back(int32_t(whole(t, "a stop id", 0, kIdMax, 0)));
+    }
+    static const bool faults = [] {
+        const char* e = std::getenv("FLASHRT_FAULT_INJECTION");
+        return e && e[0] == '1';
+    }();
+    if (faults) r.fail_at = int(whole(op["debug_fail"], "debug_fail", 0, 2, 0));
     return r;
 }
 
@@ -181,6 +219,10 @@ int main(int argc, char** argv) {
                      .set("finish", res.finish)
                      .set("drafts", drafts));
         } catch (const std::exception& e) {
+            if (!session->healthy()) {
+                error(id, std::string(e.what()) + " (fatal: the engine exits)");
+                std::_Exit(3);   // destructors could wait on a stuck miss server or a broken device
+            }
             error(id, e.what());
             (void)cudaGetLastError();   // a failed request must not leave its error to the next one's checks (sw86)
         }

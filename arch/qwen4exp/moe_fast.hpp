@@ -48,6 +48,7 @@ struct MoeFastHost {
     size_t mbox_stride = 0;
     uint32_t seq = 0;                 // token sequence number, the flag value for this token
     struct MissServer* server = nullptr;
+    bool db_failed = false;           // a doorbell step failed (doorbell_failed)
     // PCIe misses (enable_pcie_misses): the GPU reads some misses straight from the mapped arena
     const uint8_t* arena_dev = nullptr;
     size_t arena_stride = 0;
@@ -83,6 +84,9 @@ void start_doorbell(const Spec& s, MoeFastHost& h, int cpu);
 // the layers, end after the stream has synchronised (throws if the miss server failed).
 void doorbell_begin_token(MoeFastHost& h, int T = 1);
 void doorbell_end_token(MoeFastHost& h, const Spec& s);
+// True once a doorbell step failed (a timeout on either side, or the miss server stopped): the
+// mailboxes and the miss server are out of step, and only a new process recovers.
+bool doorbell_failed(const MoeFastHost& h);
 
 // Adaptive expert cache: decayed LFU with hysteresis and a per-token swap budget. Every
 // access adds 1 to the (layer, expert) count; every decay_every tokens all counts are

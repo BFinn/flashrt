@@ -48,6 +48,7 @@ struct GenerateRequest {
     sample::Params sampling;
     uint64_t seed = 0;
     std::vector<int32_t> stop_ids;
+    int fail_at = 0;                  // tests only (engine_smoke.py --faults): throw after the first prefill chunk (1) or window (2)
 };
 
 struct GenerateResult {
@@ -68,13 +69,22 @@ public:
     int n_vocab() const;
     std::string arch() const;
     bool speculative() const;
+    // False after a failure the process cannot recover from: a doorbell timeout (the miss server
+    // is out of step with the GPU) or a sticky CUDA error. The engine should exit.
+    bool healthy() const;
 
     // on_token gets every generated token (the stop token is not reported); on_progress gets
     // (prompt tokens done, total) during the prefill. `cancel` is polled between steps.
+    // An invalid request throws before anything changes, so the next request still reuses the
+    // previous sequence. A failure during the request resets the session to an empty sequence
+    // (the next request starts cold) and rethrows; if even that is impossible, healthy() turns
+    // false.
     GenerateResult generate(const GenerateRequest& r, const std::function<void(int32_t)>& on_token,
                             const std::function<void(int, int)>& on_progress, const std::atomic<bool>& cancel);
 
 private:
+    GenerateResult run(const GenerateRequest& r, const std::function<void(int32_t)>& on_token,
+                       const std::function<void(int, int)>& on_progress, const std::atomic<bool>& cancel);
     struct Impl;
     std::unique_ptr<Impl> m_;
 };

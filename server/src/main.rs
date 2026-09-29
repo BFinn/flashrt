@@ -5,6 +5,10 @@
 //! tool-call and reasoning parsing, stop strings and the HTTP APIs. The engine process owns the
 //! model and speaks token ids (docs/design.md). One sequence runs at a time; requests queue.
 //!
+//! If the engine exits, requests get 503 and /health reports it; the server exits with status 1
+//! a few seconds later, for a supervisor to restart both. On SIGINT or SIGTERM it stops taking
+//! requests, asks the engine to quit, and exits.
+//!
 //!   flashrt-server --model MODEL.gguf --engine build/flashrt-engine --engine-arg MODEL.gguf [--engine-arg ...]
 //!   flashrt-server --model MODEL.gguf --check-tokenizer TEXT IDS    (compare with a llama.cpp tokenization)
 //!   flashrt-server --model MODEL.gguf --render REQUEST.json         (print a chat request's prompt)
@@ -71,6 +75,7 @@ pub struct Sampling {
 }
 
 pub struct SpecialIds {
+    pub think: u32,
     pub think_end: u32,
     pub tool_call: u32,
     pub tool_call_end: u32,
@@ -87,6 +92,15 @@ pub struct AppState {
     pub stop_ids: Vec<u32>,
     pub ids: SpecialIds,
     pub api_key: Option<String>,
+}
+
+/// The HTTP status of a request that could not start: 503 when the engine is down, else 400.
+pub fn start_error_status(e: &anyhow::Error) -> u16 {
+    if e.is::<engine::EngineDown>() {
+        503
+    } else {
+        400
+    }
 }
 
 pub fn api_error(status: u16, kind: &str, msg: &str) -> Response {
@@ -131,7 +145,7 @@ async fn main() -> Result<()> {
     let tmpl_src = kv.get("tokenizer.chat_template").and_then(gguf::Value::as_str).ok_or_else(|| anyhow!("the GGUF has no chat template"))?;
     let template = template::ChatTemplate::new(tmpl_src)?;
     let id_of = |s: &str| tok.token_id(s).ok_or_else(|| anyhow!("the vocabulary has no {s}"));
-    let ids = SpecialIds { think_end: id_of("</think>")?, tool_call: id_of("<tool_call>")?, tool_call_end: id_of("</tool_call>")? };
+    let ids = SpecialIds { think: id_of("<think>")?, think_end: id_of("</think>")?, tool_call: id_of("<tool_call>")?, tool_call_end: id_of("</tool_call>")? };
     let mut stop_ids = vec![tok.eos];
     for s in ["<|im_end|>", "<|endoftext|>"] {
         if let Some(id) = tok.token_id(s) {
@@ -188,12 +202,50 @@ async fn main() -> Result<()> {
         .route("/v1/messages", post(|State(s): State<Arc<AppState>>, Json(v): Json<Value>| anthropic::messages(s, v)))
         .route("/v1/messages/count_tokens", post(|State(s): State<Arc<AppState>>, Json(v): Json<Value>| anthropic::count_tokens(s, v)))
         .layer(middleware::from_fn_with_state(state.clone(), auth))
-        .route("/health", get(|| async { Json(json!({"status": "ok"})) }))
-        .with_state(state);
+        .route("/health", get(health))
+        .with_state(state.clone());
     let listener = tokio::net::TcpListener::bind((args.host.as_str(), args.port)).await?;
     tracing::info!("listening on {}", listener.local_addr()?);
-    axum::serve(listener, app).await?;
+    let s2 = state.clone();
+    tokio::spawn(async move {
+        s2.engine.wait_down().await;
+        tracing::error!("the engine is down; exiting in 3 s");
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;   // requests in flight get their errors
+        std::process::exit(1);
+    });
+    axum::serve(listener, app).with_graceful_shutdown(shutdown_signal()).await?;
+    tracing::info!("shutting down");
+    state.engine.shutdown(std::time::Duration::from_secs(30)).await;
     Ok(())
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+    #[cfg(unix)]
+    let term = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut s) => {
+                s.recv().await;
+            }
+            Err(_) => std::future::pending::<()>().await,
+        }
+    };
+    #[cfg(not(unix))]
+    let term = std::future::pending::<()>();
+    tokio::select! {
+        _ = ctrl_c => {}
+        _ = term => {}
+    }
+}
+
+async fn health(State(s): State<Arc<AppState>>) -> Response {
+    if s.engine.alive() {
+        Json(json!({"status": "ok"})).into_response()
+    } else {
+        (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"status": "engine down"}))).into_response()
+    }
 }
 
 async fn auth(State(s): State<Arc<AppState>>, req: Request, next: Next) -> Response {
