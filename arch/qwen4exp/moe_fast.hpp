@@ -95,8 +95,8 @@ bool doorbell_failed(const MoeFastHost& h);
 struct CachePolicyConfig {
     float decay = 0.7f;
     int decay_every = 4;
-    float admit = 2.0f;
-    float margin = 1.5f;
+    float admit = 1.0f;    // 2 until sw100: 1 with margin 1.2 follows a generation that routes unlike its
+    float margin = 1.2f;   // prompt sooner (window 9 +3.0%, wikitext +1.6%, teacher-forced; sw99, sw100)
     int budget = 8;
 };
 struct CacheManager;   // opaque; see moe_fast.cu
