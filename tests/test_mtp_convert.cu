@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // The MTP head's Q8_0 -> Q2_0 conversion (convert_q8_0_to_q2_0, run at load with --mtp-bits 2)
-// against the conversion as first written, which it replaced to cut the head's load from ~250 s
-// (sw98): the outputs must be bit-identical. Synthetic blocks cover the edge cases (zero scales,
+// against the conversion as first written, which was 10x slower (sw98): the outputs must be
+// bit-identical. Synthetic blocks cover the edge cases (zero scales,
 // scales that round to zero or overflow in fp16, exact halves, one large value). With
 // FLASHRT_TEST_MTP=<the MTP GGUF> the head's real expert tensors are compared too, and both
 // conversions are timed. A .cu file so that nvcc compiles it as it compiles mtp.cu: the float

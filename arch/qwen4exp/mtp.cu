@@ -2,6 +2,7 @@
 #include "arch/qwen4exp/mtp.hpp"
 
 #include "core/fp16.hpp"
+#include "core/platform.hpp"
 #include "core/gguf.hpp"
 #include "kernels/cuda/ggml_gemv.h"
 
@@ -126,8 +127,9 @@ void q8_0_to_q4_0(const uint8_t* src, uint8_t* dst, size_t nblocks) {
 // element j in byte j / 4 at bit 2 * (j % 4)). Round to nearest with the scale that minimises
 // the block's squared error over a small set of candidates.
 // The code of a value v = x / d is clamp(lround(v), -1, 2). For finite v that is three
-// comparisons, which vectorise; lround was a library call per value and made the head's load take
-// ~250 s (sw98). A zero or infinite d (fp16 underflow or overflow) keeps lround, as before. The
+// comparisons, which vectorise; lround was a library call per value (the head's experts took 32 s
+// on 8 threads, 3.0 s now on 24; sw98). A zero or infinite d (fp16 underflow or overflow) keeps
+// lround, as before. The
 // error sum keeps its expressions and order, so the chosen scales and codes are bit-identical
 // (test_mtp_convert).
 inline int q2_code(float v) { return int(v >= 0.5f) + int(v >= 1.5f) - int(v <= -0.5f); }
@@ -203,6 +205,9 @@ void convert_q8_0_to_q2_0(const uint8_t* src, uint8_t* dst, size_t nblocks64, in
     std::vector<std::thread> th;
     for (int k = 0; k < threads; ++k)
         th.emplace_back([=] {
+            // not on the creator's CPU: the engine pins its thread to one CPU before the head loads,
+            // and threads inherit that, so the conversion ran on one core (the ~250 s load, sw98)
+            unpin_current_thread();
             const size_t a = nblocks64 * size_t(k) / size_t(threads), e = nblocks64 * size_t(k + 1) / size_t(threads);
             q8_0_to_q2_0(src + a * 68, dst + a * 18, e - a);
         });
@@ -319,6 +324,7 @@ void MtpHead::load_experts_q4(const Gguf& g, bool q2) {
                 std::vector<std::thread> th;
                 for (int k = 0; k < nt; ++k)
                     th.emplace_back([&, k] {
+                        unpin_current_thread();
                         const size_t a = n * k / nt, e = n * (k + 1) / nt;
                         q8_0_to_q4_0(in.data() + a * in_blk, out.data() + a * out_blk, e - a);
                     });
