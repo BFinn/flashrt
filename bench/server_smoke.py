@@ -75,6 +75,11 @@ def main():
     c = r["choices"][0]
     check("chat, no thinking", "391" in (c["message"]["content"] or ""),
           f"{c['message']['content']!r}, finish {c['finish_reason']}, {r['usage']}, {time.time() - t:.1f} s")
+    tm = r.get("timings", {})
+    ec = tm.get("expert_cache", {})
+    check("timings", tm.get("prompt_n", -1) + tm.get("cache_n", -1) == r["usage"]["prompt_tokens"]
+          and tm.get("predicted_n") == r["usage"]["completion_tokens"] and tm.get("predicted_ms", 0) > 0
+          and ec.get("hits", 0) + ec.get("misses", 0) > 0, json.dumps(tm))
 
     # 2. streaming with reasoning
     t = time.time()

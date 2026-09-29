@@ -181,7 +181,7 @@ pub async fn messages(st: Arc<AppState>, req: Value) -> Response {
             ChatEvent::Content(s) => text.push_str(&s),
             ChatEvent::ToolCall { id, name, arguments } => tools.push(json!({"type": "tool_use", "id": id, "name": name, "input": arguments})),
             ChatEvent::Error(e) => return anth_error(500, "api_error", &e),
-            ChatEvent::Done { finish, stop_sequence, prompt_tokens, completion_tokens, reused } => {
+            ChatEvent::Done { finish, stop_sequence, prompt_tokens, completion_tokens, reused, timings } => {
                 let mut content = Vec::new();
                 if show_thinking && !thinking.is_empty() {
                     content.push(json!({"type": "thinking", "thinking": thinking, "signature": ""}));
@@ -195,6 +195,7 @@ pub async fn messages(st: Arc<AppState>, req: Value) -> Response {
                     "stop_reason": stop_reason(finish), "stop_sequence": stop_sequence,
                     "usage": {"input_tokens": prompt_tokens - reused.min(prompt_tokens), "cache_read_input_tokens": reused,
                               "output_tokens": completion_tokens},
+                    "timings": timings,
                 }))
                 .into_response();
             }

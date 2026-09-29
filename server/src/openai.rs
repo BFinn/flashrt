@@ -161,7 +161,7 @@ pub async fn chat_completions(st: Arc<AppState>, req: Value) -> Response {
                 "id": id, "type": "function", "function": {"name": name, "arguments": arguments.to_string()}
             })),
             ChatEvent::Error(e) => return api_error(500, "server_error", &e),
-            ChatEvent::Done { finish, prompt_tokens, completion_tokens, reused, .. } => {
+            ChatEvent::Done { finish, prompt_tokens, completion_tokens, reused, timings, .. } => {
                 let mut msg = json!({"role": "assistant", "content": if content.is_empty() && !calls.is_empty() { Value::Null } else { json!(content) }});
                 if !reasoning.is_empty() {
                     msg["reasoning_content"] = json!(reasoning);
@@ -175,6 +175,7 @@ pub async fn chat_completions(st: Arc<AppState>, req: Value) -> Response {
                     "usage": {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens,
                               "total_tokens": prompt_tokens + completion_tokens,
                               "prompt_tokens_details": {"cached_tokens": reused}},
+                    "timings": timings,
                 }))
                 .into_response();
             }
@@ -214,8 +215,10 @@ fn stream_chat(
                     ))
                 }
                 ChatEvent::Error(e) => send(json!({"error": {"message": e, "type": "server_error"}})),
-                ChatEvent::Done { finish, prompt_tokens, completion_tokens, reused, .. } => {
-                    let _ = tx.send(send(chunk(json!({}), json!(finish_str(finish))))).await;
+                ChatEvent::Done { finish, prompt_tokens, completion_tokens, reused, timings, .. } => {
+                    let mut last = chunk(json!({}), json!(finish_str(finish)));
+                    last["timings"] = timings;   // as llama.cpp's server, on the final chunk
+                    let _ = tx.send(send(last)).await;
                     if include_usage {
                         let _ = tx
                             .send(send(json!({"id": id, "object": "chat.completion.chunk", "created": created, "model": model,
@@ -279,12 +282,13 @@ pub async fn completions(st: Arc<AppState>, req: Value) -> Response {
         match ev {
             ChatEvent::Content(s) => text.push_str(&s),
             ChatEvent::Error(e) => return api_error(500, "server_error", &e),
-            ChatEvent::Done { finish, prompt_tokens, completion_tokens, .. } => {
+            ChatEvent::Done { finish, prompt_tokens, completion_tokens, timings, .. } => {
                 return Json(json!({
                     "id": id, "object": "text_completion", "created": created, "model": model,
                     "choices": [{"index": 0, "text": text, "finish_reason": finish_str(finish)}],
                     "usage": {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens,
                               "total_tokens": prompt_tokens + completion_tokens},
+                    "timings": timings,
                 }))
                 .into_response();
             }

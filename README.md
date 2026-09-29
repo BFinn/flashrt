@@ -144,6 +144,10 @@ server/target/release/flashrt-server --model $M --port 8090 --engine build/flash
   whitespace-separated (one per line works).
 - **Draft vocabulary:** `--draft-vocab RANKS` trims the draft head's vocabulary.
   `bench/mtp_vocab.py` builds the ranking.
+- **Timings:** responses carry a `timings` object, as llama.cpp's server does (on the last chunk
+  of an OpenAI stream): `prompt_n` prefilled and `cache_n` reused prompt tokens, `prompt_ms`,
+  `predicted_n`, `predicted_ms`, the rates, `draft_n` / `draft_n_accepted` with the MTP head, and
+  `expert_cache` (the decode's routed experts found in VRAM, `hits`, and not, `misses`).
 - **More:** [docs/engine.md](docs/engine.md) has the full runbook: benchmarks, the KLD
   harness, the engine protocol and profiling.
 

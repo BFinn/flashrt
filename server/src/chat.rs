@@ -10,7 +10,7 @@ use std::hash::{BuildHasher, Hasher};
 use std::sync::Arc;
 
 use anyhow::{bail, Result};
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 use tokio::sync::mpsc;
 
 use crate::engine::GenerateParams;
@@ -46,8 +46,33 @@ pub enum ChatEvent {
     Reasoning(String),
     Content(String),
     ToolCall { id: String, name: String, arguments: Value },
-    Done { finish: Finish, stop_sequence: Option<String>, prompt_tokens: u32, completion_tokens: u32, reused: u32 },
+    /// `timings`: the engine's figures for the request, see `timings_of`.
+    Done { finish: Finish, stop_sequence: Option<String>, prompt_tokens: u32, completion_tokens: u32, reused: u32, timings: Value },
     Error(String),
+}
+
+/// The engine's figures for one request, in the shape of llama.cpp's `timings` (prompt_n counts
+/// the prefilled tokens, cache_n the reused ones), plus flashrt's decode expert-cache counts.
+pub fn timings_of(done: &Value) -> Value {
+    let n = |k: &str| done.get(k).and_then(Value::as_u64).unwrap_or(0);
+    let f = |k: &str| done.get(k).and_then(Value::as_f64).unwrap_or(0.0);
+    let (prompt, reused, generated) = (n("prompt_tokens"), n("reused"), n("generated"));
+    let (prompt_ms, decode_ms) = (f("prompt_ms"), f("decode_ms"));
+    let per_s = |count: u64, ms: f64| if ms > 0.0 { count as f64 * 1000.0 / ms } else { 0.0 };
+    let prefilled = prompt.saturating_sub(reused);
+    let mut t = json!({
+        "cache_n": reused,
+        "prompt_n": prefilled, "prompt_ms": prompt_ms, "prompt_per_second": per_s(prefilled, prompt_ms),
+        "predicted_n": generated, "predicted_ms": decode_ms, "predicted_per_second": per_s(generated, decode_ms),
+    });
+    if let Some(d) = done.get("drafts") {
+        t["draft_n"] = d.get("proposed").cloned().unwrap_or(json!(0));
+        t["draft_n_accepted"] = d.get("accepted").cloned().unwrap_or(json!(0));
+    }
+    if let Some(c) = done.get("cache") {
+        t["expert_cache"] = c.clone();
+    }
+    t
 }
 
 pub fn random_u64() -> u64 {
@@ -400,6 +425,7 @@ pub async fn start(st: Arc<AppState>, req: ChatRequest) -> Result<(mpsc::Receive
                         prompt_tokens: n("prompt_tokens"),
                         completion_tokens: n("generated"),
                         reused: n("reused"),
+                        timings: timings_of(&ev),
                     });
                     break;
                 }
@@ -598,5 +624,20 @@ mod tests {
         let mut s = Section::raw();
         s.push("  x  ");
         assert_eq!(s.take(&[]), "  x  ");
+    }
+
+    #[test]
+    fn timings_follow_the_done_event() {
+        let t = timings_of(&json!({"prompt_tokens": 1000, "reused": 600, "generated": 50, "prompt_ms": 200.0,
+            "decode_ms": 500.0, "drafts": {"proposed": 40, "accepted": 25}, "cache": {"hits": 900, "misses": 100}}));
+        assert_eq!((t["prompt_n"].as_u64(), t["cache_n"].as_u64(), t["predicted_n"].as_u64()), (Some(400), Some(600), Some(50)));
+        assert!((t["prompt_per_second"].as_f64().unwrap() - 2000.0).abs() < 1e-9);
+        assert!((t["predicted_per_second"].as_f64().unwrap() - 100.0).abs() < 1e-9);
+        assert_eq!((t["draft_n"].as_u64(), t["draft_n_accepted"].as_u64()), (Some(40), Some(25)));
+        assert_eq!(t["expert_cache"], json!({"hits": 900, "misses": 100}));
+        // a cancelled request's bare event: no rates from zero times, no draft or cache fields
+        let bare = timings_of(&json!({"prompt_tokens": 5, "reused": 9, "generated": 0}));
+        assert_eq!((bare["prompt_n"].as_u64(), bare["prompt_per_second"].as_f64()), (Some(0), Some(0.0)));
+        assert!(bare.get("draft_n").is_none() && bare.get("expert_cache").is_none());
     }
 }
