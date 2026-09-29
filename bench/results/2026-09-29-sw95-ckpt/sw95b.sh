@@ -1,6 +1,7 @@
 #!/bin/bash
 # sw95b: the tail checkpoint made adaptive (taken only once prompts show a fixed tail, as long as
-# that tail): build, the GPU tests, then engine_smoke.py --reuse again in both arms.
+# that tail): build, the GPU tests, then engine_smoke.py --reuse again in both arms; with the MTP
+# head's prefill mirror (sw98) in the build, --faults again in the MTP arm.
 set -u
 M=$MODELS/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf
 D=$MODELS/mtp-Flash-Next-Q8_0-noembd.gguf
@@ -18,4 +19,6 @@ smoke() {   # label, mode args, engine args...
 }
 smoke reuse-plain-b "--reuse --n 9000 --gen 16" --ctx 32768 --prefill-chunk 2048 --ckpt-interval 2048
 smoke reuse-mtp-b "--reuse --n 9000 --gen 16" --ctx 32768 --prefill-chunk 2048 --ckpt-interval 2048 --mtp $D --spec 2 --draft-vocab $V
+# the MTP head's prefill mirror (sw98) must be freed when a request fails mid-prefill
+smoke faults-mtp-b "--faults --n 2048 --gen 32" --ctx 32768 --prefill-chunk 512 --mtp $D --spec 2 --draft-vocab $V
 echo done > $O/DONE-b
