@@ -1,0 +1,23 @@
+[0/1] Re-running CMake...
+-- Configuring done (0.0s)
+-- Generating done (0.0s)
+-- Build files have been written to: $FLASHRT/build
+[1/19] Building CXX object CMakeFiles/flashrt-engine.dir/engine/session.cpp.o
+[2/19] Building CXX object CMakeFiles/fr_bench.dir/tools/fr_bench.cpp.o
+[3/19] Building CUDA object CMakeFiles/test_mtp_convert.dir/tests/test_mtp_convert.cu.o
+[4/19] Building CUDA object CMakeFiles/flashrt_qwen4exp_gpu.dir/arch/qwen4exp/mtp.cu.o
+[5/19] Linking CXX static library libflashrt_qwen4exp_gpu.a
+[6/19] Linking CXX executable test_spec_sample
+[7/19] Linking CXX executable test_sample
+[8/19] Linking CXX executable fr_gpu_load
+[9/19] Linking CXX executable test_gdn
+[10/19] Linking CXX executable fr_parity
+[11/19] Linking CXX executable test_mtp_convert
+[12/19] Linking CXX executable test_moe_hits
+[13/19] Linking CXX executable test_linear_multi
+[14/19] Linking CXX executable test_route_topk
+[15/19] Linking CXX executable fr_bench
+[16/19] Linking CXX executable fr_kld
+[17/19] Linking CXX executable flashrt-engine
+[18/19] Linking CXX executable test_gdn_decode
+[19/19] Linking CXX executable test_hc_decode

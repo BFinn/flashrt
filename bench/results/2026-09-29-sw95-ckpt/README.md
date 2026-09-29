@@ -59,8 +59,36 @@ previous one within the previous prompt's last `--ckpt-tail` tokens (a fixed tai
 text). It then uses that tail's length, rounded up to 8: window 9's 19-token instruction gives
 a 24-token batch. The `--reuse` test's tail case first shows the engine that pattern.
 
-SW95B
+## A sharper check, and what it found (sw95b-sw95f)
+
+The first check allowed KL 0.001 at the first generated position. Making it tighter changed the
+test and settled what a restore guarantees:
+
+1. **sw95b-c:** with the adaptive tail, the tail case failed at KL 0.0021-0.0031. The cold
+   references had run before the engine saw the fixed-tail pattern, so they had no tail batch;
+   the test now sets the pattern up first. It still failed.
+2. **The first token itself was noisy.** It ran on the decode fast path, where GPU hits and CPU
+   misses differ in the last bits and depend on the cache's content. Under the test hook the
+   prompt's last token now runs on the reference path (every expert on the CPU), so the
+   logits depend on the state alone (sw95d). The unchanged-state follow-ups of `--faults` now
+   measure exactly 0.
+3. **Restores on the cold run's chunk grid are bit-exact** (sw95d, sw95e): KL 0.00000, relative
+   logits 0.0000.
+4. **Off the grid they differ by rounding, not state.** A restore at 8,960 moves the following
+   chunks relative to a cold run's. The chunked GDN's 512-token slabs and the dense MMQ's split of
+   the K sum then round differently. It measured KL 0.16 at one position (0.008 with
+   `FLASHRT_GDN_CHUNK=0`); two cold runs with chunks of 2,048 and 1,792 differ by 0.0077 there
+   (`segmentation.jsonl`).
+5. **Batches and chunks round differently too** (sw95e): 96 new tokens after a restore ran as
+   batches, while the cold run chunked them, and a near-tie flipped (the top two tokens 0.35 logits
+   apart; chunked and batched cold runs differ by KL 0.008 there, `e2_paths.txt`).
+6. **sw95f:** with restores on the grid and the same execution path, **every case is bit-exact in
+   both arms**, and the negative control is detected.
+
+So a restore reproduces the state bit for bit. What varies is the prefill's segmentation, which
+any change of chunk length varies too.
 
 ## Files
 
-`sw95.sh`; `reuse-{mtp,plain}.txt`, `faults-{mtp,plain}.txt` with their engine logs; `tail*.txt`.
+`sw95.sh`..`sw95f.sh`; `reuse-*.txt`, `faults-*.txt` with their engine logs; `tail*.txt`; `first_top.py` and
+`segmentation.jsonl` (the control); `e2_paths.py` and `e2_paths.txt` (chunks against batches); `mtp-convert.txt`.

@@ -1,0 +1,45 @@
+Test project $FLASHRT/build
+      Start  1: gemv
+ 1/18 Test  #1: gemv .............................   Passed    1.87 sec
+      Start  2: moe_hits
+ 2/18 Test  #2: moe_hits .........................   Passed    0.46 sec
+      Start  3: moe_q
+ 3/18 Test  #3: moe_q ............................   Passed    0.34 sec
+      Start  4: gemm
+ 4/18 Test  #4: gemm .............................   Passed    1.36 sec
+      Start  5: gdn
+ 5/18 Test  #5: gdn ..............................   Passed    0.80 sec
+      Start  6: gdn_decode
+ 6/18 Test  #6: gdn_decode .......................   Passed    0.41 sec
+      Start  7: linear_multi
+ 7/18 Test  #7: linear_multi .....................   Passed    0.51 sec
+      Start  8: hc_decode
+ 8/18 Test  #8: hc_decode ........................   Passed    0.57 sec
+      Start  9: route_topk
+ 9/18 Test  #9: route_topk .......................   Passed    0.63 sec
+      Start 10: moe_q2
+10/18 Test #10: moe_q2 ...........................   Passed    3.06 sec
+      Start 11: sample
+11/18 Test #11: sample ...........................   Passed    1.46 sec
+      Start 12: spec_sample
+12/18 Test #12: spec_sample ......................   Passed   44.79 sec
+      Start 13: cpu_pool
+13/18 Test #13: cpu_pool .........................   Passed    3.00 sec
+      Start 14: q2_0
+14/18 Test #14: q2_0 .............................   Passed    0.05 sec
+      Start 15: moe_cpu
+15/18 Test #15: moe_cpu ..........................   Passed    0.06 sec
+      Start 16: json
+16/18 Test #16: json .............................   Passed    0.00 sec
+      Start 17: gguf
+17/18 Test #17: gguf .............................   Passed    0.01 sec
+      Start 18: row_reader
+18/18 Test #18: row_reader .......................   Passed    0.33 sec
+
+100% tests passed, 0 tests failed out of 18
+
+Label Time Summary:
+cpu    =   3.46 sec*proc (6 tests)
+gpu    =  56.28 sec*proc (12 tests)
+
+Total Test time (real) =  59.75 sec

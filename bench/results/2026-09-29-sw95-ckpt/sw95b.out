@@ -1,0 +1,4 @@
+ctest rc=0 100% tests passed, 0 tests failed out of 18
+reuse-plain-b rc=0
+reuse-mtp-b rc=1
+faults-mtp-b rc=0
