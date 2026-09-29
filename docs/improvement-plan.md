@@ -97,6 +97,14 @@ unchanged (the fixes do not change outputs).
 
 ## Phase 2: a fair re-measurement (2-3 days, then a benchmark window)
 
+**Status: done 2026-09-29.** Host checkpoints (sw95; restores bit-exact on the cold run's chunk
+grid). Window 9 re-measured at n = 5 (sw96): reuse matches the reference engines', and decode
+did not move. So P-2 was decided from the result: sw99 simulated the cache (the loss is the
+warm-up, the optimum ~90% hits), and sw100-sw101 made faster admission the default (+3.6-6.6% at
+1K-134K with the head). The agentic workload is `bench/agent_trace.py` (sw97). The README table
+is replaced. P-1's first step (the head's KV mirror, sw98) and the head's 257 s load (a pinned
+thread; now 5 s) came with it.
+
 1. **R-1, the engine part:** checkpoints during prefill. Save the recurrent state (GDN state and
    conv, PLE history, indexer ring; the KV needs nothing) every 4,096 tokens (or every chunk) into
    a small ring in host RAM, for the target and the MTP head. Restore the latest checkpoint at or

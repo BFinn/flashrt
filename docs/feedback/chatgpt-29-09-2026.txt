@@ -1,0 +1,878 @@
+I went through the repository structure, the actual C++/CUDA implementation, the tests, CI, benchmark harness, and the design/interface documents. The interesting conclusion is that **FlashRT is substantially better as a solution to its stated target problem than it is as a general-purpose LLM runtime**.
+
+The architecture is quite clever, and the performance work appears real. But there is also a fairly important gap between the **generalization story in the design documents** and the **genericity actually present in the current implementation**.
+
+## Overall assessment
+
+| Area                               | Assessment                                             |
+| ---------------------------------- | ------------------------------------------------------ |
+| Solving the target problem         | **Very strong**                                        |
+| Performance engineering            | **Very strong**                                        |
+| Numerical/correctness discipline   | **Strong**                                             |
+| C++/CUDA code quality              | **Good, with research-code rough edges**               |
+| Architecture/modularity            | **Good conceptually; only partly realized**            |
+| Generalizing to similar MoE models | **Reasonably practical**                               |
+| Generalizing to arbitrary LLMs     | **Not currently easy**                                 |
+| Documentation                      | **Unusually good for research code**                   |
+| Benchmark methodology              | **Strong for runtime engineering, limited in breadth** |
+| Production maturity                | **Low-to-moderate**                                    |
+| Community validation               | **Very limited**                                       |
+
+The repository itself explicitly says that it is "written for one model on one class of box", targeting **Qwen3.8-Flash-Next / qwen4exp**, its ~62 GB GSQ-RCO Q2_0 GGUF, and an **RTX 5080 16 GB + Ryzen 9 7900X + 64 GB RAM**. ([GitHub][1])
+
+That honesty is important: this isn't pretending to be another vLLM.
+
+---
+
+# 1. Does it actually solve the problem?
+
+### Yes — and this is the strongest part of the project.
+
+The fundamental problem is difficult:
+
+> Run a ~62 GB MoE model on a 16 GB consumer GPU, while getting much better latency than simply leaving almost all experts in CPU RAM.
+
+FlashRT attacks the right bottleneck.
+
+For the target model, the design says roughly:
+
+* dense/mixer/router/shared components remain in VRAM;
+* routed experts live in host RAM;
+* frequently used experts are cached in VRAM;
+* GPU handles cache hits;
+* CPU handles misses;
+* GPU and CPU work overlap;
+* CUDA graphs eliminate launch overhead;
+* speculative decoding amortizes the expensive dense portions;
+* large prefill chunks stream experts through the GPU.
+
+That's a **systems-level solution**, rather than simply writing a faster GEMM.
+
+The target model's architecture makes this particularly appropriate: 48 layers, GDN plus sparse QSA attention, 512 experts with top-10 routing, hyper-connections and PLE.
+
+The critical insight is that for an offloaded MoE, **expert-memory traffic and expert-cache hit rate dominate**. The measurements in the design document support that: CPU misses are around 41–46 µs in decode and are close to host-DRAM bandwidth limits.
+
+That is exactly the kind of bottleneck a conventional generic inference framework does not necessarily optimize specifically for.
+
+---
+
+# 2. The performance results are genuinely impressive
+
+The latest benchmark is particularly useful because it uses the same token IDs and growing conversation protocol against both llama.cpp and Strata.
+
+At 1K / 32K / 134K / 250K context:
+
+| Runtime                 |        1K |  32K |     134K |     250K |
+| ----------------------- | --------: | ---: | -------: | -------: |
+| llama.cpp, expert cache |      37.4 | 37.2 |     32.8 |     30.7 |
+| Strata, MTP, greedy     |      87.0 | 96.0 |     85.0 |     80.4 |
+| FlashRT, MTP, greedy    | **106.6** | 83.7 |     81.0 |     74.8 |
+| FlashRT, no MTP, greedy |      94.7 | 81.7 |     77.4 |     73.0 |
+| Strata, sampled         |      80.5 | 79.1 |     73.9 |     69.9 |
+| FlashRT, sampled        |  **82.2** | 77.7 | **81.0** | **76.4** |
+
+These are means over multiple runs; the benchmark folder reports standard deviations too.
+
+So the right interpretation isn't "FlashRT destroys everything".
+
+It's:
+
+**Against llama.cpp, it is dramatically faster. Against Strata, it is competitive but workload-dependent.**
+
+The repository's own result is about **2.2–2.6× llama.cpp** at these depths. Against Strata, FlashRT wins clearly in some regimes and trails it in others.
+
+That's actually a much more credible result than a benchmark designed only to make FlashRT look good.
+
+### Prefill is another major success
+
+The runtime is reporting around:
+
+* 5,570–5,950 tok/s at 32K–250K without the MTP prompt pass;
+* around 5,170–5,309 tok/s at 245K with newer chunked paths;
+* versus roughly 109–123 tok/s for the original CPU-expert reference path.
+
+The repository also documents why: its prefill implementation streams the experts layer by layer and overlaps transfers with compute. One earlier version of the path improved prefill from roughly 136 tok/s to 2,135 tok/s, before later kernel work pushed it substantially higher.
+
+That's not cosmetic optimization. That's the runtime fundamentally changing the memory/compute schedule.
+
+---
+
+# 3. The correctness methodology is one of the best aspects
+
+This is probably the part I like most technically.
+
+They don't just say "outputs look right."
+
+There are several levels of validation:
+
+### Kernel-level validation
+
+Tests compare kernels against CPU, double-precision or ggml references.
+
+For example, `test_moe_hits` compares the CUDA expert-hit implementation against a double-precision reference, including grouped/window execution.
+
+`test_gdn` compares chunked GDN against the token-by-token recurrence, including long sequences and a nonzero initial state.
+
+`test_gemm` tests real model tensors, different quantization types, MoE GEMM versus GEMV, and Q3R conversions.
+
+### Block-level parity
+
+`fr_parity` feeds recorded inputs from llama.cpp into FlashRT and compares intermediate tensors layer by layer, using relative L2 error.
+
+That's exactly what you want when implementing a hand-written CUDA forward pass.
+
+### End-to-end numerical validation
+
+The KLD harness compares FlashRT's distributions against an FP16-KV llama.cpp reference.
+
+The reported FlashRT KLD is around **0.0082–0.0092**, while llama.cpp compared against itself is around **0.0078–0.0086**. The repo correctly notes that this is essentially near the reference/noise floor. ([GitHub][2])
+
+### Speculative decoding correctness
+
+They also test speculative sampling distribution, rather than just checking greedy token equality. The latest docs report exact-distribution tests passing. ([GitHub][2])
+
+That is a strong sign that the author understands where "almost identical" isn't sufficient.
+
+---
+
+# 4. Code quality: good engineering, but clearly research code
+
+I would characterize the C++/CUDA as **serious performance-engineering code rather than polished library code**.
+
+There is a lot to like.
+
+## Good
+
+The repository has a sensible physical structure:
+
+```text
+core/
+quant/q2_0/
+arch/qwen4exp/
+kernels/cuda/
+engine/
+server/
+tests/
+tools/
+bench/
+docs/
+```
+
+The CMake structure reflects those boundaries rather than one giant target.
+
+The source is also exceptionally well-commented for CUDA research code. `moe_fast.cu`, for example, explains layouts, launch shapes, quantization schemes, synchronization and assumptions directly beside the implementation.
+
+There is a consistent error-checking helper:
+
+```cpp
+void ck(cudaError_t e, const char* what) {
+    if (e != cudaSuccess)
+        throw std::runtime_error(...);
+}
+```
+
+and extensive explicit failure checking throughout the CUDA code.
+
+The Rust server is also reasonably clean: Axum, Tokio, typed CLI handling, `anyhow`, tracing, and a separate process boundary between server and engine.
+
+And the CI runs Rust tests plus Clippy with warnings treated as errors.
+
+## Where I'd be cautious
+
+There is substantial manual resource management:
+
+```cpp
+cudaMalloc(...)
+cudaFree(...)
+cudaHostAlloc(...)
+cudaFreeHost(...)
+cudaStreamCreate(...)
+cudaStreamDestroy(...)
+cudaEventCreate(...)
+cudaEventDestroy(...)
+```
+
+and many structs are essentially collections of raw CUDA pointers plus explicit `alloc_*` / `free_*` functions. `ExpertCache` is a good example.
+
+That is perfectly normal in low-level inference engines, but it increases the maintenance burden and makes exception/error-path bugs more likely.
+
+The code also makes heavy use of fixed assumptions:
+
+* max routing K = 16;
+* max graph window = 8;
+* Q2_0 type ID is hardcoded as `42`;
+* PLE expects IQ4_NL type `20`;
+* particular tensor naming schemes;
+* particular tensor dimensional relationships.
+
+Some of those are absolutely appropriate optimizations for this project. The problem is when they escape the architecture-specific module.
+
+### CI is not really validating the CUDA runtime
+
+The hosted CI deliberately does **CPU tests and Rust tests only**. The CUDA kernels and tests are run manually on the target machine.
+
+For this kind of project that's understandable, but it means the most failure-prone part of the code isn't continuously tested across commits.
+
+I'd add at least:
+
+* containerized CUDA build;
+* GPU smoke-test workflow on one self-hosted runner;
+* sanitizers where possible on CPU code;
+* CUDA memcheck/compute-sanitizer runs;
+* clang-tidy/cppcheck;
+* formatting checks.
+
+---
+
+# 5. The biggest architectural issue: the generalization is partly aspirational
+
+This is where the repository gets particularly interesting.
+
+The **design is much more general than the implementation currently is**.
+
+The interface document proposes this:
+
+```cpp
+struct ArchModule {
+    const char* name;
+    ModelSpec (*parse)(const Gguf&);
+    void (*bind)(const Gguf&, WeightPlan&);
+    std::unique_ptr<Forward> (*make)(Runtime&, const ModelSpec&);
+};
+```
+
+and explicitly defines generic concepts for:
+
+* runtime services;
+* MoE blocks;
+* quantization packs;
+* state/checkpoint handling;
+* speculative decoding.
+
+That's a good design.
+
+The document says:
+
+> a new architecture needs an `ArchModule`, a forward program, and any missing mixer kernels; the rest is reused.
+
+It even estimates new families at "weeks per family".
+
+### But the current code has not completely reached that abstraction.
+
+`engine/session.cpp` directly includes:
+
+```cpp
+#include "arch/qwen4exp/experts.hpp"
+#include "arch/qwen4exp/forward_ref.hpp"
+#include "arch/qwen4exp/gpu_weights.hpp"
+#include "arch/qwen4exp/moe_fast.hpp"
+#include "arch/qwen4exp/mtp.hpp"
+#include "arch/qwen4exp/spec.hpp"
+```
+
+and directly constructs:
+
+```cpp
+std::unique_ptr<ForwardRef> fwd;
+std::unique_ptr<MtpHead> mtp;
+ExpertCache cache;
+MoeFastHost host;
+```
+
+inside the session implementation.
+
+And CMake currently has a dedicated `flashrt_qwen4exp_gpu` target containing:
+
+```text
+gpu_weights.cu
+blocks.cu
+forward_ref.cu
+moe_fast.cu
+moe_stream.cu
+mtp.cu
+```
+
+with the engine linked directly against it.
+
+So I would **not** describe the current implementation as truly model-agnostic.
+
+I would describe it as:
+
+> **A very well-factored Qwen-specific runtime that has been consciously designed so a future generic runtime can be extracted from it.**
+
+That's an important distinction.
+
+---
+
+# 6. How hard would another model actually be?
+
+There are three very different cases.
+
+### A. Another Qwen-like large MoE with broadly similar mechanics
+
+This is where FlashRT could become very useful.
+
+For example, another model with:
+
+* large MoE;
+* host-resident experts;
+* similar top-k routing;
+* standard transformer attention;
+* similar quantized experts;
+* standard KV state;
+
+could reuse a huge amount of:
+
+```text
+expert arena
+VRAM expert cache
+cache policy
+CPU worker pool
+CPU/GPU overlap
+PCIe split
+CUDA graph machinery
+sampling
+speculative decoding
+engine protocol
+server
+benchmark infrastructure
+```
+
+That's exactly the reusable part the interface document identifies.
+
+### B. Another architecture with a different attention/SSM structure
+
+Still feasible, but considerably more work.
+
+The model-specific forward program becomes the dominant task.
+
+The existing architecture depends heavily on:
+
+* QSA;
+* GDN;
+* hyper-connections;
+* PLE;
+* qwen4exp-specific MTP.
+
+Those aren't generic transformer operations.
+
+The repository itself acknowledges that a new mixer such as GQA/MLA/QSA/GDN may require a different kernel implementation.
+
+### C. A completely different model family
+
+For example, a conventional dense Transformer.
+
+Here the value proposition changes dramatically.
+
+The entire killer feature of FlashRT is **offloaded sparse experts**. For a dense 70B Transformer there are no expert-cache hits to exploit.
+
+You could reuse pieces such as:
+
+* GGUF handling;
+* CUDA graph plumbing;
+* KV handling;
+* sampling;
+* server;
+* maybe generic memory infrastructure.
+
+But the performance advantage would largely disappear unless a different memory bottleneck is being attacked.
+
+So I would **not fork FlashRT and use it as a general llama.cpp replacement**.
+
+I would use it as the basis for a family of **specialized low-VRAM MoE runtimes**.
+
+---
+
+# 7. Documentation is unusually good
+
+For research code, the documentation is one of the strongest parts.
+
+There are separate documents for:
+
+* design;
+* engine internals;
+* interfaces/generalization;
+* sweet spots/tuning;
+* background measurements;
+* benchmark methodology;
+* clean-room policy;
+* runbook. ([GitHub][1])
+
+And probably more importantly, the author documents **why optimizations were accepted or rejected**.
+
+For example, the engine document gives measurements for:
+
+* CUDA graphs;
+* doorbells;
+* expert-cache layouts;
+* dp4a;
+* adaptive LFU;
+* Q3R;
+* Q8 KV;
+* host KV;
+* prefill streaming;
+* tensor-core attention;
+* sampled MTP;
+* CPU-miss behavior.
+
+That is excellent engineering documentation.
+
+It gives you a historical record of the performance reasoning rather than merely describing the final architecture.
+
+### The downside
+
+It's written primarily for someone who wants to **develop the runtime**, not someone who wants to install it like llama.cpp.
+
+The build process expects Linux, CUDA 12.8+, GCC 12+, CMake/Ninja and Rust, with manual model/benchmark directory setup. ([GitHub][1])
+
+So:
+
+**excellent technical documentation, mediocre user/deployment ergonomics.**
+
+---
+
+# 8. Benchmarking is strong — but it's measuring a narrower thing than many people assume
+
+This distinction is important.
+
+### What they benchmark very well
+
+They benchmark:
+
+* decode latency;
+* long-context degradation;
+* prefill;
+* KV/cache configurations;
+* speculation;
+* kernel performance;
+* CPU/GPU overlap;
+* correctness;
+* deterministic behavior;
+* comparison with existing inference engines.
+
+The benchmarking methodology is actually fairly rigorous:
+
+* same token IDs;
+* same prompt;
+* same growing conversation;
+* fresh engine per run;
+* multiple repetitions;
+* mean ± standard deviation;
+* separate arms for greedy/sampled;
+* saved-state depth tests.
+
+That's good work.
+
+### What is missing
+
+It's still basically:
+
+> **one model + one quantization + one machine + runtime-oriented workloads.**
+
+The repository itself explicitly calls it research code validated on one machine and one quantization. ([GitHub][1])
+
+There is no serious matrix yet of:
+
+* RTX 5080 vs 5090 vs RTX 6000 Pro;
+* DDR5 speeds;
+* PCIe Gen4 vs Gen5;
+* different CPUs;
+* different RAM sizes;
+* different quantizations;
+* multiple concurrent users;
+* p50/p95 TTFT;
+* sustained multi-request throughput;
+* energy/token;
+* coding benchmarks;
+* SWE-bench-style workloads;
+* tool-call workloads;
+* long agentic conversations with heavily divergent expert routing.
+
+That's important because the runtime's biggest weakness is **routing/cache behavior changing with workload**.
+
+The latest benchmark demonstrates this very clearly: the synthetic prompt has poor predictive power for the generated expert routing, while natural-text continuation achieves much better cache hit rates. The author reports approximately 66% versus 93% hit rate in one comparison.
+
+For an agentic coding workload, that distinction could matter substantially.
+
+---
+
+# 9. The real performance bottleneck is now very well understood
+
+This is another thing the repo does well.
+
+At this point the author is no longer blindly optimizing kernels.
+
+The measurements identify:
+
+> **expert-cache misses and host-memory bandwidth as the dominant decode problem.**
+
+At 245K context, the document reports:
+
+* ~14.1 ms GPU kernel time/token;
+* ~3.6–4.1 ms waiting on CPU misses;
+* selection ~0.85 ms;
+* scoring ~0.45 ms;
+* attention ~0.43 ms;
+* hot-set maintenance ~0.56 ms.
+
+That's a very useful result.
+
+It means further optimizing the already-fast expert-hit kernel may accomplish almost nothing.
+
+The important future optimizations are therefore:
+
+**higher cache hit rate → fewer CPU misses → better scheduling → better prediction of future expert usage.**
+
+That's much more interesting than shaving another 5% off GEMM.
+
+---
+
+# 10. What I would change
+
+## 1. Make the generic runtime interface real
+
+This would be my highest-priority architectural change.
+
+Move toward:
+
+```text
+Runtime
+ ├── ModelBackend
+ │    ├── ModelSpec
+ │    ├── WeightPlan
+ │    ├── Forward
+ │    └── StateSpec
+ │
+ ├── ExpertStore
+ ├── ExpertCache
+ ├── CpuPool
+ ├── Scheduler
+ ├── KV manager
+ ├── Speculative decoder
+ └── Sampler
+```
+
+Then:
+
+```text
+Qwen4ExpBackend
+DeepSeekBackend
+FutureModelBackend
+```
+
+instead of `Session` knowing about `qwen4exp`.
+
+The existing interface document already points in this direction.
+
+---
+
+## 2. Replace model-specific magic numbers with descriptors
+
+Examples:
+
+```cpp
+constexpr int kMaxK = 16;
+constexpr int kMaxWindow = 8;
+```
+
+and hard-coded GGML numeric type IDs should become capability/model descriptors.
+
+For example:
+
+```cpp
+struct MoECapabilities {
+    int experts;
+    int top_k;
+    int d_model;
+    int d_ff;
+    QuantFormat expert_format;
+    bool shared_expert;
+};
+```
+
+Then let the architecture reject unsupported shapes explicitly.
+
+This would preserve specialization without hard-wiring assumptions into lower layers.
+
+---
+
+## 3. Separate "optimized architecture" from "reference architecture"
+
+Currently `ForwardRef` is the rather interesting name for what has become the main runtime forward implementation.
+
+I'd explicitly create:
+
+```text
+ForwardReference
+ForwardOptimized
+```
+
+The reference implementation should remain simple and readable.
+
+The optimized version can be aggressively fused.
+
+That makes validation against the reference dramatically easier.
+
+---
+
+## 4. Make cache prediction a first-class research area
+
+This could eventually be more important than kernel optimization.
+
+The current system already has:
+
+* decayed-LFU;
+* calibration routing counts;
+* adaptive swaps;
+* cache priors.
+
+But the workload divergence problem is obvious from the benchmark results.
+
+I'd experiment with:
+
+```text
+prompt routing
+      ↓
+layer/expert sequence model
+      ↓
+predicted next-expert distribution
+      ↓
+cache prefetch
+```
+
+Potential predictors could use:
+
+* last N expert selections;
+* token embeddings;
+* current hidden-state projections;
+* attention regime;
+* conversation phase;
+* MTP predictions.
+
+Even a cheap predictor could be worthwhile because a CPU miss is substantially more expensive than maintaining another resident expert.
+
+---
+
+## 5. Optimize the MTP prompt path
+
+The repository already calls this out as an open issue.
+
+With the MTP head enabled, long-context prefill falls sharply:
+
+* ~4,000 tok/s at 32K;
+* ~2,430 at 134K;
+* ~2,150 at 250K,
+
+versus roughly 5,000+ tok/s for the target path without the head.
+
+That's a conspicuous remaining opportunity.
+
+For real interactive use, I would prioritize this over micro-optimizing already-good decode kernels.
+
+---
+
+## 6. Add real agentic/coding benchmarks
+
+For this particular runtime, I'd add a benchmark suite containing:
+
+```text
+short coding prompt
+long codebase context
+tool call
+tool result
+follow-up reasoning
+multi-turn correction
+long agent trajectory
+```
+
+and report:
+
+```text
+TTFT
+inter-token latency
+tokens/sec
+p50/p95
+CPU utilization
+RAM
+VRAM
+expert-cache hit rate
+CPU misses/token
+```
+
+That would tell you much more about whether FlashRT is actually good for a coding agent than Wikitext alone.
+
+---
+
+## 7. Test concurrency explicitly
+
+The engine currently processes **one sequence at a time**, with requests queued by the server.
+
+That's a sensible design choice for minimizing single-user latency, but it is a major constraint for serving multiple agents.
+
+A future architecture could offer two modes:
+
+```text
+--latency-mode
+    single active sequence
+    maximal cache locality
+
+--serve-mode
+    multiple sequences
+    controlled interleaving / batching
+```
+
+Trying to bolt conventional continuous batching onto the existing design may undermine some of the carefully optimized scheduling, so I would make this an explicit second operating mode rather than complicating the hot path.
+
+---
+
+# 11. One particularly important improvement for generalization
+
+I would **not** build a general graph compiler.
+
+Interestingly, I agree with the repository's decision here.
+
+The author explicitly rejects a general graph IR and dynamic scheduler because that would impose abstraction overhead in the hottest code.
+
+Instead, I'd use a compromise:
+
+```text
+Generic runtime
+       │
+       ▼
+Architecture descriptor
+       │
+       ├── metadata
+       ├── weight map
+       ├── state layout
+       ├── kernel capabilities
+       └── forward implementation
+```
+
+while keeping:
+
+```cpp
+forward()
+{
+    fused_kernel_A();
+    moe_block();
+    fused_kernel_B();
+    attention_kernel();
+}
+```
+
+hand-written.
+
+That gives you **runtime modularity without giving up compile-time specialization**.
+
+I think that's the correct evolution of this codebase.
+
+---
+
+# 12. For your specific 5080-class use case
+
+This is where I would be quite positive.
+
+The target machine in the repository is:
+
+```text
+RTX 5080 16 GB
+Ryzen 9 7900X
+64 GB DDR5
+PCIe Gen5
+```
+
+which is essentially the same hardware class as the machine you're evaluating. ([GitHub][1])
+
+The repository's model is about 62 GB and its entire architecture is designed around keeping most experts outside the GPU. ([GitHub][1])
+
+So this isn't a speculative "maybe this could help".
+
+It has demonstrated that this particular problem is tractable:
+
+```text
+~62 GB MoE
+        ↓
+16 GB GPU
+        +
+host RAM
+        +
+expert cache
+        +
+CPU SIMD
+        +
+CUDA graphs
+        +
+MTP
+        ↓
+~75–100 tok/s class decode
+depending on workload/context
+```
+
+with long-context operation extending to ~250K tokens in its reported experiments.
+
+For this very specific problem, **I would take FlashRT seriously**.
+
+The caveat is that I would not interpret those numbers as saying "FlashRT is now a better general inference engine than llama.cpp/vLLM/SGLang". It isn't trying to be that.
+
+---
+
+# My bottom-line technical judgment
+
+The strongest way I can describe the repo is:
+
+> **This is a genuinely good specialized inference-engine research project, not yet a general inference framework.**
+
+Its best qualities are that the author:
+
+1. identified the real bottleneck;
+2. built the runtime around that bottleneck;
+3. measured each major optimization;
+4. validated numerical behavior at multiple levels;
+5. documented the reasoning unusually well.
+
+The most important weakness is:
+
+> **the proposed abstraction boundary for multiple models is ahead of the actual code.**
+
+The current implementation is still substantially Qwen4Exp-specific in `Session`, `Spec`, `ForwardRef`, kernels, quantization, state handling, and build targets.
+
+That isn't necessarily a flaw **for the project's current objective**. In fact, it is probably one reason the runtime is fast.
+
+But I'd change the project before trying to support a second genuinely different LLM:
+
+```text
+Current
+
+Generic-ish core
+        +
+Qwen-specific Session
+        +
+Qwen-specific Forward
+        +
+Qwen-specific kernels
+```
+
+to:
+
+```text
+Generic Runtime
+      │
+      ├── Qwen4Exp Backend
+      │      ├── forward
+      │      ├── state
+      │      ├── kernels
+      │      └── quant
+      │
+      └── Model N Backend
+             ├── forward
+             ├── state
+             ├── kernels
+             └── quant
+```
+
+That would preserve almost all of the performance philosophy while turning the project from a **very good one-model runtime** into a potentially important **specialized low-VRAM MoE runtime family**.
+
+One final point: the repository currently has 279 commits but essentially no GitHub community activity yet (0 stars, forks, issues or PRs shown on the current repo page), so the benchmark/correctness evidence is largely **author-generated rather than independently reproduced**. ([GitHub][1]) That's normal for a new research project, but it is the main thing I'd want to see before treating the results as broadly established.
+
+[1]: https://github.com/BFinn/flashrt "GitHub - BFinn/flashrt: Architecture-specialised inference runtime for large MoE models on one consumer GPU with experts in host RAM · GitHub"
+[2]: https://github.com/BFinn/flashrt/blob/main/docs/design.md "flashrt/docs/design.md at main · BFinn/flashrt · GitHub"

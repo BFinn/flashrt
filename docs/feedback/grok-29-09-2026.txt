@@ -1,0 +1,209 @@
+**Verdict:** this is a strong, honest, one-box research runtime for one hard problem. It is not a general LLM engine, and it does not pretend to be. For *Qwen3.8-Flash-Next Q2_0 on an RTX 5080 16 GB + 64 GB DDR5*, it solves the actual bottleneck well. For other models, it is a template, not a product.
+
+The repo is two days old in public form (created 2026-09-27, last push 2026-09-29), 0 stars, Apache-2.0, C++/CUDA core plus a Rust HTTP front end. That “new and unused” signal is real. The internal engineering density is not.
+
+---
+
+## What problem it is actually solving
+
+Qwen3.8-Flash-Next (`qwen4exp`) is a 125B-class hybrid MoE preview of Qwen4: 48 layers, 512 experts with top-10 + 1 shared, Gated DeltaNet + Qwen Sparse Attention, hyper-connections, a large n-gram/PLE table, native 262K context, plus an MTP draft head. Sparse activation is ~6B params per token. Storage is not sparse: the ISTA-DASLab GSQ-RCO Q2_0 GGUF is ~62–66 GB. That does not fit in 16 GB.
+
+So the real problem is **batch-1 offloaded MoE decode as a memory-traffic problem**:
+
+- Dense weights (~3.5 GB) live in VRAM and are reread every verify window.
+- Routed experts are ~0.66 GB per token. Hits come from a VRAM cache; misses come from host DRAM (CPU AVX-512 or PCIe).
+- Prefill touches most experts, so it is host-to-device bound.
+- Hit rate and speculation are the two levers that matter.
+
+That diagnosis is correct, and the code is shaped around it rather than around a generic graph compiler.
+
+---
+
+## How well it solves that problem
+
+**Well, for the stated box and checkpoint.** Phase gates P1–P3 are met; P4 (more KV compression / extra cache capacity) is only partly done. Claims are measured, not vibes.
+
+Same protocol as the reference engines (synthetic growing conversation, 384 generated tokens, 1K / 32K / 134K / 250K):
+
+| Engine | 1K | 32K | 134K | 250K |
+|---|---:|---:|---:|---:|
+| llama.cpp (expert cache, sparse attn; no MTP) | 37.4 | 37.2 | 32.8 | 30.7 |
+| Strata 0.1.6, MTP, greedy | 87.0 | **96.0** | **85.0** | **80.4** |
+| flashrt MTP greedy (2 drafts) | **106.6** | 83.7 | 81.0 | 74.8 |
+| Strata temp 1.0 | 80.5 | 79.1 | 73.9 | 69.9 |
+| flashrt temp 1.0, sampled drafts | **82.2** | 77.7 | **81.0** | **76.4** |
+
+- vs llama.cpp: **2.2–2.6× decode** at every depth.
+- vs Strata: ahead at short context; **5–13% behind** on greedy from 32K; **level to ahead** at temperature 1.0.
+- They explain the greedy depth gap: the expert cache is warmed from a synthetic prompt that predicts generation routing poorly (66% hit rate vs 93% on natural text).
+- On wikitext continuation at temp 1.0: **143 tok/s at 32K, 97 at 245K**.
+- Prefill is the clearer win: **~5.5–6.2k tok/s** at 32K–64K without the draft head, vs Strata ~1.2–2.0k. The MTP head’s own prefill path is still slow (2.1–4.1k) and they mark it as open.
+
+Quality is treated as a gate, not an afterthought. Output-affecting changes need KL vs an FP16-KV llama.cpp reference on 2×8K wikitext chunks. flashrt lands at **0.0082–0.0092**; llama.cpp vs itself is **0.0078–0.0086**. Speculative sampling has a distribution test. That is the right bar for a custom kernel stack.
+
+End-to-end pieces that actually exist:
+
+- CUDA-graph decode / verify windows
+- VRAM expert cache (decayed LFU) + CPU miss path via mapped-memory doorbells
+- MTP speculation with trimmed draft vocab
+- chunked prefill with streamed experts
+- JSON-lines engine + OpenAI/Anthropic Rust server
+- prefix reuse and recurrent-state checkpoints
+
+**Limitations that matter in practice:** one sequence at a time; text only (the model is multimodal; this runtime is not); server has incomplete tool/thinking semantics; prefix cache is one conversation + one checkpoint; two historical unexplained launch failures, now believed fixed but not proven; speed is hostage to cache warmup and host DRAM (~43–50 GB/s on the miss path).
+
+So: **it does run this specific LLM on this class of box, at competitive or better speed than the best published alternatives they measured, with correctness near the reference noise floor.** That is the job. It is not a general serving stack.
+
+---
+
+## Code quality
+
+**Above typical research-dump quality. Below a library you would drop into production without owning the box.**
+
+What is good:
+
+- Clear layering: `core/` (GGUF, arena, CPU pool, JSON), `quant/q2_0/`, `arch/qwen4exp/`, `kernels/cuda/`, `engine/`, `server/`.
+- Headers state intent. `ExpertArena`, `Session`, `Spec`/`WeightPlan` are readable contracts.
+- Clean-room policy vs Strata (ideas allowed, source not) is explicit and legally sane.
+- CMake is coherent: static libs, optional CUDA, optional llama.cpp linkage for parity tools, ctest hooks.
+- CI exists for the CPU build and Rust (`cargo test` + clippy `-D warnings`). GPU tests stay on the target machine, which is honest.
+- Kernel and algorithm tests exist (`q2_0`, MoE CPU/GPU, GDN, routing, sampling, speculative sampling). Several model-dependent tests skip cleanly without `FLASHRT_TEST_MODEL`.
+- Error handling is “throw `runtime_error` + CUDA check helpers,” not silent UB. Doorbell waits have timeouts and error words.
+
+What is rough:
+
+- **`arch/qwen4exp/blocks.cu` is ~3,800 lines.** That is the real product, and it is a god file: norms, RoPE, GDN, QSA, hyper-connections, linear/GEMV fusion, graph-mode parameter blocks. `moe_fast.cu` is another 1,066. This is expert systems code, not modular kernel library code.
+- **The plugin interfaces in `docs/interfaces.md` are sketches.** There is no implemented `ArchModule` / `QuantPack` / `Forward` vtable in the tree. `engine/session.cpp` `#include`s qwen4exp headers directly.
+- Experts are **hard-required Q2_0** (`t.type != 42` throws). Dense tensors use a mix of ggml MMVQ/MMQ types; the MoE fast path does not.
+- Lots of `FLASHRT_*` env toggles. Fine for a tuning campaign; bad as an API.
+- Hardware assumptions leak: `CMAKE_CUDA_ARCHITECTURES` defaults to 120, AVX-512 VNNI for misses, miss-server pinned to physical CPU 0, enqueue thread on CPU 8, VRAM budgets tuned for 16 GB.
+- Single-writer research style: dense comments, few abstractions, little public API stability.
+
+This reads like one very good engineer (plus a coding-agent harness — `CLAUDE.md` is the working contract) grinding a measured plan for two days of wall-clock, with a long private iteration history behind the published tree.
+
+---
+
+## Can it be generalized to other models?
+
+**Not easily today. By design.**
+
+From their own rules: no general graph IR, no hot-path dynamic scheduler, “the add-on API gets designed when the second architecture arrives,” “generality waits.”
+
+| Layer | Reusable now? |
+|---|---|
+| Engine protocol, Rust server, tokenizer/chat templates | Yes |
+| Expert arena, cache policy, CPU pool, doorbells, window scheduler, speculative sampling | Conceptually yes; still shaped by this model’s top-10 / Q2_0 blobs |
+| GGUF loader, KV/state services | Partially |
+| Forward program (GDN, QSA, hyper-connections, PLE SSD reads, MTP head) | No — this *is* the model |
+| Quant pack | Only Q2_0 is implemented as a first-class pack |
+| CUDA graphs captured over concrete buffer addresses | Fragile across shapes |
+
+A second model in the **same family** (another `qwen4exp` size, or Qwen3-Next-like GDN+MoE with MTP) is the realistic next step: parse/bind/forward module + any missing mixer kernel. They estimate weeks, not months. That estimate is plausible *if* someone who already understands this codebase does it.
+
+A different family is a rewrite of `arch/` plus likely new kernels:
+
+- Dense Llama / Qwen-dense: the offload machinery is mostly wasted; llama.cpp / SGLang / vLLM already win.
+- Classic GQA MoE (Mixtral, DeepSeek-V3-style) without GDN/QSA/HC/PLE: reuse cache + CPU miss + server; rewrite the layer program and attention.
+- Other quants (IQ2_XS, Q4_K, MXFP4, NVFP4): new `QuantPack` (CPU kernel + GPU hits + prefill GEMM + KLD gate). Q2_0 was chosen because LUT formats lose on this model’s decode.
+- Other GPUs (5090 32 GB, 4090, AMD): retune VRAM split; sm_90/sm_89 kernels; no AVX-512 path on Zen4-less or non-x86 hosts.
+- Multi-user continuous batching: not in scope. The whole design is batch-1 latency on one GPU.
+
+**Bottom line:** the *ideas* generalize to “big MoE, small VRAM, fat host RAM.” The *code* is a compiled-in architecture program. That is the correct trade for speed here. It is the wrong shape if you wanted “llama.cpp but faster for everything.”
+
+---
+
+## Documentation and benchmarking
+
+**This is the best part of the repo, and it is unusually good.**
+
+Docs are a working system, not marketing:
+
+- `README.md` — honest scope sentence (“one architecture and one quantization, built and tested on one machine”).
+- `docs/design.md` — layers, protocol, phase gates with pass/fail numbers and folder citations.
+- `docs/engine.md` (~38 KB) — what the code does *today*, rejected experiments, runbook, known issues, next steps.
+- `docs/sweet-spots.md` — where each tuning track hit a knee.
+- `docs/background.md` — P0 bandwidth/routing measurements that justified the design.
+- `docs/interfaces.md` — intended seams (aspirational).
+- `docs/clean-room.md` — license boundary.
+- `CLAUDE.md` — process: every speed claim from `bench/`, KLD before speed counts, paired `--teacher` A/B, server smoke after VRAM changes.
+
+Benchmarks are also better than typical GitHub numbers:
+
+- Same token ids as baselines.
+- Results live in `bench/results/<date>-<topic>/` with scripts, logs, and a README.
+- Separate protocols for synthetic depthbench vs natural wikitext.
+- They publish losses (Strata greedy at depth) and the cause (cache warmup).
+- Microbenchmarks for GEMV, MMQ, CPU MoE, PDL.
+- Variance note: generated text can move hit rate by ~20 points window to window; they ask for 6+ windows at depth.
+
+Gaps in the evidence:
+
+- **N=1 hardware.** No 4090, 5090, Threadripper, or slower DDR.
+- Small statistical N (3–4 depthbench runs).
+- No multi-request throughput, no TTFT distribution under queueing, no concurrent sessions (architecture forbids it).
+- No task-quality suite (MMLU, AIME, etc.). That belongs to the GGUF, but a runtime can still silently change numerics; KLD is necessary and not sufficient for “the model still reasons.”
+- Prefill-with-MTP is still a second-class path.
+- Depthbench filler tokens overstate cache friendliness unless they also show wikitext; they do, which is good — readers must not quote only one table.
+
+Documentation quality: **A.** External reproducibility for anyone without that exact 5080 box: **B−.**
+
+---
+
+## Ideas for improvement
+
+Priority matches their own physics: decode is host-DRAM and miss-bound; extra GPU fusion inside a miss window often does not pay.
+
+### 1. Finish the thing they already named
+- Adaptive draft length from expected extra misses, not a fixed `--spec K`.
+- Adaptive swap budget while hit rate is cold (this is the Strata gap on window-9 prompts).
+- Faster MTP prefill (the open item that halves prompt tok/s).
+- Multi-CTA indexer select and a parallel hot-set CLOCK (they already timed these).
+- Prove or kill the historical Xid 43 / launch-failure class with a doorbell fuzzer.
+
+### 2. Make a second model the API design, not a doc
+Implement the sketched `ArchModule` / `QuantPack` against *one* second target, then delete the sketches that do not survive contact. Good second targets, in order of leverage:
+
+1. Same arch, different size or a Q4/IQ3 pack of Flash-Next (proves quant seam).
+2. Qwen3-Next 80B-A3B-style GDN+MoE (proves mixer reuse).
+3. A plain GQA MoE (proves the cache/doorbell core is actually generic).
+
+Until that lands, “easily generalised” is a plan, not a property.
+
+### 3. Software structure
+- Split `blocks.cu` by mixer (GDN / QSA / HC / linear). Keep one `record_window` that calls them.
+- Replace env-var soup with a typed `TuneConfig` loaded from a profile (`flashrt autotune` is mentioned in design.md and does not exist as a real tool).
+- Formalize box profiles: 16 GB vs 32 GB changes KV-hot vs expert-slot tradeoffs more than kernel tweaks do.
+
+### 4. Serving
+- Multi-conversation prefix cache (even LRU of a few checkpoints) — current “one sequence + one checkpoint” makes the OpenAI server a single-user appliance.
+- Optional continuous batching is probably the wrong hill for this design; a **multi-process or multi-engine** model (one engine per GPU/user) is more consistent with CUDA graphs + doorbells.
+- Vision projector path if the goal is “run Flash-Next,” not “run the text backbone.”
+- Health metrics: hit rate, miss µs, accepted drafts/round, VRAM slots. The engine already tracks some of this; the server should export it.
+
+### 5. Benchmarking hygiene
+- Publish a one-command `bench/repro.sh` that names model URLs, exact llama.cpp / Strata SHAs, and flags.
+- Add a short “natural text” table to the README so people do not only cite the synthetic depthbench where flashrt looks weaker.
+- Report acceptance rate and cache hit rate next to tok/s every time. Without those, tok/s is not comparable.
+- One 32 GB card run would tell you whether P4 KV work is still the right next lever.
+
+### 6. Community / ops
+- A 5-minute “will this even build on my 4090?” section (likely: builds, kernels wrong, VRAM math wrong).
+- GPU CI is expensive; a smoke path on a small synthetic MoE fixture would still catch graph/doorbell regressions.
+- Version the engine protocol. It is `0.1.0` in the ready event; treat it as such.
+
+---
+
+## Scorecard
+
+| Dimension | Score | Note |
+|---|---|---|
+| Problem framing | Excellent | Memory-traffic MoE on 16 GB is the right problem |
+| Fit to that problem | Strong | Beats llama.cpp clearly; fights Strata to a draw with receipts |
+| Code quality | Good research / early systems | Clean seams at the edges; a few huge architecture files |
+| Generality | Low by intent | Server + cache ideas travel; the forward pass does not |
+| Docs | Excellent | Rare level of “why,” rejected work, and citations |
+| Benchmarks | Strong but single-box | Honest protocol; thin hardware diversity |
+| Production readiness | Low | One user, one GPU vendor, one quant, research toggles |
+| Improvement headroom | Real, mostly systems not kernels | Cache policy, MTP prefill, draft scheduling, a second arch |
+
+If you want **this model, this box, maximum tok/s**, flashrt is a serious option and more trustworthy than most speed-claim repos because it publishes the losses. If you want **a runtime you can point at an arbitrary GGUF**, this is not that, and the authors already said so.
