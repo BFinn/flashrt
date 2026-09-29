@@ -5,6 +5,10 @@
 // and drafts must be accepted at rate sum min(p, q). Synthetic rows: target logits with a few
 // strong tokens, and drafter logits that are the target's plus noise (so q is close to p but not
 // equal), over 4,096 entries.
+// Second case: a window of two drafts (three verify rows, as --spec 2), the drafter over a trimmed
+// vocabulary of 2,048 entries mapped to token ids (as the MTP head's trimmed LM head). The token
+// emitted at each position, given the window reached it, must follow that row's p, and each draft
+// must be accepted at rate sum min(p, q) with q over the remapped ids.
 //
 //   test_spec_sample
 #include "kernels/cuda/sample.h"
@@ -108,9 +112,94 @@ int main() {
     const double tv0 = tv(h0), tv1 = tv(h1), ar = double(acc) / N;
     // sampling noise: TV over ~|P| bins with N draws is about sqrt(|P| / (2 pi N)); allow 3x
     const double tol = 3.0 * std::sqrt(double(P.size()) / (2.0 * M_PI * N));
-    const bool ok = tv0 < tol && tv1 < tol && std::fabs(ar - overlap) < 0.005;
+    bool ok = tv0 < tol && tv1 < tol && std::fabs(ar - overlap) < 0.005;
     std::printf("p over %zu tokens, q over %zu: sum min(p, q) %.4f, p(argmax q) %.4f\n", P.size(), Q.size(), overlap, p_argmax_q);
     std::printf("%d seeds: acceptance %.4f; emitted token at the draft's position TV %.4f, last row TV %.4f (noise bound %.4f) %s\n", N, ar,
                 tv0, tv1, tol, ok ? "ok" : "FAIL");
+
+    // ---- two drafts, trimmed drafter vocabulary
+    const int VD = 2048, R = 3;
+    std::vector<int32_t> ids(V);
+    std::iota(ids.begin(), ids.end(), 0);
+    std::shuffle(ids.begin(), ids.end(), rng);
+    ids.resize(VD);   // the drafter's entries: half the vocabulary, in shuffled order
+    std::vector<std::vector<float>> trow(R, std::vector<float>(V)), drow(R - 1, std::vector<float>(VD));
+    for (int r = 0; r < R; ++r) {
+        for (int i = 0; i < V; ++i) trow[r][i] = nd(rng);
+        for (int i = 0; i < 10; ++i) trow[r][ids[size_t(rng() % VD)]] += 4.0f + 1.5f * nd(rng);   // strong tokens the drafter has
+        trow[r][size_t(rng() % V)] += 4.0f;                                                      // and one it may not have
+        if (r < R - 1)
+            for (int e = 0; e < VD; ++e) drow[r][e] = trow[r][ids[e]] + 0.7f * nd(rng);
+    }
+    std::vector<std::map<int, double>> Pr(R), Qr(R - 1);
+    std::vector<double> ov(R - 1, 0.0);
+    for (int r = 0; r < R; ++r) Pr[r] = chain(trow[r], sp);
+    for (int r = 0; r < R - 1; ++r) {
+        for (auto& [e, v] : chain(drow[r], sp)) Qr[r][ids[e]] = v;   // q over token ids
+        for (auto& [t, v] : Pr[r]) ov[r] += std::min(v, Qr[r].count(t) ? Qr[r].at(t) : 0.0);
+    }
+    float *d_rows, *d_drafter;
+    int32_t *d_ids, *d_drafts, *d_dp2;
+    cudaMalloc(&d_rows, size_t(R) * V * 4);
+    cudaMalloc(&d_drafter, size_t(R - 1) * VD * 4);
+    cudaMalloc(&d_ids, size_t(VD) * 4);
+    cudaMalloc(&d_drafts, size_t(R - 1) * 4);
+    cudaMalloc(&d_dp2, size_t(R - 1) * 16);
+    for (int r = 0; r < R; ++r) cudaMemcpy(d_rows + size_t(r) * V, trow[r].data(), size_t(V) * 4, cudaMemcpyHostToDevice);
+    for (int r = 0; r < R - 1; ++r) {
+        cudaMemcpy(d_drafter + size_t(r) * VD, drow[r].data(), size_t(VD) * 4, cudaMemcpyHostToDevice);
+        const int32_t dp[4] = {0, int32_t(pos - 1 + r), 0, r};   // draft r is for position pos + r, step r
+        cudaMemcpy(d_dp2 + 4 * r, dp, 16, cudaMemcpyHostToDevice);
+    }
+    cudaMemcpy(d_ids, ids.data(), size_t(VD) * 4, cudaMemcpyHostToDevice);
+    int32_t *d_qi2, *d_qn2, *d_out2;
+    float* d_qp2;
+    cudaMalloc(&d_qi2, size_t(R - 1) * sample::kMaxTopK * 4);
+    cudaMalloc(&d_qp2, size_t(R - 1) * sample::kMaxTopK * 4);
+    cudaMalloc(&d_qn2, size_t(R - 1) * 4);
+    cudaMalloc(&d_out2, size_t(N) * (2 * R - 1) * 4);
+    for (int i = 0; i < N; ++i) {
+        for (int r = 0; r < R - 1; ++r) {
+            sample::draft_row(d_drafter + size_t(r) * VD, VD, d_cfg + i, d_dp2 + 4 * r, d_ids, d_v, d_qi2, d_qp2, d_qn2, nullptr);
+            cudaMemcpyAsync(d_drafts + r, d_v + 1, 4, cudaMemcpyDeviceToDevice, nullptr);
+        }
+        sample::spec_verify(d_rows, R, V, sp, cfg[size_t(i)].seed, pos, d_drafts, d_qi2, d_qp2, d_qn2, d_out2 + size_t(i) * (2 * R - 1), nullptr);
+    }
+    if (cudaDeviceSynchronize() != cudaSuccess) {
+        std::printf("CUDA error: %s\n", cudaGetErrorString(cudaGetLastError()));
+        return 2;
+    }
+    std::vector<int32_t> out2(size_t(N) * (2 * R - 1));
+    cudaMemcpy(out2.data(), d_out2, out2.size() * 4, cudaMemcpyDeviceToHost);
+    // position r is reached when drafts 0 .. r-1 were accepted; its token is the emitted one there
+    std::vector<std::map<int, long>> hist(R);
+    std::vector<long> reached(R, 0), accepted(R - 1, 0);
+    for (int i = 0; i < N; ++i) {
+        const int32_t* o = out2.data() + size_t(i) * (2 * R - 1);
+        for (int r = 0; r < R; ++r) {
+            ++reached[r];
+            ++hist[r][o[r]];
+            if (r == R - 1 || !o[R + r]) break;
+            ++accepted[r];
+        }
+    }
+    for (int r = 0; r < R; ++r) {
+        double d = 0;
+        const double n = double(reached[r]);
+        for (auto& [t, v] : Pr[r]) d += std::fabs(double(hist[r].count(t) ? hist[r].at(t) : 0) / n - v);
+        for (auto& [t, c] : hist[r])
+            if (!Pr[r].count(t)) d += double(c) / n;
+        d /= 2;
+        const double tol_r = 3.0 * std::sqrt(double(Pr[r].size()) / (2.0 * M_PI * n));
+        bool row_ok = d < tol_r;
+        std::printf("window row %d: reached %ld times, emitted token TV %.4f (noise bound %.4f)", r, reached[r], d, tol_r);
+        if (r < R - 1) {
+            const double a = double(accepted[r]) / n, noise = 3.0 * std::sqrt(ov[r] * (1 - ov[r]) / n);
+            row_ok = row_ok && std::fabs(a - ov[r]) < std::max(noise, 0.003);
+            std::printf(", draft acceptance %.4f against sum min(p, q) %.4f", a, ov[r]);
+        }
+        std::printf(" %s\n", row_ok ? "ok" : "FAIL");
+        ok = ok && row_ok;
+    }
     return ok ? 0 : 1;
 }
