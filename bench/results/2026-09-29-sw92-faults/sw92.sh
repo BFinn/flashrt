@@ -25,5 +25,6 @@ fi
 if [ "${KLD:-0}" != 0 ]; then
   wait_vram; (cd $BENCH/kld && timeout 2400 $B/fr_kld $M kl8k-f16.bin --ctx 8192 --chunks 2 --batch 64 --fast > $O/kld-fast.log 2>&1); echo "kld fast rc=$?"
   wait_vram; (cd $BENCH/kld && timeout 2400 $B/fr_kld $M kl8k-f16.bin --ctx 8192 --chunks 2 --prefill-chunk 1024 > $O/kld-chunk.log 2>&1); echo "kld chunk rc=$?"
+  wait_vram; (cd $BENCH/kld && timeout 2400 $B/fr_kld $M kl8k-f16.bin --ctx 8192 --chunks 2 --batch 64 --fast --window 3 --prefill-chunk 2048 --kv-hot 512 > $O/kld-fast-win3-hot512.log 2>&1); echo "kld fast-win3-hot512 rc=$?"
 fi
 echo done > $O/DONE
