@@ -99,7 +99,9 @@ If the current kernel is already near that ceiling, the gain is not in the kerne
       return !(e && e[0] == '0');
   }();
   ```
-  Keep the old path in the tree and add the toggle to the table in `docs/sweet-spots.md`.
+  Add the toggle to the table in `docs/sweet-spots.md`. The toggle exists for the A/B: once a
+  path has lost, `docs/improvement-plan.md` (phase 4, H-3) deletes it, and the results folder
+  stays as the record. Do not keep a losing path around by default.
 - **PDL:** launch the dependent with `cudaLaunchKernelEx` and
   `cudaLaunchAttributeProgrammaticStreamSerialization`; the dependent calls
   `cudaGridDependencySynchronize()` before reading the producer's output (see `k_hc_up_mix2`
