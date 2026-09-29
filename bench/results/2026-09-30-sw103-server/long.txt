@@ -1,0 +1,27 @@
+{
+ "wall_s": 18.9,
+ "usage": {
+  "prompt_tokens": 95388,
+  "completion_tokens": 137,
+  "total_tokens": 95525,
+  "prompt_tokens_details": {
+   "cached_tokens": 0
+  }
+ },
+ "timings": {
+  "cache_n": 0,
+  "prompt_n": 95388,
+  "prompt_ms": 17361.330467,
+  "prompt_per_second": 5494.279380333853,
+  "predicted_n": 137,
+  "predicted_ms": 1460.937699,
+  "predicted_per_second": 93.775388296007,
+  "draft_n": 108,
+  "draft_n_accepted": 85,
+  "expert_cache": {
+   "hits": 49138,
+   "misses": 28622
+  }
+ },
+ "content": "The provided text covers a diverse range of topics, including the careers of English actor Robert Boulter and American football player Dick Rifenburg, the life and literary influence of Tang dynasty poet Du Fu, and the history of the 1933 Treasure Coast hurricane. It also details military history, specifically the design and service of the Japanese Ise-class battleships, the tactical evolution of "
+}
