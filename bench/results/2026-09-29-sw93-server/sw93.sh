@@ -2,7 +2,9 @@
 # sw93: phase 1 of docs/improvement-plan.md, the server end to end (as sw86): server_smoke.py
 # (with the new sampling-limit checks), then a graceful stop (SIGTERM: the server asks the engine
 # to quit). Second run: the engine is killed under a running server; /health and requests must
-# answer 503 at once, and the server must exit by itself.
+# answer 503 at once, and the server must exit by itself. Third run: SIGTERM to the server alone
+# (systemctl stop signals the whole unit, the engine included): the engine must get "quit" and
+# exit 0. ONLY=1|2|3 runs one of them.
 set -u
 M=$MODELS/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf
 D=$MODELS/mtp-Flash-Next-Q8_0-noembd.gguf
@@ -19,14 +21,15 @@ start() {   # unit name, log
   for i in $(seq 450); do curl -sf $URL/v1/models > /dev/null && { echo "$1 ready after $((i * 2)) s"; return 0; }; sleep 2; done
   echo "$1 not ready"; return 1
 }
+ONLY=${ONLY:-all}
 # run 1: smoke, then a graceful stop
-if start fr-server-sw93a $O/server-a.log; then
+if [ $ONLY = all -o $ONLY = 1 ] && start fr-server-sw93a $O/server-a.log; then
   python3 $FLASHRT/bench/server_smoke.py --url $URL > $O/smoke.txt 2>&1; echo "smoke rc=$?"
   systemctl --user stop fr-server-sw93a
   grep -E "shutting down|engine exited|killing" $O/server-a.log | sed 's/^/  /'
 fi
 # run 2: kill the engine under the server
-if start fr-server-sw93b $O/server-b.log; then
+if [ $ONLY = all -o $ONLY = 2 ] && start fr-server-sw93b $O/server-b.log; then
   e=$(pgrep -x flashrt-engine); echo "killing engine pid $e"; kill -9 $e
   sleep 1
   echo "health: $(curl -s -o /dev/null -w '%{http_code}' $URL/health) $(curl -s $URL/health)"
@@ -37,5 +40,12 @@ if start fr-server-sw93b $O/server-b.log; then
   systemctl --user is-active --quiet fr-server-sw93b && { echo "server still running after 20 s"; systemctl --user stop fr-server-sw93b; } \
     || echo "server exited by itself within $i s"
   grep -E "engine exited|engine is down" $O/server-b.log | sed 's/^/  /'
+fi
+# run 3: SIGTERM to the server process only
+if [ $ONLY = all -o $ONLY = 3 ] && start fr-server-sw93c $O/server-c.log; then
+  sv=$(pgrep -x flashrt-server); echo "SIGTERM to server pid $sv"; kill -TERM $sv
+  for i in $(seq 40); do systemctl --user is-active --quiet fr-server-sw93c || break; sleep 1; done
+  echo "server unit inactive after $i s"
+  grep -E "shutting down|engine exited|killing" $O/server-c.log | sed 's/^/  /'
 fi
 echo done > $O/DONE
