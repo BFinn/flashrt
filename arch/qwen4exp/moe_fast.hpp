@@ -97,7 +97,7 @@ struct CachePolicyConfig {
     int decay_every = 4;
     float admit = 1.0f;    // 2 until sw100: 1 with margin 1.2 follows a generation that routes unlike its
     float margin = 1.2f;   // prompt sooner (window 9 +3.0%, wikitext +1.6%, teacher-forced; sw99, sw100)
-    int budget = 64;       // uploads in flight: 64 since sw104 (8 until sw89, then 32)
+    int budget = 64;       // uploads started per step: 64 since sw104 (8 until sw89, then 32; until sw107 in flight)
     // The warm-up after a fill from a prompt's routing: the policy's counts start at seed_scale
     // times the prompt's, while the fill still follows them. At 1 an expert the answer needs could
     // not beat the weakest resident for ~70 tokens (sw99, sw104). With budget 64, teacher-forced:

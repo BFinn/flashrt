@@ -714,7 +714,7 @@ CacheManager* create_cache_manager(const Spec& s, ExpertCache& cache, const Expe
     arena_register(arena);
     ck(cudaStreamCreateWithFlags(&m->copy, cudaStreamNonBlocking), "cudaStreamCreate copy");
     ck(cudaEventCreateWithFlags(&m->tok_done, cudaEventDisableTiming), "cudaEventCreate");
-    for (int i = 0; i < cfg.budget; ++i) {
+    for (int i = 0; i < 2 * cfg.budget; ++i) {   // uploads stay pending two steps (see the commit)
         cudaEvent_t ev;
         ck(cudaEventCreateWithFlags(&ev, cudaEventDisableTiming), "cudaEventCreate");
         m->events_free.push_back(ev);
@@ -779,7 +779,9 @@ void cache_manager_step(CacheManager* m, const MoeFastHost& h, cudaStream_t stre
     missed.erase(std::unique(missed.begin(), missed.end()), missed.end());
     std::vector<std::pair<int, int>> uploads;   // (key, slot)
     for (int key : missed) {
-        if (int(m->pending.size() + uploads.size()) >= budget || m->resident.empty() || upd.n >= kMaxTableUpdates - 2) break;
+        // the budget is per step: counting the pending ones too would halve it, as each stays two
+        // steps (sw107: with the MTP head 108.5 -> 96.9 tok/s)
+        if (int(uploads.size()) >= budget || m->resident.empty() || upd.n >= kMaxTableUpdates - 2) break;
         if (m->count[key] < m->cfg.admit * m->w) break;   // sorted: no later miss qualifies either
         const auto [vcount, victim] = *m->resident.begin();
         if (m->count[key] < m->cfg.margin * vcount) break;
