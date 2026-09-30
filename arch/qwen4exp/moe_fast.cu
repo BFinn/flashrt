@@ -517,6 +517,9 @@ __global__ void k_moe_combine(float* out, const float* yh, const float* hit_w, c
 __global__ void k_moe_combine_db(float* out, const float* yh, const float* hit_w, const int32_t* hit_n, uint8_t* mb,
                                  size_t out_off, uint32_t seq, const float* shexp, const float* gate, int n, int Kmax, const int32_t* dp,
                                  const int32_t* miss_n) {
+#if __CUDA_ARCH__ >= 900
+    cudaTriggerProgrammaticLaunchCompletion();   // the next hc mix may load its weights (FLASHRT_HC_EARLY)
+#endif
     if (dp) seq = uint32_t(dp[2]);
     const bool cpu = miss_n[blockIdx.y] != 0;
     if (cpu && threadIdx.x == 0) {

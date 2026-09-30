@@ -9,6 +9,7 @@
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
 
+#include <cstdlib>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -279,6 +280,11 @@ __global__ void __launch_bounds__(32 * kHcDownWarps) k_hc_down2(const float* x, 
 #pragma unroll
             for (int k = 0; k < kHcDownMaxK; ++k)
                 if (k < nk) raw[j][k] = Wd.load(size_t(r0 + j) * hcn + size_t(g) * n + 8 * size_t(lane + 32 * k));
+#if __CUDA_ARCH__ >= 900
+    // launched as a programmatic dependent (FLASHRT_HC_EARLY), the weights above load while the
+    // kernel before runs (k_moe_combine_db's wait for the CPU misses); a no-op otherwise
+    cudaGridDependencySynchronize();
+#endif
     // x * w_norm into shared memory, and the sum of squares. With cout, x is first combined with
     // the previous mixer's output (as k_hc_combine: x + out * 2 sigmoid(inject / hc), as an fma);
     // k_hc_up_mix2 stores that x, and block (0, 0) leaves the weights in wv_out for it.
@@ -556,8 +562,26 @@ void hc_fused_launch(const float* x, const float* w_norm, WD Wd, const uint16_t*
             attr2 = true;
         }
         constexpr int per = kHcDownWarps * kHcDownRpw;
-        k_hc_down2<TT, WD><<<dim3((rows + per - 1) / per, hc), 32 * kHcDownWarps, smem, st>>>(x, w_norm, Wd, Wi, xn, part, n, rank, n_inj, eps,
-                                                                                        comb.out, comb.inj, wv);
+        // FLASHRT_HC_EARLY=0: a plain launch. Otherwise a programmatic dependent of the kernel
+        // before it, which k_moe_combine_db triggers at its start: the mix's weights (down here,
+        // up in k_hc_up_mix2, which chains off this kernel's trigger) load during the miss wait
+        static const bool early = [] {
+            const char* e = std::getenv("FLASHRT_HC_EARLY");
+            return !(e && e[0] == '0');
+        }();
+        cudaLaunchConfig_t cfg{};
+        cfg.gridDim = dim3((rows + per - 1) / per, hc);
+        cfg.blockDim = dim3(32 * kHcDownWarps);
+        cfg.dynamicSmemBytes = smem;
+        cfg.stream = st;
+        cudaLaunchAttribute attr[1];
+        attr[0].id = cudaLaunchAttributeProgrammaticStreamSerialization;
+        attr[0].val.programmaticStreamSerializationAllowed = 1;
+        cfg.attrs = attr;
+        cfg.numAttrs = early ? 1 : 0;
+        ck(cudaLaunchKernelEx(&cfg, k_hc_down2<TT, WD>, x, w_norm, Wd, Wi, xn, part, n, rank, n_inj, eps, static_cast<const float*>(comb.out),
+                              comb.inj, wv),
+           "hc_down2");
     } else
         k_hc_down<TT, WD><<<dim3((rows + 15) / 16, hc), 512, smem, st>>>(x, w_norm, Wd, Wi, xn, part, n, rank, n_inj, eps);
     if (upv2) {
