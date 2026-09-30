@@ -1,0 +1,25 @@
+DECODE tok/s (wall clock) (mean +- sd)
+arm                                      1055            32793           134029           250712
+sw105-G-spec2-greedy (n=3)       126.2 +- 2.9     107.5 +- 0.6     101.0 +- 2.1      89.3 +- 1.2
+
+PROMPT seconds (engine prompt_ms) (mean +- sd)
+arm                                      1055            32793           134029           250712
+sw105-G-spec2-greedy (n=3)       1.24 +- 0.01     6.07 +- 0.01    18.68 +- 0.01    24.06 +- 0.01
+
+PREFILL tok/s of the new tokens (mean +- sd)
+arm                                      1055            32793           134029           250712
+sw105-G-spec2-greedy (n=3)           854 +- 2        5399 +- 1        5421 +- 4        4852 +- 2
+
+REUSED prompt tokens (mean +- sd)
+arm                                      1055            32793           134029           250712
+sw105-G-spec2-greedy (n=3)             0 +- 0           0 +- 0       32768 +- 0      134004 +- 0
+
+EXPERT-CACHE hit rate in the decode, % (mean +- sd)
+arm                                      1055            32793           134029           250712
+sw105-G-spec2-greedy (n=3)        84.1 +- 0.0      80.8 +- 0.3      82.5 +- 0.7      81.7 +- 0.1
+
+DRAFT acceptance, % (mean +- sd)
+arm                                      1055            32793           134029           250712
+sw105-G-spec2-greedy (n=3)        60.2 +- 1.7      57.9 +- 4.8      57.1 +- 1.7      50.8 +- 0.9
+
+GPU at the rows' ends: SM clock 2797-2812 MHz, 48-53 C, 175-187 W

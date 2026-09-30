@@ -1,0 +1,16 @@
+KV cache: fp16, hot set 0 blocks per layer
+fast path: 8276 cache slots (33.7% of experts), adaptive cache
+chunk 0 pos  5120: 1024 scored, mean KLD 0.01033, same top 97.95%, 118.0 tok/s
+chunk 0 pos  6144: 2048 scored, mean KLD 0.01206, same top 97.31%, 114.1 tok/s
+chunk 0 pos  7168: 3072 scored, mean KLD 0.01302, same top 96.61%, 110.5 tok/s
+chunk 0 pos  8191: 4095 scored, mean KLD 0.01183, same top 96.58%, 107.7 tok/s
+chunk 1 pos  5120: 5119 scored, mean KLD 0.01042, same top 96.56%, 114.0 tok/s
+chunk 1 pos  6144: 6143 scored, mean KLD 0.00952, same top 96.87%, 112.5 tok/s
+chunk 1 pos  7168: 7167 scored, mean KLD 0.00908, same top 96.90%, 111.4 tok/s
+chunk 1 pos  8191: 8190 scored, mean KLD 0.00876, same top 96.86%, 110.5 tok/s
+
+fr_kld: 8190 tokens over 2 chunk(s) of 8192
+  PPL flashrt 2.5193, base 2.5238, ratio 0.99821
+  KLD mean 0.008762, median 0.001153, p99 0.114183, p99.9 0.266615, max 0.373689
+  same top token 96.862%
+  fast path: expert cache hit rate 91.35%, 0 misses read over PCIe, 159108 swaps
