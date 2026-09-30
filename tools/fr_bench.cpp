@@ -30,7 +30,8 @@
 // prompt's distinct tokens, at most 65536 rows. --draft-pmin P stops a round's drafting at the
 // first draft whose probability under the head is below P (then fewer than K are verified;
 // none if the first is below P).
-// --round-log FILE writes one line per speculative round (see the loop), for draft-length studies.
+// --round-log FILE writes one line per speculative round (see the loop), for draft-length studies;
+// without --spec, with --mtp, one line per position: the position and the head's --draft drafts.
 // --save-tokens FILE writes every generated token.
 // --prefill-chunk C prefills C tokens per call (default 64: the CPU reference path; above 64 the
 // chunk path with the experts streamed to the GPU); "auto" picks the longest chunk the free VRAM
@@ -638,11 +639,14 @@ int main(int argc, char** argv) {
                 const int p = int(seq.size()) - 1;
                 int32_t d = seq[p];
                 draft_pos.push_back(p);
+                if (rlog) std::fprintf(rlog, "%d", p);   // --round-log in this mode: the position and its K drafts
                 for (int j = 0; j < draft_k; ++j) {
                     mtp->forward(j == 0 ? h_carry : mtp->h_out(), &d, 1, p + j, 0, mtp_logits);
                     d = mtp->argmax(mtp_logits);
                     drafts.push_back(d);
+                    if (rlog) std::fprintf(rlog, " %d", d);
                 }
+                if (rlog) std::fprintf(rlog, "\n");
                 mtp_s += std::chrono::duration<double>(Clock::now() - tm).count();
             }
             fwd.forward(seq.data(), 1, 0, logits_dev);
