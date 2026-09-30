@@ -1,0 +1,21 @@
+100% tests passed, 0 tests failed out of 20
+FINGERPRINT-IDENTICAL
+old plain245 decode: 256 tokens at depth 245760 in 2.98 s: 85.77 tok/s (fast path, doorbell),
+old spec245 decode: 256 tokens at depth 245760 in 3.06 s: 83.72 tok/s (speculative, MTP draf
+old plain32 decode: 256 tokens at depth 32768 in 2.34 s: 109.31 tok/s (fast path, doorbell),
+new plain245 decode: 256 tokens at depth 245760 in 2.70 s: 94.65 tok/s (fast path, doorbell),
+new spec245 decode: 256 tokens at depth 245760 in 2.95 s: 86.89 tok/s (speculative, MTP draf
+new plain32 decode: 256 tokens at depth 32768 in 2.24 s: 114.37 tok/s (fast path, doorbell),
+new plain245 decode: 256 tokens at depth 245760 in 2.71 s: 94.40 tok/s (fast path, doorbell),
+new spec245 decode: 256 tokens at depth 245760 in 2.84 s: 90.27 tok/s (speculative, MTP draf
+new plain32 decode: 256 tokens at depth 32768 in 2.24 s: 114.48 tok/s (fast path, doorbell),
+old plain245 decode: 256 tokens at depth 245760 in 2.95 s: 86.78 tok/s (fast path, doorbell),
+old spec245 decode: 256 tokens at depth 245760 in 3.04 s: 84.12 tok/s (speculative, MTP draf
+old plain32 decode: 256 tokens at depth 32768 in 2.26 s: 113.06 tok/s (fast path, doorbell),
+old plain245 decode: 256 tokens at depth 245760 in 3.00 s: 85.32 tok/s (fast path, doorbell),
+old spec245 decode: 256 tokens at depth 245760 in 3.02 s: 84.75 tok/s (speculative, MTP draf
+old plain32 decode: 256 tokens at depth 32768 in 2.30 s: 111.20 tok/s (fast path, doorbell),
+new plain245 decode: 256 tokens at depth 245760 in 2.71 s: 94.42 tok/s (fast path, doorbell),
+new spec245 decode: 256 tokens at depth 245760 in 3.02 s: 84.76 tok/s (speculative, MTP draf
+new plain32 decode: 256 tokens at depth 32768 in 2.24 s: 114.48 tok/s (fast path, doorbell),
+ALLDONE

@@ -1,0 +1,3 @@
+40 of 40 token selections match the reference
+245K, T = 1: 23.0 us per call
+245K, T = 3: 24.2 us per call
