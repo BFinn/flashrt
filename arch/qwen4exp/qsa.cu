@@ -143,30 +143,63 @@ __global__ void k_hot_select(int32_t* slot_of_block, int32_t* block_of_slot, uin
         if (threadIdx.x == 0) nmiss = min(kHotPromote, nmiss + total);
         __syncthreads();
     }
+    // CLOCK, a chunk of the ring at a time in parallel: from the hand, a slot not referenced since the
+    // hand last passed and not pinned this step is a victim; passing any other slot clears its
+    // reference bit. A block scan ranks the chunk's candidates in clock order, the first `need` take
+    // the missed blocks in order, and the hand stops after the last one taken: the same victims,
+    // pairing and hand as one thread stepping slot by slot. Give up after 2B slots without a victim
+    // (every slot pinned: the rest stays in the host store).
+    __shared__ int s_h, s_np, s_run, s_stop, s_last;
     if (threadIdx.x == 0) {
-        int h = hand[0], np = 0;
-        for (int k = 0; k < nmiss; ++k) {
-            int guard = 0;
-            while ((refbit[h] || pinned[h] == stamp) && guard < 2 * B) {
-                refbit[h] = 0;
-                h = h + 1 == B ? 0 : h + 1;
-                ++guard;
+        s_h = hand[0];
+        s_np = 0;
+        s_run = 0;
+    }
+    __syncthreads();
+    while (true) {
+        const int np0 = s_np, h0 = s_h, need = nmiss - np0;
+        if (need <= 0 || s_run >= 2 * B) break;
+        const int ch = min(min(int(blockDim.x), B), 2 * B - s_run);   // no slot twice in a chunk
+        const int i = threadIdx.x;
+        const int slot = h0 + i < B ? h0 + i : h0 + i - B;
+        const bool cand = i < ch && !refbit[slot] && pinned[slot] != stamp;
+        int total;
+        const int rank = block_scan_flags(cand, &total);
+        if (threadIdx.x == 0) s_stop = ch;
+        __syncthreads();
+        if (cand && rank == need - 1) s_stop = i + 1;   // the last victim needed: the hand stops after it
+        if (cand && rank == total - 1) s_last = i;       // the chunk's last candidate
+        __syncthreads();
+        const int stop = s_stop;
+        if (i < stop) {
+            if (cand && rank < need) {
+                const int k = np0 + rank, blk = miss[k];
+                const int old = block_of_slot[slot];
+                if (old >= 0) slot_of_block[old] = -1;
+                block_of_slot[slot] = blk;
+                slot_of_block[blk] = slot;
+                refbit[slot] = 1;
+                pinned[slot] = stamp;
+                promo[1 + 2 * k] = blk;
+                promo[2 + 2 * k] = slot;
+            } else {
+                refbit[slot] = 0;
             }
-            if (guard >= 2 * B) break;   // every slot pinned: the rest stays in the host store
-            const int v = h;
-            h = h + 1 == B ? 0 : h + 1;
-            const int old = block_of_slot[v];
-            if (old >= 0) slot_of_block[old] = -1;
-            block_of_slot[v] = miss[k];
-            slot_of_block[miss[k]] = v;
-            refbit[v] = 1;
-            pinned[v] = stamp;
-            promo[1 + 2 * np] = miss[k];
-            promo[2 + 2 * np] = v;
-            ++np;
         }
-        promo[0] = np;
-        hand[0] = h;
+        __syncthreads();
+        if (threadIdx.x == 0) {
+            const int taken = min(total, need);
+            s_np = np0 + taken;
+            s_h = h0 + stop < B ? h0 + stop : h0 + stop - B;
+            // non-victims in a row since the last victim (the serial loop's guard)
+            if (taken == 0) s_run += stop;
+            else s_run = stop - 1 - s_last;
+        }
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) {
+        promo[0] = s_np;
+        hand[0] = s_h;
         hand[1] = int32_t(stamp);
     }
 }
