@@ -131,26 +131,18 @@ Ranked by expected value. None of these has been implemented or measured end to 
 
 ## Toggles
 
-All default to the tuned setting. Setting one to `0` restores the older path for A/B runs.
+The A/B toggles of paths that won or lost were deleted in phase 4 (H-3, sw112): the winning path
+of each stays, and the results folders are the record. sw112 checked that the build without them
+reproduces every output exactly. Removed: `FLASHRT_GDN_CHUNK` (sw71), `GDN_COL` (sw47),
+`ROUTE_WARP` (sw81), `Q3_Q8` (sw69), `MOE_Q2MMA` (sw55), `MOE_YD16` (sw59), `MOE_GU_STAGES` (2,
+sw55), `MOE_J` (the widest tile, sw48), `HC_GATE16` (sw59), `HC_DOWN2` / `HC_UP2` (sw75),
+`HC_COMB2` (sw78), `LINEAR_MULTI` (sw73), `FUSE_EPI` (sw74, sw82), `DB_SKIP` (sw77), `ATTN_TC` /
+`IDX_TC` (sw46, sw49), `MTP_CHUNK` (sw102) and `MTP_MIRROR` (sw98).
+
+What remains:
 
 | Variable | Default | What it switches | Evidence |
 |---|---|---|---|
-| `FLASHRT_GDN_CHUNK` | on | chunked GDN on fp16 tensor cores (prefill, 64+ tokens) | sw71 |
-| `FLASHRT_GDN_COL` | on | the column kernel for 16-63 tokens | sw47 |
-| `FLASHRT_ROUTE_WARP` | on | prefill routing a warp per token | sw81 |
-| `FLASHRT_Q3_Q8` | on | Q3_K multiplied as Q8_0 in prefill | sw69 |
-| `FLASHRT_MOE_Q2MMA` | on | own int8 expert kernels on the planar arena | sw55 |
-| `FLASHRT_MOE_YD16` | on | BF16 per-slot expert outputs | sw59 |
 | `FLASHRT_MOE_AB64` | off | per-64 activation scales (faster, fails KLD) | sw57 |
-| `FLASHRT_MOE_GU_STAGES` | 2 | gate/up pipeline stages | sw55 |
-| `FLASHRT_MOE_J` | 0 (the widest) | ggml MoE token-tile width (MMQ path) | sw48 |
-| `FLASHRT_HC_GATE16` | on | BF16 hc gate in prefill | sw59 |
 | `FLASHRT_HC_Q8` | down | hc matrices as Q8P (down; up costs KLD) | sw66-sw68 |
-| `FLASHRT_HC_DOWN2` / `FLASHRT_HC_UP2` | on | hc decode kernels v2 | sw75 |
-| `FLASHRT_HC_COMB2` | on | layer-end combine folded into the hc decode kernels | sw78 |
-| `FLASHRT_LINEAR_MULTI` | on | BF16 mat-vecs of one input in one launch (decode) | sw73 |
-| `FLASHRT_FUSE_EPI` | on | decode/prefill epilogue fusions and shared input conversions | sw74, sw82 |
-| `FLASHRT_DB_SKIP` | on | tokens without CPU misses skip the doorbell round trip | sw77 |
-| `FLASHRT_ATTN_TC` / `FLASHRT_IDX_TC` | on | tensor-core attention and indexer scores in prefill | sw46, sw49 |
-| `FLASHRT_MTP_CHUNK` | on | the MTP head's prompt pass in calls of 1,024 rows with grouped expert GEMMs (needs the mirror) | sw102 |
-| `FLASHRT_MTP_MIRROR` | on | the MTP head's KV mirrored in VRAM during a chunked prefill, so its prompt pass uses the tensor-core attention | sw98 |
+| `FLASHRT_ARGMAX_DRAFTS` | off | `1`: argmax drafts in sampled runs (as `--argmax-drafts`) | sw85 |

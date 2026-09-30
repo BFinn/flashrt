@@ -1,0 +1,4 @@
+reuse-mtp rc=0 engine exited with 0; 0 check(s) failed
+faults-mtp rc=0 engine exited with 0; 0 check(s) failed
+Running as unit: fr-server-sw112.service; invocation ID: 1eec62dca40f4950872661d62d7171e4
+server_smoke rc=0 all checks passed

@@ -163,7 +163,7 @@ has a reference test.
 
 Each step is proven by `fr_parity`, the KLD gate and a teacher-forced A/B showing no change.
 
-1. **H-3:** delete the losing kernels behind the `FLASHRT_*` toggles. The result folders stay
+1. **H-3 (done: sw112, 19 toggles removed, outputs identical):** delete the losing kernels behind the `FLASHRT_*` toggles. The result folders stay
    as the record. Keep only `FLASHRT_MOE_AB64`, `FLASHRT_HC_Q8` and `FLASHRT_ARGMAX_DRAFTS`,
    plus any toggle `sweet-spots.md` names as still useful. Do this before H-1, so the split
    moves less code.

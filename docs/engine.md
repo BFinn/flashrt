@@ -193,9 +193,8 @@ of KV. `fr_bench --prefill-chunk auto` does the same.
     - O = gamma Q S0 + P U;
     - S0 = gamma_C S0 + K^T U;
     - an fp16 copy of S0 feeds the mma. This is FLA's precision split.
-  - In slabs of 8 chunks it is 1.8x the column kernel, which remains the fallback
-    (`FLASHRT_GDN_CHUNK=0`) and the path for 16-63 tokens: four lanes share two state columns, and
-    q, k, v arrive in tiles of 8 through shared memory.
+  - In slabs of 8 chunks it is 1.8x the column kernel, which remains the path for 16-63 tokens:
+    four lanes share two state columns, and q, k, v arrive in tiles of 8 through shared memory.
 - **Hyper-connections:** the RMS norm writes `xn` in BF16 as well, for the down and inject
   products. The combine after the mixer is fused into the FFN mix's norm (`k_hc_combine_norm4`).
 - **Expert grouping** (`moe_prepare`) is flashrt's own: per-block histograms, a scan and a stable
@@ -211,7 +210,6 @@ of KV. `fr_bench --prefill-chunk auto` does the same.
   - Down keeps the tile's activations in shared memory and streams the weights over all row
     tiles.
   - The tile list is built on the GPU. Per-slot outputs are BF16.
-  - `FLASHRT_MOE_Q2MMA=0` switches back to the MMQ path.
 - **Hyper-connections in prefill:**
   - the norm writes 1/rms, and the gated mean recomputes xn from x;
   - one block per token does the combine, the norm and the 4-output inject product;
@@ -254,7 +252,7 @@ cache after, from the prefill's routing counts and the startup prior.
 | **Decode: work inside the CPU-miss window does not pay** | In a layer with CPU misses, the hits and the shared expert run while the host computes the misses, and `k_moe_combine_db` waits for it. Faster kernels there mostly lengthen the wait. Gains have to come from work outside that window (hc, mixers, dense mat-vecs), or from fewer misses. A CPU miss costs 41-46 µs in decode, near host-DRAM bandwidth. | sw78, sw79 (moe hits v2 reverted) |
 | **Decode hc kernels v2** | v1 ran at ~500 GB/s: shared-memory bound at T >= 2, with a serial norm preamble. v2: 2 rows per warp, weights before the norm, 1/rms after the dot product, up kernel as a PDL dependent in one wave. | sw75 (32K plain +2.7%) |
 | **Doorbell skip for tokens without misses** | 61% of layers at 32K have no CPU miss; they skip the x copy and the mailbox wait and read (the host still serves them, for statistics). | sw77 (`--spec 1` 32K +1.8%) |
-| **Decode launch fusions** (`linear_multi`, `FLASHRT_FUSE_EPI`) | A decode step is hundreds of 2-6 µs kernels. The BF16 projections of one input share a launch (a block of 4 warps per row: a warp per row lost to two MMVF launches), the q/k norm runs in the conv kernel, and SwiGLU and the gated norm write the next mat-vec's q8_1 input. | sw73, sw74 (32K plain 99.8 → 104.1; KLD 0.00891) |
+| **Decode launch fusions** (`linear_multi`, epilogue fusions) | A decode step is hundreds of 2-6 µs kernels. The BF16 projections of one input share a launch (a block of 4 warps per row: a warp per row lost to two MMVF launches), the q/k norm runs in the conv kernel, and SwiGLU and the gated norm write the next mat-vec's q8_1 input. | sw73, sw74 (32K plain 99.8 → 104.1; KLD 0.00891) |
 | **GDN prefill: the chunked form on tensor cores** | fp32 chunked is exact but 5x slower: it needs 2.4x the recurrence's FLOPs, and the fp32 tensor paths are no faster than the CUDA cores (TF32 61, BF16 122 TFLOPS). fp16 mma with an fp32 state is 1.8x the column kernel. Prep is DRAM-bound (about 70 MB per 512-token slab); state is mma-bound. | sw70, sw71 (+3.1-3.5% prefill, KLD 0.0084), sw72 |
 | **GDN: lanes own columns, tokens tiled through shared memory** | The block kernel waited on 4 barriers per token. v1, which prefetched one token into registers, waited on DRAM (slower). v2 was bound by shared-memory reads (24 per lane-token, over 4 addresses). | sw47, sw50: 32K 3,216 → 3,531 tok/s |
 | **Tensor-core indexer scores** | FP32 scoring is linear in depth: 1.65 s at 64K, an estimated 20 s at 245K. | sw49: 64K 2,984 → 3,197 tok/s; 0.16 s |
