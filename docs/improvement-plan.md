@@ -61,7 +61,7 @@ corrections; the numbers themselves are unchanged until phase 2 re-measures them
 6. **G-1:** `design.md` (Layers) says where each piece lives today. `interfaces.md` gets
    "status: design sketch, not implemented" and Fable's table of hard-wired shapes. Remove
    `flashrt autotune` from `design.md` or mark it as not built.
-7. **H-2:** fix the stale header comments (`forward_ref.hpp`, `blocks.hpp`) and drop the dates
+7. **H-2 (done 2026-09-30):** fix the stale header comments (`forward_ref.hpp`, `blocks.hpp`) and drop the dates
    from the doc titles.
 
 **Done when:** every number in `README.md` names its protocol, n and spread, and no doc
@@ -169,7 +169,7 @@ Each step is proven by `fr_parity`, the KLD gate and a teacher-forced A/B showin
    moves less code.
 2. **H-1 (done: sw112, outputs identical):** split `blocks.cu` into `hc.cu`, `gdn.cu`, `qsa.cu`, `moe_ref.cu`, `ple.cu` and a
    common header.
-3. **H-2 and H-7:** rename `ForwardRef` (it is the whole forward pass). Split `forward()` into
+3. **H-2 and H-7 (done: sw112, outputs identical):** rename `ForwardRef` (it is the whole forward pass). Split `forward()` into
    decode-graph, eager and chunk paths, and invalidate graphs by a version counter, not by
    comparing addresses.
 4. **H-4, H-5, H-6:** name the magic numbers in one header; use `cuda::atomic_ref` for the

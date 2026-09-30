@@ -260,10 +260,11 @@ void qsa_scratch_reserve(const Spec& s, BlockScratch& bs, int T, int max_nb, int
 void qsa_mixer(const BlockCtx& c, int il, const float* x, int T, int pos0, QsaCache& kv, float* out,
                float* gated_out = nullptr, std::vector<std::vector<int32_t>>* sel_out = nullptr);
 
-// The MoE block, correctness path: the GPU computes the router logits and the shared expert;
-// the host computes the routing (softmax over all experts, top-k, weights renormalised) and
-// every routed expert with the CPU miss path (q2_0::moe_cpu over the host arena). The VRAM
-// expert cache (GPU hits) comes after parity.
+// The MoE block, reference path (moe_ref.cu): the GPU computes the router logits and the shared
+// expert; the host computes the routing (softmax over all experts, top-k, weights renormalised)
+// and every routed expert with the CPU miss path (q2_0::moe_cpu over the host arena). It serves
+// batches up to max_batch outside decode; decode and windows use the VRAM expert cache
+// (moe_fast.hpp), prefill chunks stream the experts to the GPU (moe_stream.hpp).
 struct MoeHost {
     const ExpertArena* arena = nullptr;
     CpuPool* pool = nullptr;

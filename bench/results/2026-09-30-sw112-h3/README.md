@@ -1,4 +1,4 @@
-# sw112: removing the losing toggles and splitting blocks.cu, proven output-neutral (2026-09-30)
+# sw112: phase 4 (H-3, H-1, H-2, H-7), each proven output-neutral (2026-09-30)
 
 Phase 4, H-3 of `docs/improvement-plan.md`. Every `FLASHRT_*` A/B switch whose comparison is
 settled goes; the winning path of each stays, and the results folders stay as the record.
@@ -53,6 +53,24 @@ PLE's three norms now call `rms_norm_rows` and its rewind `hist_rewind` (the sam
 | `server_smoke.py` | 15 / 15 |
 
 Outputs of this second round are in `smoke-h1/`.
+
+## H-2 and H-7: Forward, and graphs invalidated by a version (ff92e3d)
+
+`ForwardRef` is now `Forward` (`forward.cu`, `forward.hpp`); `forward()` calls `begin_chunk`,
+`fetch_ple_rows`, `run_graphs` or `run_eager`, and `end_step`, in the old order. A captured graph
+was stale when any of six scratch addresses differed (`same_buffers`); now `BlockScratch::version`
+takes a new value whenever `alloc_block_scratch` or `qsa_scratch_reserve` (re)allocates a buffer a
+graph bakes in, and graphs (the target's and the MTP chain graph) compare versions.
+
+| Check | Result |
+|---|---|
+| Fingerprint, 7 runs | **identical** to `before` (`sw112-h2.txt`, raw logs under `h2/`) |
+| Graph captures per run | unchanged (1 in each fr_bench run) |
+| ctest | 19 / 19 |
+| `engine_smoke --reuse` / `--faults` with the head | 5 / 5 and 18 PASS |
+| `server_smoke.py` | 15 / 15 |
+
+Outputs in `smoke-h2/`.
 
 ## Files
 

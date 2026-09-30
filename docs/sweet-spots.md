@@ -1,6 +1,6 @@
 # flashrt sweet spots
 
-Last updated 2026-09-29 (through sw91).
+Last updated 2026-09-30 (through sw112).
 
 Where tuning stopped and why, the configurations that came out best, and the paths not yet
 tested. Numbers come from `bench/results/<folder>` as cited. The rationale for each piece of the

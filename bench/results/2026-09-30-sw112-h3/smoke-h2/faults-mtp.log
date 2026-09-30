@@ -1,0 +1,15 @@
+flashrt: GPU weights loaded in 0.8 s
+flashrt: experts read into the host arena and registered in 27.3 s
+flashrt: forward pass set up in 0.2 s
+flashrt: MTP head loaded in 5.2 s
+flashrt: 8 prefill checkpoints of 112.7 MiB in host RAM
+flashrt: buffers and checkpoints allocated in 0.4 s
+flashrt: expert cache and miss server set up in 0.0 s
+flashrt: qwen4exp, 48 layers, expert cache 7780 slots (31.7%), MTP drafts 2 per round
+flashrt: prefill of 2047 tokens in chunks of 512 (10093 MiB free)
+flashrt: prefill of 2047 tokens in chunks of 512 (10053 MiB free)
+flashrt: prefill of 2047 tokens in chunks of 512 (10053 MiB free)
+flashrt: prefill of 2047 tokens in chunks of 512 (10039 MiB free)
+flashrt: prefill of 2047 tokens in chunks of 512 (10039 MiB free)
+flashrt: prefill of 2047 tokens in chunks of 512 (10039 MiB free)
+flashrt: prefill of 2047 tokens in chunks of 512 (10039 MiB free)

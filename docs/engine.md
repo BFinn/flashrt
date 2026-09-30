@@ -1,6 +1,6 @@
 # flashrt engine as built
 
-Last updated 2026-09-29 (through sw91).
+Last updated 2026-09-30 (through sw112).
 
 This describes what the code does today, why each piece is shaped the way it is, what was tried
 and rejected, and how to measure it. `design.md` holds the plan and the phase gates. The
@@ -39,6 +39,18 @@ per-experiment evidence is in `bench/results/2026-09-2*`, each folder with a REA
   - Capacity is the lever: the VRAM reserve is now 256 MiB, the head's experts Q2_0, and the hc
     down matrices Q8P. Each is measured teacher-forced (`fr_bench --teacher`) at +2-5%, at no
     KLD cost.
+- **Improvement plan, 2026-09-29/30** (`docs/improvement-plan.md`):
+  - prefix reuse through a host checkpoint ring (sw95, sw96);
+  - the MTP head's prompt pass in chunk calls with grouped expert GEMMs (sw102: the head costs
+    5-7% of prefill, down from 27-60%);
+  - the expert cache's warm-up (sw99-sw110). On window 9's protocol with the head: 131.9 / 107.1
+    / 99.1 / 87.0 tok/s at 1K / 32K / 134K / 250K, ahead of Strata at every depth. The agent
+    session: 120.4-122.6 tok/s, +12%.
+  - Phase 4, behaviour-neutral with outputs proven identical (sw112):
+    - the losing `FLASHRT_*` toggles removed;
+    - `blocks.cu` split by block;
+    - `ForwardRef` renamed `Forward`, its `forward()` split, and graphs invalidated by a
+      scratch version.
 - **Next:** see "Next steps".
 
 ## One decode token (fast path)
@@ -331,10 +343,11 @@ cache after, from the prefill's routing counts and the startup prior.
 | **Engine: 32K prompt, MTP head, cache rebuild** | 7.9 s | `2026-09-28-sw61-milestone` |
 | Prefill KLD (logits from chunks; fp16, q8; fast path after chunks) | 0.0082-0.0087 | sw47, sw49, sw50 |
 | Prefill, reference path (CPU experts, 64-token batches) | 109-123 tok/s | |
-| **Window 9's protocol** (the reference engines' prompts, 384 tokens, 3 runs), 1K / 32K / 134K / 250K: greedy `--spec 2` | 106.6 / 83.7 / 81.0 / 74.8 | `2026-09-29-sw91-depthbench` |
-| same, temperature 1.0 `--spec 2` (sampled drafts) | 82.2 / 77.7 / 81.0 / 76.4 | same |
-| same, no MTP, greedy | 94.7 / 81.7 / 77.4 / 73.0 | same |
-| same, Strata greedy / temperature 1.0 (its build warns that its cache path changes outputs; Strata and llama.cpp reused prefixes, flashrt did not); llama.cpp | 87.0 / 96.0 / 85.0 / 80.4; 80.5 / 79.1 / 73.9 / 69.9; 37.4 / 37.2 / 32.8 / 30.7 | `2026-09-27-w9-validation` |
+| **Window 9's protocol** (the reference engines' prompts, 384 tokens, 5 runs, prefixes reused), 1K / 32K / 134K / 250K: greedy `--spec 2` | 131.9 / 107.1 / 99.1 / 87.0 | `2026-09-30-sw110-depthbench` (sw91: 106.6 / 83.7 / 81.0 / 74.8) |
+| same, temperature 1.0 `--spec 2` (sampled drafts) | 119.5 / 108.3 / 99.8 / 91.4 | same |
+| same, no MTP, greedy | 102.2 / 94.8 / 87.5 / 82.8 | same |
+| same, Strata greedy / temperature 1.0 (its build warns that its cache path changes outputs); llama.cpp | 87.0 / 96.0 / 85.0 / 80.4; 80.5 / 79.1 / 73.9 / 69.9; 37.4 / 37.2 / 32.8 / 30.7 | `2026-09-27-w9-validation` |
+| **The agent session** (`bench/agent_trace.py`, greedy, 2 runs) | 120.4 / 122.6 | `2026-09-30-sw109-commit-lag` |
 
 **Where the time goes at 245K with the hot set** (nsys `--cuda-graph-trace=node`, sw20):
 - 14.1 ms of GPU kernel time per token;
@@ -494,8 +507,6 @@ list, are done (sw85: 32K `--spec 1` 119.0 → 143.1 tok/s, 245K 91.7 → 97.1).
    Decode: the small mat-vecs that share an input, and the norms and SwiGLU in front of a
    mat-vec, are fused (sw73, sw74: plain +4.3%, `--spec 1` +1.9-2.3%). What is left there is
    mostly the hc kernels and the MoE combine.
-3. **Tuning:** multi-CTA select, a parallel hot-set CLOCK, an adaptive swap budget (larger
-   while the hit rate is low). Decide after phase 2 of `docs/improvement-plan.md`: the gap to
-   Strata at 32K-250K on window 9's protocol is the cache warm-up (sw88), prefix reuse, or both.
-4. **The MTP head's pass over the prompt:** prefill with the head runs 2,150-4,130 tok/s
-   against 5,690-5,960 without it (sw87, sw91).
+3. **Tuning:** multi-CTA select, a parallel hot-set CLOCK. The cache warm-up and prefix reuse
+   closed the gap to Strata on window 9's protocol (sw96, sw110).
+4. ~~The MTP head's pass over the prompt~~: done (sw102; the head costs 5-7% of prefill).
