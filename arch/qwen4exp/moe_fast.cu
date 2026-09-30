@@ -676,6 +676,7 @@ struct CacheManager {
     struct Pending {
         int key, slot;
         cudaEvent_t ev;
+        long step;   // the step that issued it
     };
     std::vector<Pending> pending;
     std::vector<cudaEvent_t> events_free;
@@ -754,10 +755,15 @@ void cache_manager_step(CacheManager* m, const MoeFastHost& h, cudaStream_t stre
         m->w /= m->cfg.decay;
         if (m->w > 1e18) m->renormalise();
     }
-    // 2. commit finished uploads (the table entry goes live from the next token on)
+    // 2. commit the uploads issued two steps ago (the table entry goes live from the next token
+    // on). A fixed step, not whichever uploads a query finds finished: with 64 in flight that
+    // depended on timing, and so did the cache's content, the hit/miss arithmetic and the outputs
+    // (sw106: the fast-path KLD varied 0.00876-0.00920 between runs). An upload has had a whole
+    // token's time by then, so the wait is almost never felt.
     for (size_t i = 0; i < m->pending.size();) {
         auto& p = m->pending[i];
-        if (cudaEventQuery(p.ev) != cudaSuccess) { ++i; continue; }
+        if (p.step > m->token - 2) { ++i; continue; }
+        ck(cudaEventSynchronize(p.ev), "swap commit");
         c.table[p.key] = p.slot;
         c.owner[p.slot] = p.key;
         m->resident.insert({m->count[p.key], p.key});
@@ -799,7 +805,7 @@ void cache_manager_step(CacheManager* m, const MoeFastHost& h, cudaStream_t stre
                            cudaMemcpyHostToDevice, m->copy),
            "swap upload");
         ck(cudaEventRecord(ev, m->copy), "swap event");
-        m->pending.push_back({key, slot, ev});
+        m->pending.push_back({key, slot, ev, m->token});
         ++m->stats.swaps;
     }
 }
