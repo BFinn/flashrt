@@ -832,6 +832,7 @@ __device__ int block_scan_int(int v, int* total) {
 // CTAs before it, so the list is written in block order, as a single CTA would (P-5: one CTA took
 // 103 us per call at 245K, 61K blocks).
 constexpr int kSelCluster = 8;
+constexpr int kSelKeys = 9216;   // a CTA's keys held in shared memory (65,536 blocks: 262K positions)
 __global__ void __cluster_dims__(kSelCluster, 1, 1) __launch_bounds__(1024)
     k_idx_select(const float* scores, int ld, int32_t* cells, int32_t* counts, int ldc, int pos0, int r, int nsel, int width,
                  const int32_t* dp) {
@@ -862,6 +863,13 @@ __global__ void __cluster_dims__(kSelCluster, 1, 1) __launch_bounds__(1024)
         __shared__ int hist2[2][256], tot[256];
         __shared__ unsigned sh_prefix;
         __shared__ int sh_need;
+        // the CTA's keys, loaded once (independent loads) for all five passes; a longer range reads
+        // them from global memory each pass
+        __shared__ unsigned keys[kSelKeys];
+        const bool held = hi - lo <= kSelKeys;
+        if (held)
+            for (int i = threadIdx.x; i < hi - lo; i += blockDim.x) keys[i] = ordered_key(sc[lo + i]);
+        auto key_of = [&](int b) { return held ? keys[b - lo] : ordered_key(sc[b]); };
         if (threadIdx.x == 0) {
             sh_prefix = 0;
             sh_need = M;
@@ -877,7 +885,7 @@ __global__ void __cluster_dims__(kSelCluster, 1, 1) __launch_bounds__(1024)
                 const int b = b0 + threadIdx.x;
                 int bin = -1;
                 if (b < hi) {
-                    const unsigned key = ordered_key(sc[b]);
+                    const unsigned key = key_of(b);
                     if ((key & hmask) == prefix) bin = int((key >> shift) & 255);
                 }
                 const unsigned same = __match_any_sync(0xffffffff, bin);
@@ -922,7 +930,7 @@ __global__ void __cluster_dims__(kSelCluster, 1, 1) __launch_bounds__(1024)
         const int b0 = min(hi, lo + int(threadIdx.x) * seg), b1 = min(hi, b0 + seg);
         int g = 0, e = 0;
         for (int b = b0; b < b1; ++b) {
-            const unsigned key = ordered_key(sc[b]);
+            const unsigned key = key_of(b);
             g += key > tau;
             e += key == tau;
         }
@@ -948,7 +956,7 @@ __global__ void __cluster_dims__(kSelCluster, 1, 1) __launch_bounds__(1024)
         const int tie_budget = M - g_total;
         int pos = g_off + g_before + min(e_off + e_before, tie_budget), tie_idx = e_off + e_before;
         for (int b = b0; b < b1; ++b) {
-            const unsigned key = ordered_key(sc[b]);
+            const unsigned key = key_of(b);
             bool sel = key > tau;
             if (key == tau) sel = tie_idx++ < tie_budget;
             if (sel) {
