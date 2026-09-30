@@ -632,7 +632,11 @@ MoeFastHost alloc_moe_fast_host(const Spec& s, int max_window) {
 // ---- adaptive expert cache
 
 namespace {
-constexpr int kMaxTableUpdates = 256;   // per token: evictions and commits (a budget of 64 needs more than 64)
+constexpr int kMaxTableUpdates = 256;
+static const long kCommitLag = [] {   // FLASHRT_COMMIT_LAG=2: commit two steps after issue (sw107)
+    const char* e = std::getenv("FLASHRT_COMMIT_LAG");
+    return e && e[0] == '2' ? 2L : 1L;
+}();   // per token: evictions and commits (a budget of 64 needs more than 64)
 struct TableUpdates {
     int n;
     int32_t idx[kMaxTableUpdates];
@@ -755,14 +759,15 @@ void cache_manager_step(CacheManager* m, const MoeFastHost& h, cudaStream_t stre
         m->w /= m->cfg.decay;
         if (m->w > 1e18) m->renormalise();
     }
-    // 2. commit the uploads issued two steps ago (the table entry goes live from the next token
-    // on). A fixed step, not whichever uploads a query finds finished: with 64 in flight that
-    // depended on timing, and so did the cache's content, the hit/miss arithmetic and the outputs
-    // (sw106: the fast-path KLD varied 0.00876-0.00920 between runs). An upload has had a whole
-    // token's time by then, so the wait is almost never felt.
+    // 2. commit the uploads issued at the previous step (the table entry goes live from the next
+    // token on). A fixed step, not whichever uploads a query finds finished: with 64 in flight
+    // that depended on timing, and so did the cache's content, the hit/miss arithmetic and the
+    // outputs (sw106: the fast-path KLD varied 0.00876-0.00920 between runs). The wait overlaps
+    // the token just enqueued: this thread synchronises on it next anyway, and CPU misses run on
+    // the miss server's thread. (Two steps later cost 1-2 points of hits on short turns, sw108.)
     for (size_t i = 0; i < m->pending.size();) {
         auto& p = m->pending[i];
-        if (p.step > m->token - 2) { ++i; continue; }
+        if (p.step > m->token - kCommitLag) { ++i; continue; }
         ck(cudaEventSynchronize(p.ev), "swap commit");
         c.table[p.key] = p.slot;
         c.owner[p.slot] = p.key;
