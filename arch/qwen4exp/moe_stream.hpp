@@ -33,6 +33,7 @@ void expert_stream_prefetch(ExpertStream* es, int il);
 
 // out [T][d_model] = routed experts + gated shared expert for x [T][d_model], T <= max_tokens.
 // counts ([n_layer][n_expert], device), if given, gets each selection.
-void moe_block_stream(const BlockCtx& c, int il, const float* x, int T, ExpertStream& es, float* out, uint32_t* counts);
+void moe_block_stream(const BlockCtx& c, int il, const float* x, int T, ExpertStream& es, float* out, uint32_t* counts,
+                      uint32_t* tail_counts = nullptr, int tail_from = 1 << 30);
 
 }  // namespace flashrt::qwen4exp

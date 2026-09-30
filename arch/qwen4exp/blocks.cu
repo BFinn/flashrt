@@ -1771,7 +1771,7 @@ __global__ void k_hc_init(const float* emb, float* x, int n, int hc) {
     }
 }
 
-__global__ void k_route_topk(const float* logits, int E, int K, int32_t* ids, float* wts, uint32_t* counts) {
+__global__ void k_route_topk(const float* logits, int E, int K, int32_t* ids, float* wts, uint32_t* counts, uint32_t* tail, int tail_from) {
     __shared__ float red[32];
     __shared__ float selp[32];
     const int t = blockIdx.x, e = threadIdx.x, lane = e & 31, warp = e >> 5, nw = blockDim.x >> 5;
@@ -1832,6 +1832,7 @@ __global__ void k_route_topk(const float* logits, int E, int K, int32_t* ids, fl
             ids[size_t(t) * K + rank] = e;
             selp[rank] = pe;
             if (counts) atomicAdd(counts + e, 1u);
+            if (tail && t >= tail_from) atomicAdd(tail + e, 1u);
         }
     }
     __syncthreads();
@@ -1855,7 +1856,8 @@ namespace {
 // shuffles, then K rounds of warp argmax (higher p first, ties to the lower index; the same rule
 // as k_route_topk, whose p may differ in the last bit through the sum's order).
 template <int V>
-__global__ void __launch_bounds__(256) k_route_topk_w(const float* logits, int T, int E, int K, int32_t* ids, float* wts, uint32_t* counts) {
+__global__ void __launch_bounds__(256) k_route_topk_w(const float* logits, int T, int E, int K, int32_t* ids, float* wts, uint32_t* counts,
+                                                      uint32_t* tail, int tail_from) {
     const int t = blockIdx.x * 8 + (threadIdx.x >> 5), lane = threadIdx.x & 31;
     if (t >= T) return;
     const float* l = logits + size_t(t) * E;
@@ -1902,6 +1904,7 @@ __global__ void __launch_bounds__(256) k_route_topk_w(const float* logits, int T
         if (lane == 0) {
             ids[size_t(t) * K + k] = bi;
             if (counts) atomicAdd(counts + bi, 1u);
+            if (tail && t >= tail_from) atomicAdd(tail + bi, 1u);
         }
         if (lane == k) selp = bv;
         ws += bv;
@@ -1911,15 +1914,16 @@ __global__ void __launch_bounds__(256) k_route_topk_w(const float* logits, int T
 }
 }  // namespace
 
-void moe_route_topk(cudaStream_t stream, const float* logits, int T, int E, int k, int32_t* ids, float* wts, uint32_t* counts) {
+void moe_route_topk(cudaStream_t stream, const float* logits, int T, int E, int k, int32_t* ids, float* wts, uint32_t* counts,
+                    uint32_t* tail_counts, int tail_from) {
     if (E > 1024 || k > 32) throw std::runtime_error("moe_route_topk: unsupported shape");
     static const bool warp = [] {   // FLASHRT_ROUTE_WARP=0: the block-per-token kernel
         const char* e = std::getenv("FLASHRT_ROUTE_WARP");
         return !(e && e[0] == '0');
     }();
-    if (warp && E <= 512) k_route_topk_w<16><<<(T + 7) / 8, 256, 0, stream>>>(logits, T, E, k, ids, wts, counts);
-    else if (warp) k_route_topk_w<32><<<(T + 7) / 8, 256, 0, stream>>>(logits, T, E, k, ids, wts, counts);
-    else k_route_topk<<<T, ((E + 31) / 32) * 32, 0, stream>>>(logits, E, k, ids, wts, counts);
+    if (warp && E <= 512) k_route_topk_w<16><<<(T + 7) / 8, 256, 0, stream>>>(logits, T, E, k, ids, wts, counts, tail_counts, tail_from);
+    else if (warp) k_route_topk_w<32><<<(T + 7) / 8, 256, 0, stream>>>(logits, T, E, k, ids, wts, counts, tail_counts, tail_from);
+    else k_route_topk<<<T, ((E + 31) / 32) * 32, 0, stream>>>(logits, E, k, ids, wts, counts, tail_counts, tail_from);
     ck(cudaGetLastError(), "moe_route_topk");
 }
 
@@ -3509,6 +3513,7 @@ void moe_block(const BlockCtx& c, int il, const float* x, int T, MoeHost& h, flo
         wsum = std::max(wsum, 6.103515625e-5f);
         for (int k = 0; k < K; ++k) {
             if (h.counts) ++(*h.counts)[size_t(il) * E + idx[k]];
+            if (h.tail_counts && t >= h.tail_from) ++(*h.tail_counts)[size_t(il) * E + idx[k]];
             routed[idx[k]].push_back({t, p[idx[k]] / wsum});
             if (trace) {
                 trace->topk[size_t(t) * K + k] = idx[k];

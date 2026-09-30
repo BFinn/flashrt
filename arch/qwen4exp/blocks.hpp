@@ -131,7 +131,9 @@ void hc_init(const BlockCtx& c, const float* emb, float* x, int T);
 // Top-k routing on the GPU (softmax over E <= 1024 logits per token, top k by probability, ties
 // to the lower index, weights renormalised as moe_block does): ids, wts [T][k]; with counts
 // ([E], device), each selection adds 1 there.
-void moe_route_topk(cudaStream_t stream, const float* logits, int T, int E, int k, int32_t* ids, float* wts, uint32_t* counts);
+// With tail_counts, rows t >= tail_from also count there (the prompt's last tokens, for the cache's fill).
+void moe_route_topk(cudaStream_t stream, const float* logits, int T, int E, int k, int32_t* ids, float* wts, uint32_t* counts,
+                    uint32_t* tail_counts = nullptr, int tail_from = 1 << 30);
 
 // Hyper-connection combine: x[t][s][:] += out[t][:] * 2*sigmoid(inject[t][s] / hc).
 void hc_combine(const BlockCtx& c, float* x, const float* out, const float* inject, int T);
@@ -269,6 +271,8 @@ struct MoeHost {
     std::vector<float> x, logits, out;         // host staging
     std::vector<uint8_t> act_mem, scratch;     // Q8 activations, moe_cpu scratch
     std::vector<uint32_t>* counts = nullptr;   // optional: routes per (layer * n_expert + expert)
+    std::vector<uint32_t>* tail_counts = nullptr;   // optional: the same for rows t >= tail_from
+    int tail_from = 1 << 30;
 };
 struct MoeTrace {                              // routing, for parity checks
     std::vector<int32_t> topk;                 // [T][top_k]

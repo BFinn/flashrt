@@ -368,7 +368,7 @@ struct Session::Impl {
         mgr = nullptr;
         std::fill(cache.table.begin(), cache.table.end(), -1);
         std::fill(cache.owner.begin(), cache.owner.end(), -1);
-        std::vector<uint32_t> cnt = fwd->counts();
+        std::vector<uint32_t> cnt = fwd->fill_counts(o.cache_tail_weight);
         for (size_t i = 0; i < cnt.size() && i < prior.size(); ++i) cnt[i] += uint32_t(prior[i] + 0.5f);
         std::vector<int> idx(cnt.size());
         std::iota(idx.begin(), idx.end(), 0);
@@ -478,6 +478,8 @@ GenerateResult Session::run(const GenerateRequest& r, const std::function<void(i
                                      : m.fwd->pick_chunk(end - tail - from, end - tail, free_b, m.o.prefill_chunk_max);
         std::fprintf(stderr, "flashrt: prefill of %d tokens in chunks of %d (%zu MiB free)\n", end - from, step, free_b >> 20);
     }
+    m.fwd->clear_tail_counts();   // the fill after this prompt weighs its last tokens (cache_tail_weight)
+    m.fwd->set_prefill_tail(chunked && m.o.cache_tail_weight > 0.0f ? m.o.cache_tail_tokens : 0);
     int last_ckpt = from;
     for (int p = from; p < end;) {
         const int T = p < end - tail ? std::min(step, end - tail - p) : std::min(m.o.prefill_batch, end - p);

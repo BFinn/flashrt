@@ -38,6 +38,10 @@ struct SessionOptions {
     int swap_budget = 64;             // expert-cache uploads per step, as CachePolicyConfig (sw89: 8 -> 32, sw104: 32 -> 64)
     float cache_admit = 1.0f, cache_margin = 1.2f;   // the adaptive cache's admission, as CachePolicyConfig (sw100)
     float cache_seed_scale = 0.03f;                  // its warm-up, as CachePolicyConfig (sw104)
+    // the fill after a chunked prompt: the routing of its last cache_tail_tokens tokens added at
+    // cache_tail_weight times the whole prompt's (0: off; sw111)
+    int cache_tail_tokens = 16;
+    float cache_tail_weight = 0.0f;
     int prefill_batch = 64;
     int prefill_chunk = 0;            // prompts adding at least chunk_min tokens prefill in chunks of this
     int chunk_min = 256;              // (the experts stream to the GPU; the expert cache is rebuilt after);

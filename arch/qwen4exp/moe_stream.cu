@@ -244,7 +244,8 @@ void route_and_gate(const BlockCtx& c, int il, const float* x, ExpertStream& es,
 }
 }  // namespace
 
-void moe_block_stream(const BlockCtx& c, int il, const float* x, int T, ExpertStream& es, float* out, uint32_t* counts) {
+void moe_block_stream(const BlockCtx& c, int il, const float* x, int T, ExpertStream& es, float* out, uint32_t* counts,
+                      uint32_t* tail_counts, int tail_from) {
     const Spec& s = c.s;
     const int E = s.n_expert, K = s.top_k, n = s.d_model, ff = s.d_ff_expert, ffs = s.d_ff_shared;
     if (T > es.max_tokens) throw std::runtime_error("moe_block_stream: chunk larger than the stream's buffers");
@@ -256,7 +257,8 @@ void moe_block_stream(const BlockCtx& c, int il, const float* x, int T, ExpertSt
         // next layer's copy into the other buffer meanwhile
         if (il + 1 < s.n_layer) expert_stream_prefetch(&es, il + 1);
         route_and_gate(c, il, x, es, T);
-        moe_route_topk(c.stream, es.logits, T, E, K, es.ids, es.wts, counts ? counts + size_t(il) * E : nullptr);
+        moe_route_topk(c.stream, es.logits, T, E, K, es.ids, es.wts, counts ? counts + size_t(il) * E : nullptr,
+                       tail_counts ? tail_counts + size_t(il) * E : nullptr, tail_from);
         moe_q2::run(es.planar[b], es.arena->stride, E, n, ff, x, es.ids, T, K, es.yd, es.ws, es.ws_bytes, c.stream, use_ab64(), use_yd16());
         ck(cudaEventRecord(es.released[b], c.stream), "cudaEventRecord");
     } else {
@@ -269,7 +271,8 @@ void moe_block_stream(const BlockCtx& c, int il, const float* x, int T, ExpertSt
         ck(cudaEventRecord(es.released[b], c.stream), "cudaEventRecord");
         if (il + 1 < s.n_layer) expert_stream_prefetch(&es, il + 1);
         route_and_gate(c, il, x, es, T);
-        moe_route_topk(c.stream, es.logits, T, E, K, es.ids, es.wts, counts ? counts + size_t(il) * E : nullptr);
+        moe_route_topk(c.stream, es.logits, T, E, K, es.ids, es.wts, counts ? counts + size_t(il) * E : nullptr,
+                       tail_counts ? tail_counts + size_t(il) * E : nullptr, tail_from);
         const int64_t gu_stride = int64_t(ff) * (n / 64) * 18, d_stride = int64_t(n) * (ff / 64) * 18;
         const gemm::MoePlan pgu = gemm::moe_prepare(kQ2_0, E, x, false, es.ids, T, K, n, es.ws, es.ws_bytes, c.stream);
         gemm::moe_run(pgu, es.g_gate, gu_stride, es.hg, ff, c.stream);

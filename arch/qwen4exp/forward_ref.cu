@@ -38,6 +38,7 @@ ForwardRef::ForwardRef(const Gguf& g, const Spec& s, const GpuWeights& w, const 
     moe_host_.arena = &arena;
     moe_host_.pool = &pool;
     counts_.assign(size_t(s.n_layer) * s.n_expert, 0);
+    tail_counts_.assign(counts_.size(), 0);
     moe_host_.counts = &counts_;
     ck(cudaStreamCreate(&stream_), "cudaStreamCreate");
     gdn_.resize(s.n_layer);
@@ -208,7 +209,8 @@ void ForwardRef::enqueue_layer(const BlockCtx& c, int il, int T) {
     if (s.mixer[il] == Mixer::QSA) qsa_mixer(c, il, mixed_, T, pos_, kv_[il], blk_);
     else gdn_mixer(c, il, mixed_, T, gdn_[il], blk_, nullptr, in_window_ ? &gdn_win_[il] : nullptr);
     hc_combine_mix(c, il, 1, x_, blk_, inject_, T, mixed_, inject_);
-    if (in_chunk_) moe_block_stream(c, il, mixed_, T, *estream_, blk_, counts_dev_);
+    if (in_chunk_) moe_block_stream(c, il, mixed_, T, *estream_, blk_, counts_dev_, prefill_tail_ > 0 ? tail_counts_dev_ : nullptr,
+                                    moe_host_.tail_from);
     else if ((T == 1 || in_window_) && fast_cache_) moe_block_fast(c, il, mixed_, *fast_cache_, *fast_host_, blk_, T);
     else moe_block(c, il, mixed_, T, moe_host_, blk_);
     if (in_chunk_) combine_pending_ = true;
@@ -418,7 +420,21 @@ void ForwardRef::release_chunk_buffers() {
     destroy_expert_stream(estream_);
     estream_ = nullptr;
     if (counts_dev_) cudaFree(counts_dev_);
-    counts_dev_ = nullptr;
+    if (tail_counts_dev_) cudaFree(tail_counts_dev_);
+    counts_dev_ = tail_counts_dev_ = nullptr;
+}
+
+std::vector<uint32_t> ForwardRef::fill_counts(float tail_weight) const {
+    std::vector<uint32_t> c = counts_;
+    double sc = 0, st = 0;
+    for (size_t i = 0; i < c.size(); ++i) {
+        sc += c[i];
+        st += tail_counts_[i];
+    }
+    if (tail_weight > 0.0f && st > 0 && sc > 0)
+        for (size_t i = 0; i < c.size(); ++i)
+            c[i] += uint32_t(std::min(4.0e9, double(tail_weight) * sc * tail_counts_[i] / st + 0.5));
+    return c;
 }
 
 size_t ForwardRef::chunk_buffer_bytes() const {
@@ -469,6 +485,8 @@ void ForwardRef::forward(const int32_t* seq, int T, int out_from, float* logits_
         if (!counts_dev_) {
             ck(cudaMalloc(&counts_dev_, counts_.size() * 4), "cudaMalloc routing counts");
             ck(cudaMemset(counts_dev_, 0, counts_.size() * 4), "memset routing counts");
+            ck(cudaMalloc(&tail_counts_dev_, counts_.size() * 4), "cudaMalloc routing counts");
+            ck(cudaMemset(tail_counts_dev_, 0, counts_.size() * 4), "memset routing counts");
         }
         use_bufs(chunk_);
         const int need = std::max(look_n_, pos_ + T);   // host KV: chunks attend from a VRAM mirror up to the prompt's end
@@ -504,6 +522,9 @@ void ForwardRef::forward(const int32_t* seq, int T, int out_from, float* logits_
             ple_fetch(ple_host_, seq, pos_, T);
         });
     const bool fast = (T == 1 || in_window_) && fast_cache_;
+    // rows of this call inside the prompt's last prefill_tail_ tokens count into tail_counts_
+    moe_host_.tail_counts = prefill_tail_ > 0 ? &tail_counts_ : nullptr;
+    moe_host_.tail_from = prefill_tail_ > 0 && look_n_ > 0 && !fast ? std::max(0, look_n_ - prefill_tail_ - pos_) : (1 << 30);
     const bool db = fast && fast_host_->doorbell;
     if (db) doorbell_begin_token(*fast_host_, T);
     if (graph) {
@@ -575,6 +596,11 @@ void ForwardRef::forward(const int32_t* seq, int T, int out_from, float* logits_
         ck(cudaMemcpy(add.data(), counts_dev_, add.size() * 4, cudaMemcpyDeviceToHost), "routing counts");
         ck(cudaMemset(counts_dev_, 0, add.size() * 4), "memset routing counts");
         for (size_t i = 0; i < add.size(); ++i) counts_[i] += add[i];
+        if (prefill_tail_ > 0) {
+            ck(cudaMemcpy(add.data(), tail_counts_dev_, add.size() * 4, cudaMemcpyDeviceToHost), "tail routing counts");
+            ck(cudaMemset(tail_counts_dev_, 0, add.size() * 4), "memset tail routing counts");
+            for (size_t i = 0; i < add.size(); ++i) tail_counts_[i] += add[i];
+        }
         in_chunk_ = false;
     }
     if (!fast && count_half_life_ > 0 && (count_tokens_ += T) >= count_half_life_) {

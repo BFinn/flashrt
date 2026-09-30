@@ -91,6 +91,13 @@ public:
     // The reference path halves counts() every `tokens` tokens (0 = never), so a long prompt's
     // counts favour its recent text, which predicts the decode better (default 4096).
     void set_count_half_life(int tokens) { count_half_life_ = tokens; }
+    // The routing of the prompt's last `tokens` tokens (the lookahead's end, set_prefill_lookahead,
+    // is the prompt's end) also counts into tail_counts(), which clear_tail_counts() empties.
+    // fill_counts(w) is counts() plus the tail scaled to w times counts()' total: an answer's
+    // first tokens route more like the prompt's last ones than like its bulk (sw111). 0: off.
+    void set_prefill_tail(int tokens) { prefill_tail_ = tokens; }
+    void clear_tail_counts() { std::fill(tail_counts_.begin(), tail_counts_.end(), 0u); }
+    std::vector<uint32_t> fill_counts(float tail_weight) const;
 
     // Speculative verify windows of up to W tokens (allocates what a rewind needs; the fast MoE
     // host must have max_window >= W).
@@ -187,6 +194,9 @@ private:
     CacheManager* cache_mgr_ = nullptr;
     bool have_access_ = false;   // fast_host_->access holds a token's routing
     std::vector<uint32_t> counts_;
+    std::vector<uint32_t> tail_counts_;
+    uint32_t* tail_counts_dev_ = nullptr;
+    int prefill_tail_ = 0;
     int count_half_life_ = 4096;
     long count_tokens_ = 0;   // tokens counted since the last halving
     int32_t* argmax_dev_ = nullptr;

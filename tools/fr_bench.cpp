@@ -3,7 +3,7 @@
 //
 //   fr_bench MODEL.gguf --ids PROMPT.txt --n-prompt N --gen G [--slots S] [--reserve-mib R]
 //            [--reference] [--workers W] [--no-doorbell] [--spin-us U] [--windows N] [--trace FILE]
-//            [--static-cache] [--swap-budget B] [--cache-admit A] [--cache-margin M] [--cache-seed-scale S] [--pcie-frac F] [--save-state FILE | --load-state FILE] [--no-q3r]
+//            [--static-cache] [--swap-budget B] [--cache-admit A] [--cache-margin M] [--cache-seed-scale S] [--cache-tail-tokens N --cache-tail-weight W] [--pcie-frac F] [--save-state FILE | --load-state FILE] [--no-q3r]
 //            [--no-graphs] [--kv q8] [--kv-hot BLOCKS] [--count-half-life N] [--mtp DRAFT.gguf [--draft K | --spec K]]
 //
 // Prefills N prompt tokens in 64-token batches (reference path; its routing counts pick the
@@ -95,6 +95,8 @@ int main(int argc, char** argv) {
     bool reference = false, doorbell = true, adaptive = true;
     int swap_budget = CachePolicyConfig{}.budget;   // as the engine (sw104)
     CachePolicyConfig pol;   // the adaptive cache's settings; the flags below override them
+    int tail_tokens = 16;    // the fill weighs the prompt's last tokens (as the engine; 0 weight: off)
+    float tail_weight = 0.0f;
     float pcie_frac = 0.0f;
     bool q3r = true, graphs = true, kv_q8 = false;
     int kv_hot = 0, half_life = 4096;
@@ -118,6 +120,8 @@ int main(int argc, char** argv) {
         else if (a == "--cache-admit") pol.admit = float(std::atof(next()));
         else if (a == "--cache-margin") pol.margin = float(std::atof(next()));
         else if (a == "--cache-seed-scale") pol.seed_scale = float(std::atof(next()));
+        else if (a == "--cache-tail-tokens") tail_tokens = std::atoi(next());
+        else if (a == "--cache-tail-weight") tail_weight = float(std::atof(next()));
         else if (a == "--pcie-frac") pcie_frac = float(std::atof(next()));
         else if (a == "--save-state") save_state = next();
         else if (a == "--no-q3r") q3r = false;
@@ -285,6 +289,7 @@ int main(int argc, char** argv) {
                     std::chrono::duration<double>(Clock::now() - tp).count());
     } else {
         fwd.set_prefill_lookahead(seq.data(), n_prompt);
+        fwd.set_prefill_tail(tail_weight > 0.0f ? tail_tokens : 0);
         for (int p = 0; p < n_prompt; p += chunk) {
             const int T = std::min(chunk, n_prompt - p);
             const bool last = p + T >= n_prompt;
@@ -354,7 +359,7 @@ int main(int argc, char** argv) {
         cudaMemGetInfo(&free_b, &total_b);
         const size_t eb = q2_0::expert_bytes({s.d_model, s.d_ff_expert});
         if (slots <= 0) slots = int((free_b - size_t(reserve_mib) * 1048576) / eb);
-        std::vector<uint32_t>& cnt = fwd.counts();
+        const std::vector<uint32_t> cnt = fwd.fill_counts(tail_weight);
         std::vector<int> idx(cnt.size());
         std::iota(idx.begin(), idx.end(), 0);
         std::stable_sort(idx.begin(), idx.end(), [&](int a, int b) { return cnt[a] > cnt[b]; });
@@ -381,7 +386,7 @@ int main(int argc, char** argv) {
             const auto tr = Clock::now();
             CachePolicyConfig cfg = pol;
             cfg.budget = swap_budget;
-            mgr = create_cache_manager(s, cache, arena, cfg, fwd.counts());
+            mgr = create_cache_manager(s, cache, arena, cfg, cnt);
             fwd.set_cache_manager(mgr);
             std::printf("adaptive cache: decayed LFU, admit %.2f, margin %.2f, swap budget %d, seed scale %.3f (set up in %.1f s)\n",
                         cfg.admit, cfg.margin, swap_budget, cfg.seed_scale,
