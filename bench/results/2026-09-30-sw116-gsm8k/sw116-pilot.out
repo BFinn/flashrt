@@ -1,0 +1,12 @@
+data: 1319 items, sha256 3730d312f6e34405
+flashrt ef15269; llama.cpp e4c893841 (uncommitted changes)
+Running as unit: fr-server-sw116.service; invocation ID: ac8cbf46bcf346e485f2f2d719cde69f
+flashrt: done, 10/10 right this run
+Running as unit: llama-sw116.service; invocation ID: cb8e51245ee14bca973689c987194d3f
+llama.cpp: done, 10/10 right this run
+$BENCH/sw116/flashrt.jsonl: 10/10 = 100.0% (95% CI 72.2-100.0); 0 cut at max tokens; mean 341 tokens
+$BENCH/sw116/llama.jsonl: 10/10 = 100.0% (95% CI 72.2-100.0); 0 cut at max tokens; mean 352 tokens
+paired over 10: both right 10, first only 0, second only 0, neither 0; McNemar exact p = 1.000
+identical responses 2 (20.0%), same extracted answer 10 (100.0%)
+items right in one run only: 
+ALLDONE

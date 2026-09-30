@@ -1,0 +1,1 @@
+exec $LLAMA_CPP/build/bin/llama-server -m $MODELS/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf --host 127.0.0.1 --port 8299 --no-warmup -ngl 99 -ot 'ffn_.*_exps=CPU' -fa on   -c 8192 -t 12 -tb 12 --jinja --parallel 1

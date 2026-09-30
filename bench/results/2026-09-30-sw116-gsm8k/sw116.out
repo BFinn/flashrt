@@ -1,0 +1,50 @@
+data: 1319 items, sha256 3730d312f6e34405
+flashrt ef15269; llama.cpp e4c893841 (uncommitted changes)
+Running as unit: fr-server-sw116.service; invocation ID: a76f2fe5c9ee4c10af34eeb855bd4caa
+flashrt 35/500: 24/25 right this run, 3.9 s per item
+flashrt 60/500: 48/50 right this run, 4.2 s per item
+flashrt 85/500: 73/75 right this run, 4.5 s per item
+flashrt 110/500: 96/100 right this run, 5.2 s per item
+flashrt 135/500: 120/125 right this run, 5.4 s per item
+flashrt 160/500: 145/150 right this run, 5.6 s per item
+flashrt 185/500: 169/175 right this run, 5.8 s per item
+flashrt 210/500: 193/200 right this run, 5.9 s per item
+flashrt 235/500: 217/225 right this run, 6.0 s per item
+flashrt 260/500: 240/250 right this run, 6.1 s per item
+flashrt 285/500: 265/275 right this run, 6.1 s per item
+flashrt 310/500: 287/300 right this run, 6.2 s per item
+flashrt 335/500: 311/325 right this run, 6.3 s per item
+flashrt 360/500: 335/350 right this run, 6.3 s per item
+flashrt 385/500: 359/375 right this run, 6.4 s per item
+flashrt 410/500: 382/400 right this run, 6.4 s per item
+flashrt 435/500: 406/425 right this run, 6.5 s per item
+flashrt 460/500: 430/450 right this run, 6.5 s per item
+flashrt 485/500: 455/475 right this run, 6.4 s per item
+flashrt: done, 470/490 right this run
+Running as unit: llama-sw116.service; invocation ID: 85568e64503d4eac8472473cfae91686
+llama.cpp 35/500: 25/25 right this run, 11.6 s per item
+llama.cpp 60/500: 49/50 right this run, 11.4 s per item
+llama.cpp 85/500: 74/75 right this run, 11.5 s per item
+llama.cpp 110/500: 98/100 right this run, 12.1 s per item
+llama.cpp 135/500: 122/125 right this run, 12.0 s per item
+llama.cpp 160/500: 146/150 right this run, 12.1 s per item
+llama.cpp 185/500: 170/175 right this run, 12.2 s per item
+llama.cpp 210/500: 194/200 right this run, 12.1 s per item
+llama.cpp 235/500: 218/225 right this run, 12.0 s per item
+llama.cpp 260/500: 242/250 right this run, 12.0 s per item
+llama.cpp 285/500: 267/275 right this run, 12.0 s per item
+llama.cpp 310/500: 290/300 right this run, 12.1 s per item
+llama.cpp 335/500: 314/325 right this run, 12.1 s per item
+llama.cpp 360/500: 338/350 right this run, 12.1 s per item
+llama.cpp 385/500: 362/375 right this run, 12.1 s per item
+llama.cpp 410/500: 384/400 right this run, 12.1 s per item
+llama.cpp 435/500: 409/425 right this run, 12.2 s per item
+llama.cpp 460/500: 433/450 right this run, 12.2 s per item
+llama.cpp 485/500: 458/475 right this run, 12.1 s per item
+llama.cpp: done, 473/490 right this run
+$BENCH/sw116/flashrt.jsonl: 480/500 = 96.0% (95% CI 93.9-97.4); 11 cut at max tokens; mean 352 tokens
+$BENCH/sw116/llama.jsonl: 483/500 = 96.6% (95% CI 94.6-97.9); 11 cut at max tokens; mean 355 tokens
+paired over 500: both right 477, first only 3, second only 6, neither 14; McNemar exact p = 0.508
+identical responses 139 (27.8%), same extracted answer 485 (97.0%)
+items right in one run only: 12(2nd) 102(2nd) 139(1st) 241(2nd) 304(2nd) 337(2nd) 340(1st) 409(1st) 423(2nd)
+ALLDONE
