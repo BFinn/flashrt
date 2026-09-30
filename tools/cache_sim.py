@@ -149,7 +149,8 @@ def prime_counts(prefill, n_exp, half_life):
     return c
 
 
-def sim_engine(trace, cap, n_exp, prime=None, budget=32, decay=0.7, decay_every=4, admit=2.0, margin=1.5, windows=0):
+def sim_engine(trace, cap, n_exp, prime=None, budget=32, decay=0.7, decay_every=4, admit=2.0, margin=1.5, windows=0, seed_scale=1.0,
+               early_budget=0, early_tokens=0):
     """Returns (hit rate, per-window hit rates, uploads started)."""
     n_tok, n_layer, k = trace.shape
     keys = (np.arange(n_layer)[None, :, None] * n_exp + trace).reshape(n_tok, n_layer * k)
@@ -157,6 +158,7 @@ def sim_engine(trace, cap, n_exp, prime=None, budget=32, decay=0.7, decay_every=
     resident = np.zeros(n_layer * n_exp, dtype=bool)
     if prime is not None:
         resident[np.argsort(-count, kind="stable")[:cap]] = True
+        count *= seed_scale   # the fill follows the prompt; the policy's counts start at this fraction
     pending = []
     hits, total, win, uploads = 0, 0, [], 0
     wh = wt = 0
@@ -174,8 +176,9 @@ def sim_engine(trace, cap, n_exp, prime=None, budget=32, decay=0.7, decay_every=
         n_res = int(resident.sum())
         missed = [key for key in dict.fromkeys(row.tolist()) if not resident[key]]
         missed.sort(key=lambda key: -count[key])
+        bud = early_budget if t < early_tokens else budget
         for key in missed:
-            if len(pending) >= budget:
+            if len(pending) >= bud:
                 break
             if n_res + len(pending) < cap:
                 pending.append(key)

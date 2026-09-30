@@ -98,6 +98,11 @@ struct CachePolicyConfig {
     float admit = 1.0f;    // 2 until sw100: 1 with margin 1.2 follows a generation that routes unlike its
     float margin = 1.2f;   // prompt sooner (window 9 +3.0%, wikitext +1.6%, teacher-forced; sw99, sw100)
     int budget = 8;
+    // The warm-up after a fill from a prompt's routing: the counts start at seed_scale times the
+    // prompt's (the fill still follows them), and the first early_tokens tokens may have
+    // early_budget uploads in flight (0: budget throughout). sw104.
+    float seed_scale = 1.0f;
+    int early_budget = 0, early_tokens = 0;
 };
 struct CacheManager;   // opaque; see moe_fast.cu
 

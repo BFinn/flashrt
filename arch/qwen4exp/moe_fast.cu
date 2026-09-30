@@ -632,10 +632,11 @@ MoeFastHost alloc_moe_fast_host(const Spec& s, int max_window) {
 // ---- adaptive expert cache
 
 namespace {
+constexpr int kMaxTableUpdates = 256;   // per token: evictions and commits (an early budget needs more than 64)
 struct TableUpdates {
     int n;
-    int32_t idx[64];
-    int32_t val[64];
+    int32_t idx[kMaxTableUpdates];
+    int32_t val[kMaxTableUpdates];
 };
 __global__ void k_table_update(int32_t* table, TableUpdates u) {
     if (int(threadIdx.x) < u.n) table[u.idx[threadIdx.x]] = u.val[threadIdx.x];
@@ -670,7 +671,8 @@ struct CacheManager {
     cudaEvent_t tok_done = nullptr;
     std::vector<float> count;                   // inflated: real count = count / w
     double w = 1.0;                             // weight of an access now
-    long token = 0;
+    long token = 0;    // steps
+    long tokens = 0;   // tokens learned from (a window's step has several)
     std::set<std::pair<float, int>> resident;   // (count, key) of the cached experts
     struct Pending {
         int key, slot;
@@ -705,14 +707,14 @@ CacheManager* create_cache_manager(const Spec& s, ExpertCache& cache, const Expe
     m->cfg = cfg;
     const size_t n = size_t(s.n_layer) * s.n_expert;
     m->count.assign(n, 0.0f);
-    for (size_t k = 0; k < n && k < prior.size(); ++k) m->count[k] = float(prior[k]);
+    for (size_t k = 0; k < n && k < prior.size(); ++k) m->count[k] = float(prior[k]) * cfg.seed_scale;
     m->is_pending.assign(n, 0);
     for (size_t key = 0; key < n; ++key)
         if (cache.table[key] >= 0) m->resident.insert({m->count[key], int(key)});
     arena_register(arena);
     ck(cudaStreamCreateWithFlags(&m->copy, cudaStreamNonBlocking), "cudaStreamCreate copy");
     ck(cudaEventCreateWithFlags(&m->tok_done, cudaEventDisableTiming), "cudaEventCreate");
-    for (int i = 0; i < cfg.budget; ++i) {
+    for (int i = 0; i < std::max(cfg.budget, cfg.early_budget); ++i) {
         cudaEvent_t ev;
         ck(cudaEventCreateWithFlags(&ev, cudaEventDisableTiming), "cudaEventCreate");
         m->events_free.push_back(ev);
@@ -748,6 +750,8 @@ void cache_manager_step(CacheManager* m, const MoeFastHost& h, cudaStream_t stre
                 m->bump(key, float(m->w));
                 if (c.table[key] < 0 && !m->is_pending[key]) missed.push_back(key);
             }
+    const int budget = m->tokens < m->cfg.early_tokens && m->cfg.early_budget > 0 ? m->cfg.early_budget : m->cfg.budget;
+    m->tokens += h.access_prev_T;
     if (++m->token % m->cfg.decay_every == 0) {
         m->w /= m->cfg.decay;
         if (m->w > 1e18) m->renormalise();
@@ -760,7 +764,7 @@ void cache_manager_step(CacheManager* m, const MoeFastHost& h, cudaStream_t stre
         c.owner[p.slot] = p.key;
         m->resident.insert({m->count[p.key], p.key});
         m->is_pending[p.key] = 0;
-        if (upd.n < 64) { upd.idx[upd.n] = p.key; upd.val[upd.n] = p.slot; ++upd.n; }
+        if (upd.n < kMaxTableUpdates) { upd.idx[upd.n] = p.key; upd.val[upd.n] = p.slot; ++upd.n; }
         m->events_free.push_back(p.ev);
         ++m->stats.committed;
         p = m->pending.back();
@@ -771,7 +775,7 @@ void cache_manager_step(CacheManager* m, const MoeFastHost& h, cudaStream_t stre
     missed.erase(std::unique(missed.begin(), missed.end()), missed.end());
     std::vector<std::pair<int, int>> uploads;   // (key, slot)
     for (int key : missed) {
-        if (int(m->pending.size() + uploads.size()) >= m->cfg.budget || m->resident.empty() || upd.n >= 62) break;
+        if (int(m->pending.size() + uploads.size()) >= budget || m->resident.empty() || upd.n >= kMaxTableUpdates - 2) break;
         if (m->count[key] < m->cfg.admit * m->w) break;   // sorted: no later miss qualifies either
         const auto [vcount, victim] = *m->resident.begin();
         if (m->count[key] < m->cfg.margin * vcount) break;
@@ -786,7 +790,7 @@ void cache_manager_step(CacheManager* m, const MoeFastHost& h, cudaStream_t stre
         uploads.push_back({key, slot});
     }
     // 4. evictions and commits apply after this token; uploads start after it
-    if (upd.n) k_table_update<<<1, 64, 0, stream>>>(c.table_dev, upd);
+    if (upd.n) k_table_update<<<1, kMaxTableUpdates, 0, stream>>>(c.table_dev, upd);
     if (uploads.empty()) return;
     ck(cudaEventRecord(m->tok_done, stream), "event token done");
     ck(cudaStreamWaitEvent(m->copy, m->tok_done, 0), "wait token done");
