@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
-// qwen4exp forward blocks on the GPU: norms, hyper-connections, GDN, QSA attention and its
-// indexer, the reference MoE, PLE and embeddings. They began as plain kernels, one call per block,
+// qwen4exp forward blocks on the GPU: norms, hyper-connections (hc.cu), GDN (gdn.cu), QSA
+// attention and its indexer (qsa.cu), batch routing and the reference MoE (moe_ref.cu), PLE
+// (ple.cu); scratch, linear layers and embeddings (blocks.cu). They began as plain kernels, one call per block,
 // checked against llama.cpp's intermediates (tools/fr_parity). Most now also have fused decode
 // and tensor-core prefill variants, checked the same way and by the KLD gate (tools/fr_kld).
 //

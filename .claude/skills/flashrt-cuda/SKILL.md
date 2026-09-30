@@ -28,7 +28,7 @@ RTX 5080 16 GB, sm_120 (consumer Blackwell), 84 SMs, 64 MB L2, CUDA 12.9, driver
 | fp32 CUDA cores | ~56 TFLOPS | sw70 |
 | Kernel launch inside a CUDA graph | ~1.4 µs per small kernel | sweet-spots |
 | Programmatic dependent launch | saves ~0.25 µs per boundary | `bench_pdl` |
-| Dynamic shared memory | the code opts in to 96 KB above 48 KB via `cudaFuncSetAttribute` | `blocks.cu` |
+| Dynamic shared memory | the code opts in to 96 KB above 48 KB via `cudaFuncSetAttribute` | `hc.cu`, `gdn.cu` |
 
 - sm_120 has warp-level `mma.sync` (int8 m16n8k32, fp16/bf16 m16n8k16). It does **not** have
   the datacenter Blackwell/Hopper paths (`wgmma`, `tcgen05`, tensor memory). Code or advice
@@ -105,7 +105,7 @@ If the current kernel is already near that ceiling, the gain is not in the kerne
 - **PDL:** launch the dependent with `cudaLaunchKernelEx` and
   `cudaLaunchAttributeProgrammaticStreamSerialization`; the dependent calls
   `cudaGridDependencySynchronize()` before reading the producer's output (see `k_hc_up_mix2`
-  in `blocks.cu`). Load independent data (weights) before the wait.
+  in `hc.cu`). Load independent data (weights) before the wait.
 - **Comments** say what the kernel computes and why it is shaped that way, with the sw number
   that measured it. Match the density of the surrounding code.
 

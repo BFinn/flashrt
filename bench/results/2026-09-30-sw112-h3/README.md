@@ -1,4 +1,4 @@
-# sw112: removing the losing toggles, proven output-neutral (2026-09-30)
+# sw112: removing the losing toggles and splitting blocks.cu, proven output-neutral (2026-09-30)
 
 Phase 4, H-3 of `docs/improvement-plan.md`. Every `FLASHRT_*` A/B switch whose comparison is
 settled goes; the winning path of each stays, and the results folders stay as the record.
@@ -36,6 +36,23 @@ Runs are bit-reproducible (sw107, sw109), so a neutral refactor must reproduce e
 | `server_smoke.py` on the new build | 15 / 15 ok |
 
 No speed was measured: the paths that run are the same code as before.
+
+## H-1: blocks.cu split (1e2eceb)
+
+The same checks on phase 4's next step: `blocks.cu` (3,690 lines) split by block into `hc.cu`,
+`gdn.cu`, `qsa.cu`, `moe_ref.cu` (batch routing and the reference MoE) and `ple.cu`, with
+scratch, the linear layers, the embedding, argmax and the head left in `blocks.cu` and
+`ck`, `block_sum` and `hist_rewind` in the internal `blocks_common.cuh`. The code moved as is;
+PLE's three norms now call `rms_norm_rows` and its rewind `hist_rewind` (the same launches).
+
+| Check | Result |
+|---|---|
+| Fingerprint, 7 runs | **identical** to `before` (`sw112-h1.txt`, raw logs under `h1/`) |
+| ctest | 19 / 19 |
+| `engine_smoke --reuse` / `--faults` with the head | 5 / 5 and 18 PASS |
+| `server_smoke.py` | 15 / 15 |
+
+Outputs of this second round are in `smoke-h1/`.
 
 ## Files
 

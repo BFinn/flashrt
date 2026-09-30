@@ -1,0 +1,7 @@
+100% tests passed, 0 tests failed out of 19
+FINGERPRINT-IDENTICAL
+reuse-mtp rc=0 engine exited with 0; 0 check(s) failed
+faults-mtp rc=0 engine exited with 0; 0 check(s) failed
+Running as unit: fr-server-sw112.service; invocation ID: 270741b283114795a885bfe092c11dae
+server_smoke rc=0 all checks passed
+ALLDONE

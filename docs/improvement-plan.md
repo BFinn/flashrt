@@ -167,7 +167,7 @@ Each step is proven by `fr_parity`, the KLD gate and a teacher-forced A/B showin
    as the record. Keep only `FLASHRT_MOE_AB64`, `FLASHRT_HC_Q8` and `FLASHRT_ARGMAX_DRAFTS`,
    plus any toggle `sweet-spots.md` names as still useful. Do this before H-1, so the split
    moves less code.
-2. **H-1:** split `blocks.cu` into `hc.cu`, `gdn.cu`, `qsa.cu`, `moe_ref.cu`, `ple.cu` and a
+2. **H-1 (done: sw112, outputs identical):** split `blocks.cu` into `hc.cu`, `gdn.cu`, `qsa.cu`, `moe_ref.cu`, `ple.cu` and a
    common header.
 3. **H-2 and H-7:** rename `ForwardRef` (it is the whole forward pass). Split `forward()` into
    decode-graph, eager and chunk paths, and invalidate graphs by a version counter, not by
