@@ -8,7 +8,7 @@
 Each item is one chat request: greedy (temperature 0), thinking off (chat_template_kwargs
 enable_thinking = false), --max-tokens per answer, one request at a time. The prompt asks for the
 final answer on a last line "#### <number>"; the answer is that number, or else the response's last
-number. A result line per item goes to --out (items already there are skipped, so a run resumes).
+number. A result line per item goes to --out (with the server's `timings`, when it sends them) (items already there are skipped, so a run resumes).
 --compare prints both accuracies with 95% Wilson intervals and the paired table: items right in one
 run only, with McNemar's exact two-sided p-value, and how often the two responses are identical.
 """
@@ -79,7 +79,7 @@ def run(a):
         ok = p is not None and g is not None and abs(p - g) < 1e-6
         rec = {"idx": i, "gold": g, "pred": p, "correct": ok, "finish": r["choices"][0].get("finish_reason"),
                "completion_tokens": r.get("usage", {}).get("completion_tokens"), "seconds": round(dt, 3), "content": text,
-               "reasoning": msg.get("reasoning_content") or ""}
+               "reasoning": msg.get("reasoning_content") or "", "timings": r.get("timings")}
         out.write(json.dumps(rec) + "\n")
         out.flush()
         right += ok
