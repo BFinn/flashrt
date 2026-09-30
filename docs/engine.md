@@ -376,7 +376,13 @@ cache after, from the prefill's routing counts and the startup prior.
   - `test_q2_0`, `test_moe_cpu`.
 - **Determinism:** fr_bench runs are bit-reproducible. A GPU hit and a CPU miss are not
   bit-identical (Q8_1 against Q8 arithmetic), so tokens can differ between cache configurations.
-  Compare with KLD, not tokens.
+  Compare with KLD, not tokens. Expert-cache uploads commit at a fixed step, so that holds with
+  the adaptive cache too (sw106, sw107).
+- **Output fingerprint** (`bench/results/2026-09-30-sw112-h3/fingerprint.sh LABEL`): for a change
+  meant to leave outputs alone, 7 runs whose KLD values, swap counts, hit rates and token hashes
+  must equal the previous build's exactly: KLD fast, windows and chunks, teacher-forced window 9
+  with and without the head, and a sampled and a greedy wikitext run. Phase 4's refactors passed
+  it (sw112, sw113).
 
 ## Runbook (on the target box, as capped `systemd-run` units)
 

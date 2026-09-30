@@ -1,0 +1,13 @@
+old w9mtp decode: 322 tokens at depth 32793 in 3.02 s: 106.48 tok/s (speculative, MTP drafts), swaps 7020
+new w9mtp decode: 322 tokens at depth 32793 in 2.93 s: 109.84 tok/s (speculative, MTP drafts), swaps 7020
+new w9mtp decode: 322 tokens at depth 32793 in 2.93 s: 109.88 tok/s (speculative, MTP drafts), swaps 7020
+old w9mtp decode: 322 tokens at depth 32793 in 3.03 s: 106.24 tok/s (speculative, MTP drafts), swaps 7020
+old w9mtp decode: 322 tokens at depth 32793 in 2.89 s: 111.35 tok/s (speculative, MTP drafts), swaps 7020
+new w9mtp decode: 322 tokens at depth 32793 in 2.91 s: 110.66 tok/s (speculative, MTP drafts), swaps 7020
+new w9mtp decode: 322 tokens at depth 32793 in 2.97 s: 108.49 tok/s (speculative, MTP drafts), swaps 7020
+old w9mtp decode: 322 tokens at depth 32793 in 2.90 s: 111.16 tok/s (speculative, MTP drafts), swaps 7020
+old w9mtp decode: 322 tokens at depth 32793 in 2.94 s: 109.35 tok/s (speculative, MTP drafts), swaps 7020
+new w9mtp decode: 322 tokens at depth 32793 in 3.04 s: 106.01 tok/s (speculative, MTP drafts), swaps 7020
+new w9mtp decode: 322 tokens at depth 32793 in 2.94 s: 109.37 tok/s (speculative, MTP drafts), swaps 7020
+old w9mtp decode: 322 tokens at depth 32793 in 2.96 s: 108.91 tok/s (speculative, MTP drafts), swaps 7020
+ALLDONE

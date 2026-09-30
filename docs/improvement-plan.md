@@ -172,10 +172,10 @@ Each step is proven by `fr_parity`, the KLD gate and a teacher-forced A/B showin
 3. **H-2 and H-7 (done: sw112, outputs identical):** rename `ForwardRef` (it is the whole forward pass). Split `forward()` into
    decode-graph, eager and chunk paths, and invalidate graphs by a version counter, not by
    comparing addresses.
-4. **H-4, H-5, H-6:** name the magic numbers in one header; use `cuda::atomic_ref` for the
+4. **H-4, H-5, H-6 (done: sw113, outputs identical, decode speed unchanged):** name the magic numbers in one header; use `cuda::atomic_ref` for the
    doorbells; make `-march=native` opt-in; scope `--use_fast_math`; check the CUDA
    architecture at configure time.
-5. **E-3, E-4, S-3, S-8** (S-3 and S-8 done 2026-09-29: tokenization runs on the blocking pool with
+5. **E-3, E-4, S-3, S-8** (E-3 was in place and E-4 done in sw113; S-3 and S-8 done 2026-09-29: tokenization runs on the blocking pool with
    the cache locked per word, BPE merges from a heap, byte-identical to llama.cpp on the wikitext
    reference; content arrays join their text; bad tool arguments are a 400; template kwargs
    cannot replace the conversation; S-9's body limit is 64 MiB): bound the host-side doorbell wait; shut the engine down cleanly;

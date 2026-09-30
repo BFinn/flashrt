@@ -1,0 +1,27 @@
+configure sm 86: rc=1   CMAKE_CUDA_ARCHITECTURES=86: flashrt needs sm_90 or newer (it is built and
+configure sm native: rc=0   CMAKE_CUDA_ARCHITECTURES=native cannot be checked: flashrt needs sm_90 or
+100% tests passed, 0 tests failed out of 19
+FINGERPRINT-IDENTICAL
+old w9 decode: 320 tokens at depth 32793 in 3.67 s: 87.08 tok/s (fast path, doorbell), swaps 12387
+old w9mtp decode: 322 tokens at depth 32793 in 2.96 s: 108.87 tok/s (speculative, MTP drafts), swaps 7020
+old wiki8k decode: 256 tokens at depth 8192 in 2.33 s: 110.00 tok/s (fast path, doorbell), swaps 5997
+new w9 decode: 320 tokens at depth 32793 in 3.63 s: 88.10 tok/s (fast path, doorbell), swaps 12387
+new w9mtp decode: 322 tokens at depth 32793 in 2.97 s: 108.38 tok/s (speculative, MTP drafts), swaps 7020
+new wiki8k decode: 256 tokens at depth 8192 in 2.33 s: 109.97 tok/s (fast path, doorbell), swaps 5997
+new w9 decode: 320 tokens at depth 32793 in 3.63 s: 88.22 tok/s (fast path, doorbell), swaps 12387
+new w9mtp decode: 322 tokens at depth 32793 in 3.07 s: 104.94 tok/s (speculative, MTP drafts), swaps 7020
+new wiki8k decode: 256 tokens at depth 8192 in 2.34 s: 109.61 tok/s (fast path, doorbell), swaps 5997
+old w9 decode: 320 tokens at depth 32793 in 3.65 s: 87.75 tok/s (fast path, doorbell), swaps 12387
+old w9mtp decode: 322 tokens at depth 32793 in 2.89 s: 111.33 tok/s (speculative, MTP drafts), swaps 7020
+old wiki8k decode: 256 tokens at depth 8192 in 2.40 s: 106.85 tok/s (fast path, doorbell), swaps 5997
+old w9 decode: 320 tokens at depth 32793 in 3.69 s: 86.71 tok/s (fast path, doorbell), swaps 12387
+old w9mtp decode: 322 tokens at depth 32793 in 2.91 s: 110.63 tok/s (speculative, MTP drafts), swaps 7020
+old wiki8k decode: 256 tokens at depth 8192 in 2.37 s: 108.18 tok/s (fast path, doorbell), swaps 5997
+new w9 decode: 320 tokens at depth 32793 in 3.64 s: 87.93 tok/s (fast path, doorbell), swaps 12387
+new w9mtp decode: 322 tokens at depth 32793 in 2.95 s: 109.14 tok/s (speculative, MTP drafts), swaps 7020
+new wiki8k decode: 256 tokens at depth 8192 in 2.32 s: 110.50 tok/s (fast path, doorbell), swaps 5997
+reuse-mtp rc=0 engine exited with 0; 0 check(s) failed
+faults-mtp rc=0 engine exited with 0; 0 check(s) failed
+Running as unit: fr-server-sw112.service; invocation ID: fd48080862a74762aa7adbddfaf0d237
+server_smoke rc=0 all checks passed
+ALLDONE
