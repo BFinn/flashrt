@@ -1,0 +1,12 @@
+CMD $FLASHRT/build/flashrt-engine $MODELS/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf
+flashrt: GPU weights loaded in 0.9 s
+flashrt: experts read into the host arena and registered in 22.4 s
+flashrt: forward pass set up in 1.3 s
+flashrt: 8 prefill checkpoints of 112.6 MiB in host RAM
+flashrt: buffers and checkpoints allocated in 0.3 s
+flashrt: expert cache and miss server set up in 0.0 s
+flashrt: qwen4exp, 48 layers, expert cache 8372 slots (34.1%), no speculation
+flashrt: prefill of 1054 tokens in chunks of 1054 (11549 MiB free)
+flashrt: prefill of 32792 tokens in chunks of 16384 (11519 MiB free)
+flashrt: prefill of 101260 tokens in chunks of 14592 (11443 MiB free)
+flashrt: prefill of 116707 tokens in chunks of 14592 (11435 MiB free)

@@ -16,7 +16,7 @@ against the best existing engines on that box.
 
 ## Results
 
-**Same prompts as the reference engines** (`bench/results/2026-09-29-sw96-depthbench`,
+**Same prompts as the reference engines** (`bench/results/2026-09-30-sw110-depthbench`,
 against `bench/results/2026-09-27-w9-validation`):
 - the same token ids (a synthetic prompt followed by an instruction, at 1K / 32K / 134K / 250K
   tokens);
@@ -29,11 +29,11 @@ against `bench/results/2026-09-27-w9-validation`):
 | llama.cpp (expert cache, sparse attention; no MTP), greedy | 4 | 37.4 ± 0.6 | 37.2 ± 1.1 | 32.8 ± 1.6 | 30.7 ± 1.1 |
 | **greedy** | | | | | |
 | Strata 0.1.6, MTP (see the caveat below) | 4 | 87.0 ± 0.7 | 96.0 ± 2.2 | 85.0 ± 2.7 | 80.4 ± 3.6 |
-| flashrt, MTP (2 drafts per round) | 5 | 105.2 ± 2.6 | 84.0 ± 1.1 | 78.8 ± 1.8 | 75.2 ± 1.6 |
-| flashrt, no MTP | 5 | 94.5 ± 2.2 | 83.1 ± 0.6 | 78.3 ± 0.5 | 73.4 ± 0.7 |
+| flashrt, MTP (2 drafts per round) | 5 | 131.9 ± 2.8 | 107.1 ± 2.1 | 99.1 ± 1.0 | 87.0 ± 0.8 |
+| flashrt, no MTP | 5 | 102.2 ± 1.1 | 94.8 ± 1.1 | 87.5 ± 0.3 | 82.8 ± 0.3 |
 | **temperature 1.0** (top-p 0.95, top-k 20) | | | | | |
 | Strata 0.1.6, MTP (n=3 at 250K) | 4 | 80.5 ± 4.1 | 79.1 ± 1.3 | 73.9 ± 1.8 | 69.9 ± 7.2 |
-| flashrt, MTP, sampled drafts | 5 | 100.7 ± 8.3 | 81.0 ± 4.3 | 79.5 ± 2.6 | 77.3 ± 4.8 |
+| flashrt, MTP, sampled drafts | 5 | 119.5 ± 10.7 | 108.3 ± 1.6 | 99.8 ± 4.3 | 91.4 ± 8.1 |
 
 - **Prefix reuse.** Every prompt ends with the same instruction, so a deeper prompt shares only its
   context with the previous one. flashrt reuses 32,768 tokens at 134K and 134,004 at 250K, from
@@ -47,35 +47,32 @@ against `bench/results/2026-09-27-w9-validation`):
   the model's.
 
 What the table shows:
-- **Against llama.cpp:** 2.2-2.5x with neither engine drafting, 2.3-2.8x with flashrt's MTP head.
-- **Against Strata, greedy:** ahead at 1K; behind from 32K on, by 12.5% at 32K, 7% at 134K and 6.5%
-  at 250K.
-- **Against Strata, temperature 1.0:** ahead at 1K and 134K; at 32K and 250K the difference is
-  within the run-to-run spread.
-- **With the cache's newer admission default** (sw101, n = 3, MTP greedy): 112.1 / 87.0 / 83.7 /
-  74.6 tok/s at the four depths. That is +6.6%, +3.6% and +6.2% at 1K-134K, with 250K flat, and
-  behind Strata by 1.5% at 134K.
-- **The depth gap is the expert cache,** not the prefill: reusing the prefix left decode where it
-  was (sw91, without reuse, is within the spread in every cell). The cache is filled from the
-  prompt's routing, and this generation routes elsewhere: 66-68% hits with the MTP head, 75-77%
-  without, against 93% on natural text (`2026-09-29-sw88-w9-diag`). How much a better cache policy
-  can recover is the next measurement.
-- **Tuned on this protocol:** the expert-cache swap budget of 32 was chosen here (+9-12%, sw89).
-  It costs 1% on natural text (sw90).
+- **Against llama.cpp:** 2.5-2.7x with neither engine drafting, 2.8-3.5x with flashrt's MTP head.
+- **Against Strata, greedy:** ahead at every depth, by 52%, 12%, 17% and 8%. Without its draft
+  head flashrt is ahead at 1K, 134K and 250K, and level at 32K (94.8 against 96.0).
+- **Against Strata, temperature 1.0:** ahead by 31-48% at every depth.
+- **What moved it: the expert cache's warm-up.** The cache is filled from the prompt's routing, and
+  this answer routes elsewhere. The policy now starts from scaled-down prompt counts, admits
+  sooner, and starts up to 64 uploads per step, committed deterministically (sw99-sw109). Hit rates
+  rose from 66-77% to 80-89%, and decode 8-34% over sw96. Prefix reuse (sw95, sw96) changed the
+  prompt's time, not decode.
+- **Tuned on this protocol:** the cache's settings were found here (sw89, sw100, sw104), and
+  checked teacher-forced on wikitext too, where they gain 4-5% (sw104, sw109).
 - **Time to the first token at 250K:** 24.0 s with the draft head (sw102) and 22.3 s without it,
   for the 116,708 new tokens. Strata takes 123 s for its 119,640 new tokens.
 - **Prefill per new token,** from each engine's own log, at 32K / 134K / 250K:
-  - flashrt without the draft head: 5,662 / 5,756 / 5,232 tok/s;
-  - flashrt with the head: 5,405 / 5,424 / 4,856 (sw102: its prompt pass in chunk calls with grouped
-    expert GEMMs; 4,988 / 5,031 / 4,529 in sw96);
+  - flashrt without the draft head: 5,665 / 5,753 / 5,233 tok/s;
+  - flashrt with the head: 5,397 / 5,421 / 4,852 (its prompt pass in chunk calls with grouped
+    expert GEMMs, sw102);
   - Strata: 1,173 / 1,090 / 969;
   - llama.cpp: 1,108 / 724 / 443.
 
-**An agentic coding session** (`bench/results/2026-09-29-sw97-agent`, `bench/agent_trace.py`): 12
-turns through the server, with the model reading this repository through tool calls, up to 77K
-tokens of context, with the MTP head. Every turn reuses the whole previous conversation. Time to
-first token is 1.0-2.6 s per turn, and decode about 102 tok/s. Decode varies with the expert
-cache's hit rate from turn to turn: 73 tok/s at 44% hits, 125 at 86%.
+**An agentic coding session** (`bench/agent_trace.py`; `bench/results/2026-09-29-sw97-agent`,
+`2026-09-30-sw109-commit-lag`): 12 turns through the server, with the model reading this
+repository through tool calls, up to 77K tokens of context, with the MTP head. Every turn reuses
+the whole previous conversation, and time to the first token is 1.0-2.6 s per turn. Decode is
+about 121 tok/s at 82% expert-cache hits (sw109; 108 tok/s at 76% with the cache's earlier
+settings). Short turns written right after a tool result still hit least (57% on the first file).
 
 **Continuing natural text** (`tools/fr_bench`, wikitext prompts from saved states, 6 windows of
 128 tokens; `2026-09-28-sw85-sampled-drafts`, one run per arm):
