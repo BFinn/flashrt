@@ -1,0 +1,37 @@
+flashrt: GPU weights loaded in 0.8 s
+flashrt: experts read into the host arena and registered in 22.9 s
+flashrt: forward pass set up in 0.7 s
+flashrt: MTP head loaded in 5.1 s
+flashrt: 8 prefill checkpoints of 112.7 MiB in host RAM
+flashrt: buffers and checkpoints allocated in 0.3 s
+flashrt: expert cache and miss server set up in 0.0 s
+flashrt: qwen4exp, 48 layers, expert cache 7660 slots (31.2%), MTP drafts 2 per round
+[2m2026-09-30T05:59:32.565063Z[0m [32m INFO[0m [2mflashrt_server[0m[2m:[0m engine ready [3mversion[0m[2m=[0m0.1.0 [3march[0m[2m=[0mqwen4exp [3mmax_context[0m[2m=[0m131072
+[2m2026-09-30T05:59:32.565146Z[0m [32m INFO[0m [2mflashrt_server[0m[2m:[0m listening on 127.0.0.1:8090
+flashrt: prefill of 488 tokens in chunks of 488 (9935 MiB free)
+[2m2026-09-30T05:59:34.310799Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r0: prompt 489 (reused 0) in 1223 ms, 60 tokens in 451 ms, ToolCalls
+flashrt: prefill of 7352 tokens in chunks of 7352 (9875 MiB free)
+[2m2026-09-30T05:59:36.283854Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r1: prompt 7904 (reused 551) in 1674 ms, 38 tokens in 293 ms, ToolCalls
+flashrt: prefill of 7279 tokens in chunks of 7279 (9855 MiB free)
+[2m2026-09-30T05:59:39.370671Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r2: prompt 15223 (reused 7943) in 1672 ms, 156 tokens in 1409 ms, ToolCalls
+[2m2026-09-30T05:59:41.733283Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r3: prompt 15483 (reused 15379) in 840 ms, 218 tokens in 1517 ms, ToolCalls
+flashrt: prefill of 1649 tokens in chunks of 1649 (9657 MiB free)
+[2m2026-09-30T05:59:44.259486Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r4: prompt 17351 (reused 15701) in 1046 ms, 164 tokens in 1473 ms, ToolCalls
+flashrt: prefill of 7279 tokens in chunks of 7279 (9649 MiB free)
+[2m2026-09-30T05:59:48.612830Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r5: prompt 24796 (reused 17516) in 1675 ms, 314 tokens in 2670 ms, ToolCalls
+flashrt: prefill of 3158 tokens in chunks of 3158 (9647 MiB free)
+[2m2026-09-30T05:59:53.730967Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r6: prompt 28269 (reused 25110) in 1094 ms, 512 tokens in 4016 ms, Length
+flashrt: prefill of 2172 tokens in chunks of 2172 (9643 MiB free)
+[2m2026-09-30T05:59:56.197061Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r7: prompt 30441 (reused 28268) in 1051 ms, 175 tokens in 1406 ms, ToolCalls
+flashrt: prefill of 11847 tokens in chunks of 11847 (9629 MiB free)
+[2m2026-09-30T06:00:02.599843Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r8: prompt 42464 (reused 30616) in 2505 ms, 512 tokens in 3882 ms, Length
+flashrt: prefill of 7290 tokens in chunks of 7290 (9615 MiB free)
+[2m2026-09-30T06:00:07.187127Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r9: prompt 50267 (reused 42976) in 1709 ms, 343 tokens in 2864 ms, ToolCalls
+flashrt: prefill of 7791 tokens in chunks of 7791 (9607 MiB free)
+[2m2026-09-30T06:00:13.112896Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r10: prompt 58403 (reused 50611) in 1783 ms, 512 tokens in 4127 ms, Length
+flashrt: prefill of 3809 tokens in chunks of 3809 (9603 MiB free)
+[2m2026-09-30T06:00:18.465181Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r11: prompt 62212 (reused 58402) in 1119 ms, 512 tokens in 4219 ms, Length
+[2m2026-09-30T06:00:18.477100Z[0m [32m INFO[0m [2mflashrt_server[0m[2m:[0m shutting down
+[2m2026-09-30T06:00:19.494590Z[0m [32m INFO[0m [2mflashrt_server::engine[0m[2m:[0m engine output ended
+[2m2026-09-30T06:00:19.494625Z[0m [31mERROR[0m [2mflashrt_server[0m[2m:[0m the engine is down; exiting in 3 s
+[2m2026-09-30T06:00:21.706751Z[0m [32m INFO[0m [2mflashrt_server::engine[0m[2m:[0m engine exited: exit status: 0
