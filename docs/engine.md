@@ -243,7 +243,7 @@ cache after, from the prefill's routing counts and the startup prior.
 | **Expert cache in the arena's planar layout** | Uploads are plain copies (no staging, no unrepack), and one layout serves the CPU and GPU kernels. | sw14 |
 | **dp4a hit kernels** (int8 activations per 64 values) | ggml's grouped MMVQ ran the down-projection at about 300 GB/s and always covered 10 entries, pads included. | sw14: MoE hit time 1.6 → 0.97 ms per token; `test_moe_hits` 0.8-1.4% relative L2 |
 | **Q3R for tall Q3_K matrices, converted in place** | ggml's Q3_K MMVQ reaches 364-388 GB/s on sm_120. The limit is decode arithmetic, not bytes; a planar dp4a layout reaches 549-611 GB/s. Only matrices with ≥ 4096 rows and K ≤ 4096 qualify: ggml wins on short or wide ones. | sw10 (v1 kept a duplicate copy: net loss), sw16 |
-| **Adaptive decayed-LFU cache: admit 1, margin 1.2, counts seeded at 0.03x the prompt's, 64 uploads started per step, committed at the next step** | A static cache from the prompt's routing falls to 66% hits on new text; the adaptive one holds about 89%. When the answer routes unlike the prompt (window 9's chat prompts, agent turns after a tool result), the loss is the warm-up: the prompt-seeded counts kept the answer's experts out for ~70 tokens, and the budget then limited how fast the cache followed (sw99's simulator, `tools/cache_sim.py --policies engine`). Commits at a fixed step keep runs bit-reproducible: committing whatever a query found done made them vary (sw106). | sw11-12, sw21-22, sw88-sw90; sw99-sw101; sw104-sw109: window 9 with the head +8-25%, the agent session +12% |
+| **Adaptive decayed-LFU cache: admit 1, margin 1.2, counts seeded at 0.03x the prompt's, 64 uploads started per step, committed at the next step** | A static cache from the prompt's routing falls to 66% hits on new text; the adaptive one holds about 89%. When the answer routes unlike the prompt (window 9's chat prompts, agent turns after a tool result), the loss is the warm-up: the prompt-seeded counts kept the answer's experts out for ~70 tokens, and the budget then limited how fast the cache followed (sw99's simulator, `tools/cache_sim.py --policies engine`). Commits at a fixed step keep runs bit-reproducible: committing whatever a query found done made them vary (sw106). Missed experts are de-duplicated after a sort with a key tie-break: without it, an expert missed by several tokens of a verify window could be admitted twice and orphan a slot (sw118: over 200 short server requests the cache fell to 12% hits). | sw11-12, sw21-22, sw88-sw90; sw99-sw101; sw104-sw109: window 9 with the head +8-25%, the agent session +12% |
 | **Prefill routing counts halve every 4,096 tokens** | At depth, the whole prompt's counts are a poor prior. | sw21: first-window hit rate at 245K 67-69% → 75-79% |
 | **Split-K flash-decode attention** | The first kernel spent 7.1 ms per token on attention. | sw2: 7.1 → 0.23 ms |
 | **Deterministic indexer selection** (block order, no float atomics anywhere) | Atomic slot order made the attention sum order, and so the output, vary from run to run. | sw5: runs bit-reproducible since |
@@ -351,9 +351,11 @@ cache after, from the prefill's routing counts and the startup prior.
 | **Engine: 32K prompt, MTP head, cache rebuild** | 7.9 s | `2026-09-28-sw61-milestone` |
 | Prefill KLD (logits from chunks; fp16, q8; fast path after chunks) | 0.0082-0.0087 | sw47, sw49, sw50 |
 | Prefill, reference path (CPU experts, 64-token batches) | 109-123 tok/s | |
-| **Window 9's protocol** (the reference engines' prompts, 384 tokens, 5 runs, prefixes reused), 1K / 32K / 134K / 250K: greedy `--spec 2` | 131.9 / 107.1 / 99.1 / 87.0 | `2026-09-30-sw110-depthbench` (sw91: 106.6 / 83.7 / 81.0 / 74.8) |
-| same, temperature 1.0 `--spec 2` (sampled drafts) | 119.5 / 108.3 / 99.8 / 91.4 | same |
-| same, no MTP, greedy | 102.2 / 94.8 / 87.5 / 82.8 | same |
+| **Window 9's protocol** (the reference engines' prompts, 384 tokens, 5 runs, prefixes reused), 1K / 32K / 134K / 250K: greedy `--spec 2` | 125.7 / 106.0 / 99.5 / 92.3 | `2026-09-30-sw119-after-fix` (sw110, before the cache fix: 131.9 / 107.1 / 99.1 / 87.0, the difference following draft acceptance on the generated text; sw91: 106.6 / 83.7 / 81.0 / 74.8) |
+| same, temperature 1.0 `--spec 2` (sampled drafts) | 118.3 / 106.1 / 99.5 / 96.8 | same (sw110: 119.5 / 108.3 / 99.8 / 91.4) |
+| same, no MTP, greedy | 102.2 / 94.8 / 87.5 / 82.8 | `2026-09-30-sw110-depthbench` |
+| **Many short requests through the server** (GSM8K, 200 in a row, `--spec 2`), decode at steady state | 143-148 tok/s, 82-84% hits | `2026-09-30-sw118-cache-leak` (before the fix: falling to 61 tok/s, 12% hits) |
+| **GSM8K**, the first 500 test items, greedy, thinking off: flashrt / llama.cpp on the same GGUF | 96.0% / 96.6% (McNemar p = 0.51) | `2026-09-30-sw116-gsm8k` |
 | same, Strata greedy / temperature 1.0 (its build warns that its cache path changes outputs); llama.cpp | 87.0 / 96.0 / 85.0 / 80.4; 80.5 / 79.1 / 73.9 / 69.9; 37.4 / 37.2 / 32.8 / 30.7 | `2026-09-27-w9-validation` |
 | **The agent session** (`bench/agent_trace.py`, greedy, 2 runs) | 120.4 / 122.6 | `2026-09-30-sw109-commit-lag` |
 
@@ -386,6 +388,10 @@ cache after, from the prefill's routing counts and the startup prior.
   bit-identical (Q8_1 against Q8 arithmetic), so tokens can differ between cache configurations.
   Compare with KLD, not tokens. Expert-cache uploads commit at a fixed step, so that holds with
   the adaptive cache too (sw106, sw107).
+- **Task score** (`bench/gsm8k_eval.py`): GSM8K through any OpenAI-compatible server, with a paired
+  comparison of two runs (sw116: flashrt 96.0%, llama.cpp 96.6%, p = 0.51).
+- **Cache consistency** (`flashrt-engine --cache-check`): after each request, the host and device
+  tables, slot owners and uploads in flight (sw117, sw118).
 - **Output fingerprint** (`bench/results/2026-09-30-sw112-h3/fingerprint.sh LABEL`): for a change
   meant to leave outputs alone, 7 runs whose KLD values, swap counts, hit rates and token hashes
   must equal the previous build's exactly: KLD fast, windows and chunks, teacher-forced window 9

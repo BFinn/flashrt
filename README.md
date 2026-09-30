@@ -16,8 +16,9 @@ against the best existing engines on that box.
 
 ## Results
 
-**Same prompts as the reference engines** (`bench/results/2026-09-30-sw110-depthbench`,
-against `bench/results/2026-09-27-w9-validation`):
+**Same prompts as the reference engines** (`bench/results/2026-09-30-sw119-after-fix` for the
+MTP rows, `2026-09-30-sw110-depthbench` for the no-MTP row, against
+`bench/results/2026-09-27-w9-validation`):
 - the same token ids (a synthetic prompt followed by an instruction, at 1K / 32K / 134K / 250K
   tokens);
 - the depths in one sequence, each prompt reusing the previous one's shared prefix, 384 generated
@@ -29,11 +30,11 @@ against `bench/results/2026-09-27-w9-validation`):
 | llama.cpp (expert cache, sparse attention; no MTP), greedy | 4 | 37.4 ± 0.6 | 37.2 ± 1.1 | 32.8 ± 1.6 | 30.7 ± 1.1 |
 | **greedy** | | | | | |
 | Strata 0.1.6, MTP (see the caveat below) | 4 | 87.0 ± 0.7 | 96.0 ± 2.2 | 85.0 ± 2.7 | 80.4 ± 3.6 |
-| flashrt, MTP (2 drafts per round) | 5 | 131.9 ± 2.8 | 107.1 ± 2.1 | 99.1 ± 1.0 | 87.0 ± 0.8 |
+| flashrt, MTP (2 drafts per round) | 5 | 125.7 ± 3.3 | 106.0 ± 1.7 | 99.5 ± 1.6 | 92.3 ± 1.4 |
 | flashrt, no MTP | 5 | 102.2 ± 1.1 | 94.8 ± 1.1 | 87.5 ± 0.3 | 82.8 ± 0.3 |
 | **temperature 1.0** (top-p 0.95, top-k 20) | | | | | |
 | Strata 0.1.6, MTP (n=3 at 250K) | 4 | 80.5 ± 4.1 | 79.1 ± 1.3 | 73.9 ± 1.8 | 69.9 ± 7.2 |
-| flashrt, MTP, sampled drafts | 5 | 119.5 ± 10.7 | 108.3 ± 1.6 | 99.8 ± 4.3 | 91.4 ± 8.1 |
+| flashrt, MTP, sampled drafts | 5 | 118.3 ± 11.0 | 106.1 ± 4.7 | 99.5 ± 5.5 | 96.8 ± 5.1 |
 
 - **Prefix reuse.** Every prompt ends with the same instruction, so a deeper prompt shares only its
   context with the previous one. flashrt reuses 32,768 tokens at 134K and 134,004 at 250K, from
@@ -47,15 +48,20 @@ against `bench/results/2026-09-27-w9-validation`):
   the model's.
 
 What the table shows:
-- **Against llama.cpp:** 2.5-2.7x with neither engine drafting, 2.8-3.5x with flashrt's MTP head.
-- **Against Strata, greedy:** ahead at every depth, by 52%, 12%, 17% and 8%. Without its draft
+- **Against llama.cpp:** 2.5-2.7x with neither engine drafting, 2.8-3.4x with flashrt's MTP head.
+- **Against Strata, greedy:** ahead at every depth, by 44%, 10%, 17% and 15%. Without its draft
   head flashrt is ahead at 1K, 134K and 250K, and level at 32K (94.8 against 96.0).
-- **Against Strata, temperature 1.0:** ahead by 31-48% at every depth.
+- **Against Strata, temperature 1.0:** ahead by 34-47% at every depth.
 - **What moved it: the expert cache's warm-up.** The cache is filled from the prompt's routing, and
   this answer routes elsewhere. The policy now starts from scaled-down prompt counts, admits
   sooner, and starts up to 64 uploads per step, committed deterministically (sw99-sw109). Hit rates
-  rose from 66-77% to 80-89%, and decode 8-34% over sw96. Prefix reuse (sw95, sw96) changed the
+  rose from 66-77% to 80-89%, and decode 8-31% over sw96. Prefix reuse (sw95, sw96) changed the
   prompt's time, not decode.
+- **The MTP rows are after an expert-cache fix** (sw118): speculative windows could admit an
+  expert twice and orphan a slot. On this protocol each prompt refills the cache, so the change
+  is small; the greedy rows moved with the generated text's draft acceptance (1K: 64% → 56%,
+  250K: 50% → 56%), not with the hit rate. Through the server, over 200 short requests, decode
+  had fallen to 61 tok/s and now holds 143-148 (sw117, sw118).
 - **Tuned on this protocol:** the cache's settings were found here (sw89, sw100, sw104), and
   checked teacher-forced on wikitext too, where they gain 4-5% (sw104, sw109).
 - **Time to the first token at 250K:** 24.0 s with the draft head (sw102) and 22.3 s without it,
@@ -95,6 +101,10 @@ llama.cpp reference (2 × 8K wikitext chunks):
 
 Speculative sampling is exact in distribution (`tests/test_spec_sample.cpp`, and a
 distribution test on the model).
+
+On a task, through the server as deployed (MTP head, greedy, thinking off), GSM8K's first 500
+test items score **96.0% against llama.cpp's 96.6%** on the same GGUF: 3 items right in flashrt
+only, 6 in llama.cpp only, McNemar p = 0.51 (`bench/results/2026-09-30-sw116-gsm8k`).
 
 ## How it works
 
