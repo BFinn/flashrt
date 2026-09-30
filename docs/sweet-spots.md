@@ -84,7 +84,8 @@ chunked GDN and later work.
 - **What remains outside the window:**
   - dense mat-vecs (at bandwidth except Q3R at ~600 GB/s);
   - the LM head at ~730 GB/s;
-  - the hc mix at ~590 GB/s;
+  - the hc mix at ~590 GB/s (ceiling ~3%; hiding its loads under the miss wait lost twice, sw123,
+    sw125);
   - attention.
   Each is worth a few percent at most.
 

@@ -282,6 +282,12 @@ cache after, from the prefill's routing counts and the startup prior.
 
 ## Tried and rejected, or parked
 
+- **The hc mix's weights loaded during the miss wait** (P-5, sw125): `k_moe_combine_db` triggered
+  PDL at its start and `k_hc_down2` became its dependent, so both mix kernels loaded their weights
+  while the combine waited. Faster back to back in `test_hc_decode` (T 1 16.9 → 15.5 µs). End to
+  end it was flat: −2.4% to +2.8% by arm over 4 rounds. In context the mix kernels were no shorter,
+  and the combine's wait grew 13.3 → 18.5 µs, as with sw123's hints. The mix's ceiling is about 3%
+  (10.1 MB, 13.3 µs floor against ~16 µs, 97 per token), so the track is closed.
 - **L2 prefetch of the next layer's hc mix during the miss wait** (P-5, sw123): the weights reach
   L2 (the up-mix 15.3 → 11.1 µs), but a bulk prefetch holds the stream about 29 µs, longer than
   the wait, and per-line hints slowed the step. −1% to −14% in every mode; removed.
