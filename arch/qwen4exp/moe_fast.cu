@@ -1037,8 +1037,22 @@ __global__ void k_l2_prefetch(PrefetchRanges r) {
 #endif
 }
 
+// The same with a per-line prefetch hint (128 B), spread over the grid: the kernel ends once the
+// hints are issued
+__global__ void k_l2_prefetch_lines(PrefetchRanges r) {
+    size_t first[9];
+    first[0] = 0;
+    for (int k = 0; k < r.n; ++k) first[k + 1] = first[k] + (r.bytes[k] + 127) / 128;
+    for (size_t g = size_t(blockIdx.x) * blockDim.x + threadIdx.x; g < first[r.n]; g += size_t(gridDim.x) * blockDim.x) {
+        int k = 0;
+        while (g >= first[k + 1]) ++k;
+        asm volatile("prefetch.global.L2 [%0];" ::"l"(r.p[k] + (g - first[k]) * 128));
+    }
+}
+
 // FLASHRT_L2_PREFETCH: while the combine waits for the CPU misses, prefetch the next layer's hc mix
-// weights into L2 (1: the attention mix; 2: the FFN mix too; 0: off)
+// weights into L2 (1: the attention mix; 2: the FFN mix too; 3: the attention mix by line hints;
+// 0: off)
 int l2_prefetch_mode() {
     static const int m = [] {
         const char* e = std::getenv("FLASHRT_L2_PREFETCH");
@@ -1052,7 +1066,7 @@ void prefetch_next_hc(const BlockCtx& c, int il) {
     if (mode <= 0 || il + 1 >= c.s.n_layer) return;
     PrefetchRanges r{};
     for (const char* which : {".hc_attn_", ".hc_ffn_"}) {
-        if (which[4] == 'f' && mode < 2) break;
+        if (which[4] == 'f' && mode != 2) break;
         for (const char* part : {"norm.weight", "down.weight", "up.weight", "inject.weight"}) {
             const GpuTensor* t = c.w.find("blk." + std::to_string(il + 1) + which + part);
             if (t && r.n < 8 && t->bytes < (size_t(1) << 32)) {
@@ -1062,7 +1076,8 @@ void prefetch_next_hc(const BlockCtx& c, int il) {
             }
         }
     }
-    if (r.n) k_l2_prefetch<<<1, 256, 0, c.stream>>>(r);
+    if (r.n && mode == 3) k_l2_prefetch_lines<<<168, 256, 0, c.stream>>>(r);
+    else if (r.n) k_l2_prefetch<<<1, 256, 0, c.stream>>>(r);
 }
 }  // namespace
 

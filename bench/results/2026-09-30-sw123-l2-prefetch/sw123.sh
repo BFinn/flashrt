@@ -15,18 +15,18 @@ run() { local mode=$1 name=$2; shift 2
   echo "m$mode $name $(grep -h '^decode:' $(ls -t $O/$name-m$mode-*.txt | head -1) | tail -1 | cut -c1-80)"; }
 S245="--ids $I --n-prompt 245760 --kv-hot 4096 --load-state $BENCH/state-245k-q8-mtp.bin --teacher --gen 256 --windows 1"
 S32="--ids $I --n-prompt 32768 --kv-hot 4096 --load-state $BENCH/state-32k-q8-mtp.bin --teacher --gen 256 --windows 1"
-for order in "0 1 2" "1 2 0" "2 0 1"; do
-  for m in $order; do
+for order in ${ORDERS:-0,1,2 1,2,0 2,0,1}; do   # comma-joined modes per round
+  for m in ${order//,/ }; do
     run $m plain245 $S245
     run $m plain32 $S32
     run $m spec32 $S32 --mtp $D --spec 2 --draft-vocab $V
   done
 done
 N=/usr/local/cuda-12.9/bin/nsys
-for m in 0 1; do
+for m in ${PROFILE_MODES:-0 1}; do
   wait_vram; FLASHRT_L2_PREFETCH=$m $N profile -f true -o $O/p_m$m --trace=cuda --cuda-graph-trace=node $B/fr_bench $M $S32 > $O/p_m$m.txt 2>&1
   $N stats --force-export=true --report cuda_gpu_kern_sum --format csv -o $O/p_m$m $O/p_m$m.nsys-rep > /dev/null 2>&1
 done
-bash bench/results/2026-09-30-sw112-h3/fingerprint.sh sw123 > $O/fp-new.txt 2>&1
+[ -n "${SKIP_FP:-}" ] || bash bench/results/2026-09-30-sw112-h3/fingerprint.sh sw123 > $O/fp-new.txt 2>&1
 diff $BENCH/sw122/fp-new.txt $O/fp-new.txt && echo FINGERPRINT-IDENTICAL || echo FINGERPRINT-DIFFERS
 echo ALLDONE
