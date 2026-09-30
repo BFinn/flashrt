@@ -124,6 +124,12 @@ struct CacheStats {
     long swaps = 0, committed = 0;
 };
 CacheStats cache_manager_stats(const CacheManager* m);
+// A consistency check of the cache (host table, device table, slot owners) and the manager's
+// uploads in flight, for diagnostics. One device-to-host copy of the table.
+struct CacheCheck {
+    long host_resident = 0, dev_resident = 0, table_mismatch = 0, owner_mismatch = 0, free_slots = 0, pending = 0;
+};
+CacheCheck cache_check(const ExpertCache& c, const CacheManager* m);
 
 // The GPU experts of one token: yh[k] [n] = down_k(silu(gate_k x) * up_k x) for k < *hit_n
 // (device int), expert k's planar blob at hit_ptr[k] (device array; a cache slot or mapped host

@@ -731,6 +731,24 @@ void destroy_cache_manager(CacheManager* m) {
 
 CacheStats cache_manager_stats(const CacheManager* m) { return m->stats; }
 
+CacheCheck cache_check(const ExpertCache& c, const CacheManager* m) {
+    CacheCheck r;
+    std::vector<int32_t> dev(c.table.size());
+    ck(cudaMemcpy(dev.data(), c.table_dev, dev.size() * 4, cudaMemcpyDeviceToHost), "table to host");
+    for (size_t k = 0; k < dev.size(); ++k) {
+        r.host_resident += c.table[k] >= 0;
+        r.dev_resident += dev[k] >= 0;
+        r.table_mismatch += c.table[k] != dev[k];
+    }
+    for (int slot = 0; slot < c.n_slots; ++slot) {
+        const int key = c.owner[size_t(slot)];
+        if (key < 0) ++r.free_slots;
+        else if (c.table[size_t(key)] != slot) ++r.owner_mismatch;
+    }
+    r.pending = m ? long(m->pending.size()) : 0;
+    return r;
+}
+
 void cache_manager_step(CacheManager* m, const MoeFastHost& h, cudaStream_t stream) {
     const Spec& s = *m->s;
     ExpertCache& c = *m->cache;

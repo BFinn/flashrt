@@ -149,6 +149,7 @@ int main(int argc, char** argv) {
         else if (a == "--ckpts") o.ckpts = std::atoi(next());
         else if (a == "--ckpt-interval") o.ckpt_interval = std::atoi(next());
         else if (a == "--ckpt-tail") o.ckpt_tail = std::atoi(next());
+        else if (a == "--cache-check") o.cache_check = true;
         else { std::fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
     }
     std::unique_ptr<Session> session;

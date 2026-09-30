@@ -603,6 +603,14 @@ GenerateResult Session::run(const GenerateRequest& r, const std::function<void(i
     res.decode_ms = ms_since(td);
     res.cache_hits = m.host.hits - hits0;
     res.cache_misses = m.host.misses + m.host.gpu_misses - misses0;
+    if (m.o.cache_check) {
+        const CacheCheck c = cache_check(m.cache, m.mgr);
+        std::fprintf(stderr,
+                     "flashrt: cache check: hits %.1f%%, resident host %ld / device %ld of %d slots, free %ld, table mismatches %ld, "
+                     "owner mismatches %ld, in flight %ld\n",
+                     100.0 * res.cache_hits / std::max(1L, res.cache_hits + res.cache_misses), c.host_resident, c.dev_resident,
+                     m.cache.n_slots, c.free_slots, c.table_mismatch, c.owner_mismatch, c.pending);
+    }
     return res;
 }
 

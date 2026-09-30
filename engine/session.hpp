@@ -56,6 +56,7 @@ struct SessionOptions {
     int ckpts = 8;
     int ckpt_interval = 4096;
     int ckpt_tail = 64;
+    bool cache_check = false;         // log the expert cache's consistency after each request (diagnostics)
 };
 
 struct GenerateRequest {
