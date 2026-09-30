@@ -11,7 +11,7 @@ D=$MODELS/mtp-Flash-Next-Q8_0-noembd.gguf
 V=$BENCH/mtp-vocab/ranks.txt
 T=$BENCH/sw100
 O=$BENCH/sw118; mkdir -p $O; cd $FLASHRT
-cp build/fr_bench $O/fr_bench.old
+[ -e $O/fr_bench.old ] || cp build/fr_bench $O/fr_bench.old   # a restarted run keeps the first copy
 cmake --build build 2>&1 | grep -E 'error|warning|FAILED' | head -20
 (cd build && FLASHRT_TEST_MODEL=$M ctest --output-on-failure 2>&1 | grep -E "tests passed|tests failed|Failed|\*\*\*")
 wait_vram() { for i in $(seq 300); do u=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits); [ "$u" -lt 600 ] && return; sleep 2; done; echo "VRAM busy"; exit 1; }
