@@ -5,6 +5,8 @@
 // split-K and tensor-core attention.
 #include "arch/qwen4exp/blocks_common.cuh"
 
+#include <cooperative_groups.h>
+
 #include <cuda_fp16.h>
 
 #include <algorithm>
@@ -821,30 +823,42 @@ __device__ int block_scan_int(int v, int* total) {
     return before;
 }
 
-// Per token (one CUDA block): the cells to attend to. Dense (counts = -1) while q + 1 <= width;
-// otherwise the top M blocks by score, M = nsel minus one when the incomplete tail exists, then
-// the tail cells. The M-th largest score is found by a 32-pass radix select; ties at it are taken
-// in block order.
-__global__ void k_idx_select(const float* scores, int ld, int32_t* cells, int32_t* counts, int ldc, int pos0, int r,
-                             int nsel, int width, const int32_t* dp) {
+// Per token (one cluster of kSelCluster CTAs): the cells to attend to. Dense (counts = -1) while
+// q + 1 <= width; otherwise the top M blocks by score, M = nsel minus one when the incomplete tail
+// exists, then the tail cells. The M-th largest score is found by a 32-bit radix select, 8 bits a
+// pass; ties at it are taken in block order. CTA k of the cluster owns blocks [k * per, (k + 1) *
+// per): each builds its digit histogram, and every CTA sums all of them through distributed shared
+// memory, so all take the same digit. The final pass offsets each CTA's blocks by the counts of the
+// CTAs before it, so the list is written in block order, as a single CTA would (P-5: one CTA took
+// 103 us per call at 245K, 61K blocks).
+constexpr int kSelCluster = 8;
+__global__ void __cluster_dims__(kSelCluster, 1, 1) __launch_bounds__(1024)
+    k_idx_select(const float* scores, int ld, int32_t* cells, int32_t* counts, int ldc, int pos0, int r, int nsel, int width,
+                 const int32_t* dp) {
+    namespace cg = cooperative_groups;
+    cg::cluster_group cl = cg::this_cluster();
+    const int rank = int(cl.block_rank());
     if (dp) pos0 = dp[1];
-    const int t = blockIdx.x, q = pos0 + t;
-    if (q + 1 <= width) {
-        if (threadIdx.x == 0) counts[t] = -1;
+    const int t = blockIdx.y, q = pos0 + t;
+    if (q + 1 <= width) {   // the whole cluster takes this branch (one token per cluster)
+        if (rank == 0 && threadIdx.x == 0) counts[t] = -1;
         return;
     }
     const int nb = (q + 1) / r, tail = (q + 1) - nb * r, M = nsel - (tail > 0 ? 1 : 0);
     const float* sc = scores + size_t(t) * ld;
     int32_t* out = cells + size_t(t) * ldc;
+    const int per = (nb + kSelCluster - 1) / kSelCluster;
+    const int lo = min(nb, rank * per), hi = min(nb, lo + per);
     int filled;
     if (nb <= M) {
-        for (int b = threadIdx.x; b < nb; b += blockDim.x)
+        for (int b = lo + int(threadIdx.x); b < hi; b += blockDim.x)
             for (int k = 0; k < r; ++k) out[b * r + k] = b * r + k;
         filled = nb;
     } else {
-        // tau = the M-th largest key, found 8 bits at a time: a histogram of the next digit over
-        // the keys that match the digits found so far (integer counts: order-independent)
-        __shared__ int hist[256];
+        // tau = the M-th largest key, 8 bits at a time: this CTA's histogram of the next digit over
+        // its keys that match the digits found so far (integer counts: order-independent), summed
+        // over the cluster
+        __shared__ int hist[256], tot[256];
         __shared__ unsigned sh_prefix;
         __shared__ int sh_need;
         if (threadIdx.x == 0) {
@@ -857,21 +871,27 @@ __global__ void k_idx_select(const float* scores, int ld, int32_t* cells, int32_
             const unsigned prefix = sh_prefix, hmask = shift == 24 ? 0u : ~0u << (shift + 8);
             // warp-aggregated: lanes with the same digit add once (scores share their top bits, so
             // plain atomics would serialise on a few bins)
-            for (int b0 = 0; b0 < nb; b0 += blockDim.x) {
+            for (int b0 = lo; b0 < hi; b0 += blockDim.x) {
                 const int b = b0 + threadIdx.x;
                 int bin = -1;
-                if (b < nb) {
+                if (b < hi) {
                     const unsigned key = ordered_key(sc[b]);
                     if ((key & hmask) == prefix) bin = int((key >> shift) & 255);
                 }
                 const unsigned same = __match_any_sync(0xffffffff, bin);
                 if (bin >= 0 && int(threadIdx.x & 31) == __ffs(same) - 1) atomicAdd(&hist[bin], __popc(same));
             }
-            __syncthreads();
+            cl.sync();   // every CTA's histogram is complete
+            for (int d = threadIdx.x; d < 256; d += blockDim.x) {
+                int v = 0;
+                for (int k = 0; k < kSelCluster; ++k) v += cl.map_shared_rank(hist, k)[d];
+                tot[d] = v;
+            }
+            cl.sync();   // every CTA has read the others' histograms (they are cleared next pass)
             if (threadIdx.x < 32) {   // warp 0: the digit holding the need-th largest key
                 const int lane = threadIdx.x, need = sh_need;
                 int part = 0;   // lane owns digits 255 - 8 lane .. 248 - 8 lane (descending)
-                for (int k = 0; k < 8; ++k) part += hist[255 - 8 * lane - k];
+                for (int k = 0; k < 8; ++k) part += tot[255 - 8 * lane - k];
                 int incl = part;
                 for (int o = 1; o < 32; o <<= 1) {
                     const int v = __shfl_up_sync(0xffffffff, incl, o);
@@ -882,8 +902,8 @@ __global__ void k_idx_select(const float* scores, int ld, int32_t* cells, int32_
                 if (lane == __ffs(hit) - 1) {
                     int acc = excl, d = 255 - 8 * lane;
                     for (int k = 0; k < 7; ++k, --d) {
-                        if (acc + hist[d] >= need) break;
-                        acc += hist[d];
+                        if (acc + tot[d] >= need) break;
+                        acc += tot[d];
                     }
                     sh_need = need - acc;
                     sh_prefix = prefix | (unsigned(d) << shift);
@@ -894,20 +914,37 @@ __global__ void k_idx_select(const float* scores, int ld, int32_t* cells, int32_
         const unsigned tau = sh_prefix;
         // blocks above tau, plus the lowest-index blocks equal to tau up to M, written in block
         // order (deterministic, so the attention sums in a fixed order). Each thread owns a
-        // contiguous segment: count, one scan for the offsets, then write in order.
-        const int seg = (nb + int(blockDim.x) - 1) / int(blockDim.x);
-        const int b0 = min(nb, int(threadIdx.x) * seg), b1 = min(nb, b0 + seg);
+        // contiguous segment of the CTA's range: count, scan for the offsets within the CTA, add
+        // the counts of the CTAs before this one, then write in order.
+        const int seg = (hi - lo + int(blockDim.x) - 1) / int(blockDim.x);
+        const int b0 = min(hi, lo + int(threadIdx.x) * seg), b1 = min(hi, b0 + seg);
         int g = 0, e = 0;
         for (int b = b0; b < b1; ++b) {
             const unsigned key = ordered_key(sc[b]);
             g += key > tau;
             e += key == tau;
         }
-        int g_total, e_total;
-        const int g_before = block_scan_int(g, &g_total);
-        const int e_before = block_scan_int(e, &e_total);
+        __shared__ int cta_ge[2];
+        int g_cta, e_cta;
+        const int g_before = block_scan_int(g, &g_cta);
+        const int e_before = block_scan_int(e, &e_cta);
+        if (threadIdx.x == 0) {
+            cta_ge[0] = g_cta;
+            cta_ge[1] = e_cta;
+        }
+        cl.sync();
+        int g_off = 0, e_off = 0, g_total = 0;
+        for (int k = 0; k < kSelCluster; ++k) {
+            const int* o = cl.map_shared_rank(cta_ge, k);
+            if (k < rank) {
+                g_off += o[0];
+                e_off += o[1];
+            }
+            g_total += o[0];
+        }
+        cl.sync();   // no CTA exits while another still reads its counts
         const int tie_budget = M - g_total;
-        int pos = g_before + min(e_before, tie_budget), tie_idx = e_before;
+        int pos = g_off + g_before + min(e_off + e_before, tie_budget), tie_idx = e_off + e_before;
         for (int b = b0; b < b1; ++b) {
             const unsigned key = ordered_key(sc[b]);
             bool sel = key > tau;
@@ -919,12 +956,18 @@ __global__ void k_idx_select(const float* scores, int ld, int32_t* cells, int32_
         }
         filled = M;
     }
-    __syncthreads();
+    if (rank != 0) return;
     for (int k = threadIdx.x; k < tail; k += blockDim.x) out[filled * r + k] = nb * r + k;
     if (threadIdx.x == 0) counts[t] = filled * r + tail;
 }
 
 }  // namespace
+
+void qsa_select(const float* scores, int ld, int32_t* cells, int32_t* counts, int ldc, int pos0, int T, int r, int nsel, int width,
+                cudaStream_t stream) {
+    k_idx_select<<<dim3(kSelCluster, T), 1024, 0, stream>>>(scores, ld, cells, counts, ldc, pos0, r, nsel, width, nullptr);
+    ck(cudaGetLastError(), "qsa_select");
+}
 
 void qsa_h2q8_rows(const void* src_f16, void* dst_q8, void* dst_scales, long n_rows, int dim, cudaStream_t stream) {
     const long groups = n_rows * (dim / 32);
@@ -1218,8 +1261,8 @@ void qsa_mixer(const BlockCtx& c, int il, const float* x, int T, int pos0, QsaCa
             } else {
                 k_idx_scores<<<dim3((max_nb + 127) / 128, Ts), 128, 0, c.stream>>>(qi_s, kv.idx_pooled, bs.idx_scores, max_nb, p0, r, IH, ID);
             }
-            k_idx_select<<<Ts, 1024, 0, c.stream>>>(bs.idx_scores, max_nb, bs.idx_cells, bs.idx_counts, ldc, p0, r, nsel, width,
-                                                    c.dparams);
+            k_idx_select<<<dim3(kSelCluster, Ts), 1024, 0, c.stream>>>(bs.idx_scores, max_nb, bs.idx_cells, bs.idx_counts, ldc, p0, r,
+                                                                     nsel, width, c.dparams);
             cells = bs.idx_cells;
             counts = bs.idx_counts;
             if (sel_out) {

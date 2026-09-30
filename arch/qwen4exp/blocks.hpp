@@ -235,6 +235,11 @@ void qsa_mirror_end(QsaCache& kv);
 void reset_qsa_hot(const Spec& s, QsaCache& kv, cudaStream_t stream);
 // fp16 rows -> Q8_0 rows (values [n_rows][dim], scales [n_rows][dim / 32]), on the GPU.
 void qsa_h2q8_rows(const void* src_f16, void* dst_q8, void* dst_scales, long n_rows, int dim, cudaStream_t stream);
+// The indexer's block selection for T tokens at positions pos0.. (qsa_mixer runs it; public for its
+// test): from scores [T][ld] (one per 4-cell block up to the position), the cells to attend to in
+// cells [T][ldc] and their number in counts [T] (-1: dense, the position is within `width`).
+void qsa_select(const float* scores, int ld, int32_t* cells, int32_t* counts, int ldc, int pos0, int T, int r, int nsel, int width,
+                cudaStream_t stream);
 // One QSA layer's cache for positions [0, pos) to (save) or from a state file: K and V (with
 // scales when q8), pooled indexer keys, and the ring of the last qsa_block raw keys (stored at
 // slot position % qsa_block). file_q8 is the file's KV format; an fp16 file loads into a q8
