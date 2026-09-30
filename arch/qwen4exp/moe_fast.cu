@@ -791,7 +791,9 @@ void cache_manager_step(CacheManager* m, const MoeFastHost& h, cudaStream_t stre
         m->pending.pop_back();
     }
     // 3. admit the strongest misses against the weakest residents
-    std::sort(missed.begin(), missed.end(), [&](int a, int b) { return m->count[a] > m->count[b]; });
+    // ties broken by key, so a key missed by several tokens of a window sits in one run and unique
+    // leaves one copy: admitted twice, it took two slots and the first was orphaned for good (sw117)
+    std::sort(missed.begin(), missed.end(), [&](int a, int b) { return m->count[a] > m->count[b] || (m->count[a] == m->count[b] && a < b); });
     missed.erase(std::unique(missed.begin(), missed.end()), missed.end());
     std::vector<std::pair<int, int>> uploads;   // (key, slot)
     for (int key : missed) {
