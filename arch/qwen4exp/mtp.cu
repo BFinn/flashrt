@@ -564,7 +564,7 @@ std::vector<float> MtpHead::draft_probs(int k) {
         return pr;
     }
     const int m = sample::kMaxTopK;
-    std::vector<int32_t> ids(size_t(k) * m), n(size_t(k)), d(size_t(k));
+    std::vector<int32_t> ids(size_t(k) * m), n(k), d(k);
     std::vector<float> q(size_t(k) * m);
     ck(cudaMemcpyAsync(ids.data(), q_ids_, ids.size() * 4, cudaMemcpyDeviceToHost, stream_), "draft q");
     ck(cudaMemcpyAsync(q.data(), q_p_, q.size() * 4, cudaMemcpyDeviceToHost, stream_), "draft q");
