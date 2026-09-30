@@ -12,6 +12,7 @@
 //!   flashrt-server --model MODEL.gguf --engine build/flashrt-engine --engine-arg MODEL.gguf [--engine-arg ...]
 //!   flashrt-server --model MODEL.gguf --check-tokenizer TEXT IDS    (compare with a llama.cpp tokenization)
 //!   flashrt-server --model MODEL.gguf --render REQUEST.json         (print a chat request's prompt)
+//!   flashrt-server --model MODEL.gguf --tokenize TEXT               (print a text's token ids)
 
 mod anthropic;
 mod chat;
@@ -68,6 +69,10 @@ struct Args {
     /// Print the prompt (and its token count) of an OpenAI chat request in a JSON file.
     #[arg(long)]
     render: Option<String>,
+    /// Print the token ids of a text file (special tokens' strings become their ids), for benchmark
+    /// inputs.
+    #[arg(long)]
+    tokenize: Option<String>,
 }
 
 pub struct Sampling {
@@ -144,6 +149,11 @@ async fn main() -> Result<()> {
     let tok = tokenizer::Tokenizer::from_gguf(&kv)?;
     if let Some(c) = &args.check_tokenizer {
         return check_tokenizer(&tok, &c[0], &c[1]);
+    }
+    if let Some(path) = &args.tokenize {
+        let ids = tok.encode(&std::fs::read_to_string(path)?, true);
+        println!("{}", ids.iter().map(|t| t.to_string()).collect::<Vec<_>>().join(" "));
+        return Ok(());
     }
     let tmpl_src = kv.get("tokenizer.chat_template").and_then(gguf::Value::as_str).ok_or_else(|| anyhow!("the GGUF has no chat template"))?;
     let template = template::ChatTemplate::new(tmpl_src)?;
