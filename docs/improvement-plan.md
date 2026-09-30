@@ -193,7 +193,11 @@ In expected-value order. Each needs its KLD check and a `bench/results` folder.
    head runs at 2,150-4,130 tok/s against 5,690-5,960 without it. The head's experts are
    already in VRAM, so it needs the batched kernels, overlapped with the target's next chunk.
    Expected: 250K TTFT from about 117 s toward 45 s (estimate).
-2. **P-2** as decided in phase 2.
+2. **P-2** as decided in phase 2. **Done 2026-09-30** (sw99-sw109): the simulator found the loss in
+   the warm-up; faster admission, seeded counts at 0.03x, 64 uploads per step, deterministic
+   commits at the next step. Window 9 with the head +8-25% (ahead of Strata at every depth); the
+   agent session +12%. Left: cheaper uploads, or a prime that predicts the answer (the tail blend
+   helped window 9 in simulation, and the engine does not keep the prompt's tail routing).
 3. **P-3, P-4:** choose the draft length per round from q's kept mass and the round's expected
    new experts; add prompt-lookup drafts stacked on the MTP head. Try both; keep whichever
    the P-2 result favours.
