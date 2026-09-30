@@ -31,6 +31,7 @@
 // first draft whose probability under the head is below P (then fewer than K are verified;
 // none if the first is below P).
 // --round-log FILE writes one line per speculative round (see the loop), for draft-length studies.
+// --save-tokens FILE writes every generated token.
 // --prefill-chunk C prefills C tokens per call (default 64: the CPU reference path; above 64 the
 // chunk path with the experts streamed to the GPU); "auto" picks the longest chunk the free VRAM
 // holds (up to 16,384), as flashrt-engine does.
@@ -86,7 +87,7 @@ int main(int argc, char** argv) {
     int draft_k = 4, spec_k = 0, vocab_n = 32768, chunk = 64;
     float draft_pmin = 0.0f;
     bool accept_probe = false;
-    std::string round_log;
+    std::string round_log, save_tokens;
     bool argmax_drafts = false;
     sample::Params sp;
     sp.temperature = 0.0f;
@@ -142,6 +143,7 @@ int main(int argc, char** argv) {
         else if (a == "--draft-pmin") draft_pmin = float(std::atof(next()));
         else if (a == "--accept-probe") accept_probe = true;
         else if (a == "--round-log") round_log = next();
+        else if (a == "--save-tokens") save_tokens = next();
         else if (a == "--argmax-drafts") argmax_drafts = true;
         else if (a == "--temp") sp.temperature = float(std::atof(next()));
         else if (a == "--top-k") sp.top_k = std::atoi(next());
@@ -740,6 +742,13 @@ int main(int argc, char** argv) {
     std::printf("tokens:");
     for (int i = 0; i < std::min<int>(24, int(out.size())); ++i) std::printf(" %d", out[i]);
     std::printf("\n");
+    if (!save_tokens.empty()) {   // every generated token, one line
+        std::FILE* f = std::fopen(save_tokens.c_str(), "w");
+        if (!f) throw std::runtime_error("cannot write " + save_tokens);
+        for (size_t i = 0; i < out.size(); ++i) std::fprintf(f, i ? " %d" : "%d", out[i]);
+        std::fprintf(f, "\n");
+        std::fclose(f);
+    }
     if (!reference) {
         fwd.set_cache_manager(nullptr);
         destroy_cache_manager(mgr);
