@@ -1,0 +1,15 @@
+[0/1] Re-running CMake...
+-- Configuring done (0.0s)
+-- Generating done (0.0s)
+-- Build files have been written to: $BENCH/sw94/src/build
+[1/11] Building CXX object CMakeFiles/flashrt_core.dir/core/json.cpp.o
+[2/11] Building CXX object CMakeFiles/flashrt_core.dir/core/gguf.cpp.o
+[3/11] Linking CXX static library libflashrt_core.a
+[4/11] Building CUDA object CMakeFiles/flashrt_qwen4exp_gpu.dir/arch/qwen4exp/moe_stream.cu.o
+[5/11] Building CXX object CMakeFiles/fr_bench.dir/tools/fr_bench.cpp.o
+[6/11] Building CUDA object CMakeFiles/flashrt_qwen4exp_gpu.dir/arch/qwen4exp/forward_ref.cu.o
+[7/11] Building CUDA object CMakeFiles/flashrt_qwen4exp_gpu.dir/arch/qwen4exp/moe_fast.cu.o
+[8/11] Building CUDA object CMakeFiles/flashrt_qwen4exp_gpu.dir/arch/qwen4exp/mtp.cu.o
+[9/11] Building CUDA object CMakeFiles/flashrt_qwen4exp_gpu.dir/arch/qwen4exp/blocks.cu.o
+[10/11] Linking CXX static library libflashrt_qwen4exp_gpu.a
+[11/11] Linking CXX executable fr_bench

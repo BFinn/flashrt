@@ -1,0 +1,13 @@
+fast-a 0.008806, 0.001140, 0.106249, hit rate 91.01% 137656 swaps
+fast-b 0.008806, 0.001140, 0.106249, hit rate 91.01% 137656 swaps
+win3-a 0.008771, 0.001144, 0.109877, hit rate 69.82% 59172 swaps
+win3-b 0.008771, 0.001144, 0.109877, hit rate 69.82% 59172 swaps
+w9-r1 rc=0 84.29 tok/s expert cache hit rate 78.90% (12 swaps 8870
+wiki-r1 rc=0 104.07 tok/s expert cache hit rate 93.26% (14 swaps 4990
+w9mtp-r1 rc=0 96.12 tok/s expert cache hit rate 65.60% (11 swaps 3800
+w9-r2 rc=0 84.75 tok/s expert cache hit rate 78.90% (12 swaps 8870
+wiki-r2 rc=0 104.26 tok/s expert cache hit rate 93.26% (14 swaps 4990
+w9mtp-r2 rc=0 96.91 tok/s expert cache hit rate 65.60% (11 swaps 3800
+w9-r3 rc=0 83.04 tok/s expert cache hit rate 78.90% (12 swaps 8870
+wiki-r3 rc=0 104.10 tok/s expert cache hit rate 93.26% (14 swaps 4990
+w9mtp-r3 rc=0 97.68 tok/s expert cache hit rate 65.60% (11 swaps 3800

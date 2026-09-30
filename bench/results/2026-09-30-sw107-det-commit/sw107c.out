@@ -1,0 +1,6 @@
+query-r1 rc=0 95.08 tok/s expert cache hit rate 72.52% (12 swaps 7083
+det-r1 rc=0 104.76 tok/s expert cache hit rate 71.78% (12 swaps 7113
+query-r2 rc=0 104.59 tok/s expert cache hit rate 72.52% (12 swaps 7083
+det-r2 rc=0 106.83 tok/s expert cache hit rate 71.78% (12 swaps 7113
+query-r3 rc=0 108.52 tok/s expert cache hit rate 72.52% (12 swaps 7083
+det-r3 rc=0 103.46 tok/s expert cache hit rate 71.78% (12 swaps 7113
