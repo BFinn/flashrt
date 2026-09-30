@@ -679,7 +679,7 @@ void hc_mix_impl(const BlockCtx& c, int il, int which, float* x, const float* co
     float* lo = c.scratch.f32 + size_t(T) * hcd;                          // [T][rank]
     float* gate = lo + size_t(T) * s.hc_rank;                             // [T][hcd]
     const GpuTensor* w_inj = which < 2 ? &c.w.get(pre + "inject.weight") : nullptr;
-    constexpr uint32_t kBF16 = 30;   // GGML_TYPE_BF16
+    using ggml_type::kBF16;
     // Q8P down/up (GpuWeights' hc conversion): the fused decode kernels read it directly; the other
     // paths multiply a BF16 copy dequantized into scratch below
     const bool q8d = w_down.type == kTypeQ8P, q8u = w_up.type == kTypeQ8P;

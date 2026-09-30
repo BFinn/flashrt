@@ -94,7 +94,7 @@ void ple_embed(const BlockCtx& c, PleHost& h, const int32_t* seq, int64_t pos0, 
     ck(cudaMemcpyAsync(h.raw_dev, h.raw.data(), h.raw.size(), cudaMemcpyHostToDevice, c.stream), "ple rows to device");
     // rows are whole IQ4_NL blocks back to back: one dequantize covers every head of every token
     const int64_t per_row = int64_t(p.row_bytes) / 18 * 32;
-    gemv::dequantize(20 /* IQ4_NL */, h.raw_dev, emb, int64_t(h.rows.size()) * per_row, c.stream);
+    gemv::dequantize(ggml_type::kIQ4_NL, h.raw_dev, emb, int64_t(h.rows.size()) * per_row, c.stream);
     ck(cudaStreamSynchronize(c.stream), "ple_embed");   // h.raw is reused by the next call
 }
 
@@ -121,7 +121,7 @@ void ple_upload(const BlockCtx& c, PleHost& h, int T, float* emb) {
     }
     ck(cudaMemcpyAsync(h.raw_dev, h.raw_pinned, bytes, cudaMemcpyHostToDevice, c.stream), "ple rows to device");
     const int64_t per_row = int64_t(p.row_bytes) / 18 * 32;
-    gemv::dequantize(20 /* IQ4_NL */, h.raw_dev, emb, int64_t(T) * p.n_heads * per_row, c.stream);
+    gemv::dequantize(ggml_type::kIQ4_NL, h.raw_dev, emb, int64_t(T) * p.n_heads * per_row, c.stream);
 }
 
 PleWindow alloc_ple_window(const Spec& s, const Ple& p, int max_tokens) {

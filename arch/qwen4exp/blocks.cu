@@ -124,7 +124,7 @@ bool q8_act(const GpuTensor& W, int T) {
 }
 
 void linear_shared(const BlockCtx& c, const GpuTensor* const* Ws, float* const* ys, int n, const float* x, int T) {
-    constexpr uint32_t kBF16 = 30;   // GGML_TYPE_BF16
+    using ggml_type::kBF16;
     if (T >= kGemmMinTokens) {   // prefill: the BF16 products share one conversion of x
         int nb = 0;
         for (int i = 0; i < n; ++i) nb += Ws[i]->type == kBF16 && Ws[i]->cols() == Ws[0]->cols();
@@ -159,7 +159,7 @@ void linear_shared(const BlockCtx& c, const GpuTensor* const* Ws, float* const* 
 }
 
 bool linear_multi_ok(const LinearOut* outs, int n, int T) {
-    constexpr uint32_t kBF16 = 30;   // GGML_TYPE_BF16
+    using ggml_type::kBF16;
     if (n < 1 || n > 4 || T < 1 || T > gemv::kMaxTokens) return false;
     for (int i = 0; i < n; ++i)
         if (outs[i].W->type != kBF16 || outs[i].W->cols() != outs[0].W->cols() || outs[i].W->cols() % 256) return false;
@@ -185,7 +185,7 @@ void linear_multi(const BlockCtx& c, const LinearOut* outs, int n, const float* 
 
 void linear(const BlockCtx& c, const GpuTensor& W, const float* x, float* y, int T) {
     const int64_t cols = W.cols(), rows = W.rows();
-    uint32_t mm_type = W.type == kTypeQ3R ? 11u /* Q3_K */ : W.type;
+    uint32_t mm_type = W.type == kTypeQ3R ? ggml_type::kQ3_K : W.type;
     if (T >= kGemmMinTokens && gemm::supported(mm_type)) {
         BlockScratch& bs = c.scratch;
         const void* Wp = W.dev;
@@ -201,7 +201,7 @@ void linear(const BlockCtx& c, const GpuTensor& W, const float* x, float* y, int
             Wp = bs.q3k_tmp;
         }
         // Q3_K -> Q8_0 (exact; ggml's Q8_0 MMQ is about 1.37x faster than its Q3_K, sw69)
-        if (mm_type == 11u && cols % 256 == 0) {
+        if (mm_type == ggml_type::kQ3_K && cols % 256 == 0) {
             const size_t need = size_t(rows) * (cols / 32) * 34 + gemv::kWeightTailPad;
             if (bs.q8_tmp_bytes < need) {
                 if (bs.q8_tmp) cudaFree(bs.q8_tmp);
@@ -211,7 +211,7 @@ void linear(const BlockCtx& c, const GpuTensor& W, const float* x, float* y, int
             }
             q3r::q3k_to_q8_0(Wp, bs.q8_tmp, rows, cols, c.stream);
             Wp = bs.q8_tmp;
-            mm_type = 8u;   // Q8_0
+            mm_type = ggml_type::kQ8_0;
         }
         const size_t ws = gemm::workspace_bytes(cols, T);
         if (bs.gemm_ws_bytes < ws) {
@@ -267,7 +267,7 @@ __global__ void k_embed_q3k_tok(const uint8_t* table, const int32_t* tokens, flo
 
 bool embed_graph_capable(const GpuWeights& w) {
     const GpuTensor& e = w.get("token_embd.weight");
-    return e.type == 11 /* Q3_K */ && e.cols() % 256 == 0;
+    return e.type == ggml_type::kQ3_K && e.cols() % 256 == 0;
 }
 
 void embed(const BlockCtx& c, const int32_t* tokens, int T, float* out) {

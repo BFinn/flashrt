@@ -50,6 +50,7 @@
 #include "arch/qwen4exp/moe_fast.hpp"
 #include "arch/qwen4exp/mtp.hpp"
 #include "arch/qwen4exp/spec.hpp"
+#include "core/formats.hpp"
 #include "core/gguf.hpp"
 #include "kernels/cuda/sample.h"
 #include "quant/q2_0/q2_0.hpp"
@@ -323,7 +324,7 @@ int main(int argc, char** argv) {
     fwd.release_chunk_buffers();   // the expert cache takes that VRAM
     if (!save_counts.empty()) {   // the prefill's routing counts, a cache prior for flashrt-engine --cache-prior
         std::FILE* f = std::fopen(save_counts.c_str(), "wb");
-        const int64_t h[4] = {0x50435246 /* "FRCP" */, s.n_layer, s.n_expert, n_prompt};
+        const int64_t h[4] = {kCachePriorMagic, s.n_layer, s.n_expert, n_prompt};
         const bool ok = f && std::fwrite(h, sizeof(h), 1, f) == 1 && std::fwrite(fwd.counts().data(), 4, fwd.counts().size(), f) == fwd.counts().size();
         if (f) std::fclose(f);
         std::printf("routing counts: %s %s\n", ok ? "saved to" : "FAILED to save", save_counts.c_str());

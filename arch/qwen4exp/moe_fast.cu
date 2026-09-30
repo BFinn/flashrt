@@ -6,6 +6,7 @@
 
 #include "core/platform.hpp"
 
+#include <cuda/atomic>
 #include <cuda_fp16.h>
 
 #include <algorithm>
@@ -23,6 +24,10 @@
 namespace flashrt::qwen4exp {
 
 namespace {
+
+// The mailbox flags (routed, done, err) between the GPU and the miss server, as system-scope
+// atomics: release after writing what they announce, acquire before reading it.
+using SysFlag = cuda::atomic_ref<uint32_t, cuda::thread_scope_system>;
 
 constexpr int kMaxK = 16;   // top-k upper bound for the fixed launch shapes
 constexpr int kRouteSel = 2 + 2 * kMaxK;   // route record: offset of the selected experts
@@ -485,9 +490,8 @@ __global__ void k_route(const float* logits, const int32_t* table, int E, int K,
             float* xh = reinterpret_cast<float*>(mb + x_off) + size_t(tok) * n;
             for (int i = e; i < n; i += blockDim.x) xh[i] = x[i];
         }
-        __threadfence_system();
-        __syncthreads();
-        if (e == 0) reinterpret_cast<volatile uint32_t*>(mb + kMbRouted)[tok] = seq;
+        __syncthreads();   // the block's x and route record, then one release publishes them
+        if (e == 0) SysFlag(reinterpret_cast<uint32_t*>(mb + kMbRouted)[tok]).store(seq, cuda::memory_order_release);
     }
 }
 
@@ -516,16 +520,16 @@ __global__ void k_moe_combine_db(float* out, const float* yh, const float* hit_w
     if (dp) seq = uint32_t(dp[2]);
     const bool cpu = miss_n[blockIdx.y] != 0;
     if (cpu && threadIdx.x == 0) {
-        const volatile uint32_t* done = reinterpret_cast<const volatile uint32_t*>(mb + kMbDone);
+        SysFlag done(*reinterpret_cast<uint32_t*>(mb + kMbDone));
         const int64_t t0 = int64_t(global_ns());
-        for (uint32_t polls = 0; *done != seq; ++polls) {
+        for (uint32_t polls = 0; done.load(cuda::memory_order_relaxed) != seq; ++polls) {
             __nanosleep(128);
             if (polls > 10000000u && int64_t(global_ns()) - t0 > 10000000000ll) {
-                *reinterpret_cast<volatile uint32_t*>(mb + kMbErr) = seq;
+                SysFlag(*reinterpret_cast<uint32_t*>(mb + kMbErr)).store(seq, cuda::memory_order_relaxed);
                 break;
             }
         }
-        __threadfence_system();
+        cuda::atomic_thread_fence(cuda::memory_order_acquire, cuda::thread_scope_system);
     }
     __syncthreads();
     const int i = blockIdx.x * blockDim.x + threadIdx.x, t = blockIdx.y;
@@ -855,7 +859,7 @@ struct MissServer {
                 const auto t0 = std::chrono::steady_clock::now();
                 int k = 0;
                 for (int t = 0; t < T; ++t)
-                    while (__atomic_load_n(reinterpret_cast<uint32_t*>(mb + kMbRouted) + t, __ATOMIC_ACQUIRE) != seq) {
+                    while (std::atomic_ref<uint32_t>(reinterpret_cast<uint32_t*>(mb + kMbRouted)[t]).load(std::memory_order_acquire) != seq) {
 #if defined(__x86_64__)
                         _mm_pause();
 #endif
@@ -909,7 +913,7 @@ struct MissServer {
                 h->cpu_s += dt;
                 h->cpu_by_nm[std::min(n_entries, 16)] += dt;
                 ++h->layers_by_nm[std::min(n_entries, 16)];
-                __atomic_store_n(reinterpret_cast<uint32_t*>(mb + kMbDone), seq, __ATOMIC_RELEASE);
+                std::atomic_ref<uint32_t>(*reinterpret_cast<uint32_t*>(mb + kMbDone)).store(seq, std::memory_order_release);
             }
             cur_phase.store(0, std::memory_order_relaxed);
             served.store(seq, std::memory_order_release);   // h->access and the statistics are complete
@@ -943,7 +947,8 @@ void doorbell_begin_token(MoeFastHost& h, int T) {
 
 void doorbell_end_token(MoeFastHost& h, const Spec& s) {
     for (int il = 0; il < s.n_layer; ++il) {
-        const uint32_t err = __atomic_load_n(reinterpret_cast<uint32_t*>(h.mbox + size_t(il) * h.mbox_stride + kMbErr), __ATOMIC_ACQUIRE);
+        const uint32_t err =
+            std::atomic_ref<uint32_t>(*reinterpret_cast<uint32_t*>(h.mbox + size_t(il) * h.mbox_stride + kMbErr)).load(std::memory_order_acquire);
         if (err) {
             h.db_failed = true;
             throw std::runtime_error("doorbell: the GPU gave up waiting for layer " + std::to_string(il) + " of token " +

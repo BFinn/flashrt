@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "arch/qwen4exp/forward.hpp"
 
+#include "core/formats.hpp"
 #include "core/gguf.hpp"
 #include "core/platform.hpp"
 #include "kernels/cuda/ggml_gemm.h"
@@ -99,7 +100,7 @@ void Forward::state_file(const std::string& path, bool save) {
     if (!f) throw std::runtime_error("cannot open state file " + path);
     const Spec& s = s_;
     // header: magic, n_layer, pos, n_counts, and (version 2) the KV format (0 fp16, 1 q8)
-    const int64_t magic1 = 0x46525354, magic2 = 0x46525332;   // "FRST", "FRS2"
+    const int64_t magic1 = kStateMagicV1, magic2 = kStateMagicV2;
     const bool q8 = kv_[s.qsa_layers.front()].q8;
     bool file_q8 = q8;
     if (save) {

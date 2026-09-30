@@ -31,7 +31,7 @@ size_t slot_bytes(size_t bytes) { return (bytes + gemv::kWeightTailPad + 255) & 
 // ones (ssm_out, the shared experts, attn_k/v) stay ggml Q3_K, which is faster there
 // (bench/results/2026-09-28-sw16-q3r); so does the token embedding (read one row at a time).
 bool q3r_eligible(const GgufTensor& t) {
-    return t.type == 11 /* GGML_TYPE_Q3_K */ && t.name != "token_embd.weight" && t.dims.size() == 2 && t.dims[0] % 256 == 0 &&
+    return t.type == ggml_type::kQ3_K && t.name != "token_embd.weight" && t.dims.size() == 2 && t.dims[0] % 256 == 0 &&
            t.dims[0] <= 4096 && t.dims[1] >= 4096;
 }
 // The token embedding is read one row per token, so it lives in pinned mapped host memory (the
@@ -56,7 +56,7 @@ bool hc_q8_eligible(const GgufTensor& t) {
         return t.name.size() > sfx.size() && t.name.compare(t.name.size() - sfx.size(), sfx.size(), sfx) == 0;
     };
     const int m = hc_q8_mode();
-    return m && t.type == 30 /* GGML_TYPE_BF16 */ && t.dims.size() == 2 && t.dims[0] % 32 == 0 && t.name.rfind("blk.", 0) == 0 &&
+    return m && t.type == ggml_type::kBF16 && t.dims.size() == 2 && t.dims[0] % 32 == 0 && t.name.rfind("blk.", 0) == 0 &&
            (((m & 1) && (ends(".hc_attn_down.weight") || ends(".hc_ffn_down.weight"))) ||
             ((m & 2) && (ends(".hc_attn_up.weight") || ends(".hc_ffn_up.weight"))));
 }

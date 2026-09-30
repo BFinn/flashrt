@@ -5,6 +5,7 @@
 #pragma once
 
 #include "arch/qwen4exp/spec.hpp"
+#include "core/formats.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -17,11 +18,6 @@ struct Gguf;
 }
 
 namespace flashrt::qwen4exp {
-
-// GpuTensor types outside ggml's ids: Q3_K converted to Q3R (kernels/cuda/q3r.h); BF16 converted
-// to Q8P: int8 [rows][cols], then fp16 scales [rows][cols / 32] (Q8_0's values, planar)
-constexpr uint32_t kTypeQ3R = 1000;
-constexpr uint32_t kTypeQ8P = 1001;
 
 struct GpuTensor {
     void* dev = nullptr;

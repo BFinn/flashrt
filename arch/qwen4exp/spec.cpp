@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "arch/qwen4exp/spec.hpp"
 
+#include "core/formats.hpp"
 #include "core/gguf.hpp"
 
 #include <regex>
@@ -111,7 +112,7 @@ WeightPlan plan(const Gguf& g, const Spec& s) {
             std::smatch e;
             if (std::regex_match(rest, e, exps)) {
                 pl.tier = Tier::HostExperts;
-                if (t.type != 42) throw std::runtime_error("qwen4exp: expert tensor is not Q2_0: " + t.name);
+                if (t.type != ggml_type::kQ2_0) throw std::runtime_error("qwen4exp: expert tensor is not Q2_0: " + t.name);
                 if (e[1] == "down") expect_dims(t, {s.d_ff_expert, s.d_model, s.n_expert});
                 else expect_dims(t, {s.d_model, s.d_ff_expert, s.n_expert});
                 ++n_exps;

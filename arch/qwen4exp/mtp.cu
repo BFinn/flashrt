@@ -329,7 +329,7 @@ void MtpHead::use_bufs(Bufs& b) {
 }
 
 void MtpHead::load_experts_q4(const Gguf& g, bool q2) {
-    constexpr uint32_t kQ8_0 = 8, kQ4_0 = 2, kQ2_0 = 42;
+    using ggml_type::kQ2_0, ggml_type::kQ4_0, ggml_type::kQ8_0;
     const size_t in_blk = q2 ? 68 : 34, out_blk = 18, per_blk = q2 ? 64 : 32;   // bytes per output block, elements
     const char* names[3] = {"ffn_gate_exps.weight", "ffn_up_exps.weight", "ffn_down_exps.weight"};
     const GgufTensor* src[3];

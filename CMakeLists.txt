@@ -8,7 +8,11 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 option(FLASHRT_CUDA   "Build the CUDA parts" ON)
-option(FLASHRT_NATIVE "Tune CPU code for the build machine (-march=native)" ON)
+# -march=native: the binaries then run only on CPUs like the build machine's. Every result in
+# bench/results was built with it ON. Without it the CPU miss path's float code is not contracted
+# to FMA, so its arithmetic can differ in the last bits. (The AVX-512 expert kernel has its own
+# flags and a runtime check either way.)
+option(FLASHRT_NATIVE "Tune CPU code for the build machine (-march=native)" OFF)
 
 if(FLASHRT_NATIVE)
   add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-march=native>)
@@ -90,6 +94,21 @@ if(FLASHRT_CUDA)
   if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
     set(CMAKE_CUDA_ARCHITECTURES 120)
   endif()
+  # The kernels use int8 mma.sync m16n8k32, cp.async and ldmatrix (sm_80) and programmatic
+  # dependent launch (sm_90). They are tuned and measured on sm_120 only.
+  foreach(arch IN LISTS CMAKE_CUDA_ARCHITECTURES)
+    string(REGEX REPLACE "-(real|virtual)$" "" a "${arch}")
+    if(a MATCHES "^[0-9]+[af]?$")
+      string(REGEX REPLACE "[af]$" "" a "${a}")
+      if(a LESS 90)
+        message(FATAL_ERROR "CMAKE_CUDA_ARCHITECTURES=${CMAKE_CUDA_ARCHITECTURES}: flashrt needs sm_90 or newer "
+                            "(it is built and measured for 120)")
+      endif()
+    else()
+      message(WARNING "CMAKE_CUDA_ARCHITECTURES=${arch} cannot be checked: flashrt needs sm_90 or newer "
+                      "(it is built and measured for 120)")
+    endif()
+  endforeach()
   set(CMAKE_CUDA_STANDARD 20)
   add_executable(h2dbw tools/h2dbw.cu)
   target_link_libraries(h2dbw PRIVATE flashrt_core CUDA::cudart)
@@ -107,6 +126,10 @@ if(FLASHRT_CUDA)
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ggml/src
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ggml/src/ggml-cuda)
   target_include_directories(flashrt_gemv PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+  # --use_fast_math covers this whole library: ggml's kernels, which upstream builds with it, and
+  # flashrt's own kernels here (moe_q2.cu, q3r.cu); their KLD results were measured with it. The
+  # arch/ kernels build without it. Moving a kernel across that line changes its outputs (KLD gate).
+  # diag_suppress 177: ggml's headers define static helpers that most files here do not use.
   target_compile_options(flashrt_gemv PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--use_fast_math --extended-lambda --expt-relaxed-constexpr -Xcudafe=--diag_suppress=177>)
   target_link_libraries(flashrt_gemv PUBLIC CUDA::cudart CUDA::cublas)
 

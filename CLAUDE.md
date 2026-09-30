@@ -17,7 +17,7 @@ Machine-specific setup (where to build and measure, paths, box rules) lives in
 ## Build and test
 
 ```bash
-cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=120 \
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=120 -DFLASHRT_NATIVE=ON \
       -DCMAKE_CUDA_COMPILER=/usr/local/cuda-12.9/bin/nvcc
 cmake --build build
 cargo build --release --manifest-path server/Cargo.toml

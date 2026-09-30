@@ -125,11 +125,14 @@ Batch-1 decode of an offloaded MoE is a memory-traffic problem. flashrt is built
 Linux, CUDA 12.8+ (for sm_120), GCC 12+, CMake 3.28+, Ninja, Rust 1.82+.
 
 ```bash
-cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=120 \
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=120 -DFLASHRT_NATIVE=ON \
       -DCMAKE_CUDA_COMPILER=/usr/local/cuda-12.9/bin/nvcc
 cmake --build build
 cargo build --release --manifest-path server/Cargo.toml
 ```
+
+`FLASHRT_NATIVE=ON` tunes the CPU code for the build machine (`-march=native`), as every
+measurement here was built. Leave it off for binaries that must run on other CPUs.
 
 ## Run
 

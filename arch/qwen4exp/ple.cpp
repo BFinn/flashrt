@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "arch/qwen4exp/ple.hpp"
 
+#include "core/formats.hpp"
 #include "core/gguf.hpp"
 
 #include <stdexcept>
@@ -37,8 +38,8 @@ Ple parse_ple(const Gguf& g) {
         throw std::runtime_error("qwen4exp PLE: inconsistent metadata");
     const GgufTensor* t = g.tensor("per_layer_token_embd.weight");
     if (!t) throw std::runtime_error("qwen4exp PLE: per_layer_token_embd.weight missing");
-    constexpr uint32_t kIQ4_NL = 20;   // ggml type id: blocks of 32 values in 18 bytes
-    if (t->type != kIQ4_NL || t->dims.at(0) % 32) throw std::runtime_error("qwen4exp PLE: expected an IQ4_NL table");
+    // IQ4_NL: blocks of 32 values in 18 bytes
+    if (t->type != ggml_type::kIQ4_NL || t->dims.at(0) % 32) throw std::runtime_error("qwen4exp PLE: expected an IQ4_NL table");
     p.row_bytes = uint64_t(t->dims.at(0)) / 32 * 18;
     if (p.row_bytes * uint64_t(t->dims.at(1)) > t->bytes) throw std::runtime_error("qwen4exp PLE: table is truncated");
     p.table_offset = t->file_offset;

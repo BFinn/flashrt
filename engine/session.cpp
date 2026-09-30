@@ -9,6 +9,7 @@
 #include "arch/qwen4exp/spec.hpp"
 #include "core/cpu_pool.hpp"
 #include "core/expert_arena.hpp"
+#include "core/formats.hpp"
 #include "core/gguf.hpp"
 #include "core/platform.hpp"
 #include "kernels/cuda/ggml_gemv.h"
@@ -180,7 +181,7 @@ struct Session::Impl {
             if (!f) throw std::runtime_error("cannot open " + o.cache_prior);
             int64_t h[4] = {0, 0, 0, 0};
             std::vector<uint32_t> c(size_t(s.n_layer) * s.n_expert);
-            const bool ok = std::fread(h, sizeof(h), 1, f) == 1 && h[0] == 0x50435246 && h[1] == s.n_layer && h[2] == s.n_expert &&
+            const bool ok = std::fread(h, sizeof(h), 1, f) == 1 && h[0] == kCachePriorMagic && h[1] == s.n_layer && h[2] == s.n_expert &&
                             std::fread(c.data(), 4, c.size(), f) == c.size();
             std::fclose(f);
             if (!ok || h[3] <= 0) throw std::runtime_error(o.cache_prior + " is not a routing prior for this model");

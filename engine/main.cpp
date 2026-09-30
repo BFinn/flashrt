@@ -250,6 +250,9 @@ int main(int argc, char** argv) {
         std::lock_guard<std::mutex> lk(q.mu);
         q.running.clear();
     }
-    reader.detach();   // it may be blocked in getline; the process is exiting
+    // the loop ends only once the reader has set quit (on "quit" or the end of input) and is
+    // returning; join it before q goes, then free the session (its miss server and CPU pool stop)
+    reader.join();
+    session.reset();
     return 0;
 }
