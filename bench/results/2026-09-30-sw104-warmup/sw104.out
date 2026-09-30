@@ -1,0 +1,16 @@
+w9-base-r1 rc=0 79.86 tok/s expert cache hit rate 74.27% (11 swaps 6442
+wiki-base-r1 rc=0 102.16 tok/s expert cache hit rate 93.40% (14 swaps 4114
+w9-seed-r1 rc=0 82.95 tok/s expert cache hit rate 78.21% (12 swaps 7334
+wiki-seed-r1 rc=0 108.41 tok/s expert cache hit rate 93.35% (14 swaps 4499
+w9-early-r1 rc=0 87.54 tok/s expert cache hit rate 80.60% (12 swaps 9392
+wiki-early-r1 rc=0 106.98 tok/s expert cache hit rate 93.56% (14 swaps 4789
+w9-b64-r1 rc=0 85.53 tok/s expert cache hit rate 80.45% (12 swaps 10228
+wiki-b64-r1 rc=0 108.27 tok/s expert cache hit rate 93.50% (14 swaps 5329
+w9-base-r2 rc=0 81.88 tok/s expert cache hit rate 74.29% (11 swaps 6456
+wiki-base-r2 rc=0 102.98 tok/s expert cache hit rate 93.41% (14 swaps 4069
+w9-seed-r2 rc=0 84.25 tok/s expert cache hit rate 77.84% (11 swaps 7251
+wiki-seed-r2 rc=0 108.65 tok/s expert cache hit rate 93.33% (14 swaps 4464
+w9-early-r2 rc=0 87.07 tok/s expert cache hit rate 80.79% (12 swaps 9628
+wiki-early-r2 rc=0 103.37 tok/s expert cache hit rate 93.53% (14 swaps 4884
+w9-b64-r2 rc=0 84.81 tok/s expert cache hit rate 80.43% (12 swaps 10225
+wiki-b64-r2 rc=0 107.42 tok/s expert cache hit rate 93.48% (14 swaps 5351
