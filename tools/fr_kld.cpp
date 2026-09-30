@@ -58,6 +58,7 @@ int main(int argc, char** argv) {
     float pcie_frac = 0.0f;
     bool kv_q8 = false;
     int kv_hot = 0, window = 0, pchunk = 0;
+    CachePolicyConfig pol;   // the adaptive cache (--swap-budget, --cache-seed-scale)
     for (int i = 3; i < argc; ++i) {
         auto next = [&]() -> const char* { return i + 1 < argc ? argv[++i] : "0"; };
         if (!std::strcmp(argv[i], "--ctx")) ctx = std::atoi(next());
@@ -71,6 +72,8 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--kv-hot")) kv_hot = std::atoi(next());
         else if (!std::strcmp(argv[i], "--window")) window = std::atoi(next());
         else if (!std::strcmp(argv[i], "--prefill-chunk")) pchunk = std::atoi(next());
+        else if (!std::strcmp(argv[i], "--swap-budget")) pol.budget = std::atoi(next());
+        else if (!std::strcmp(argv[i], "--cache-seed-scale")) pol.seed_scale = float(std::atof(next()));
         else { std::fprintf(stderr, "unknown argument %s\n", argv[i]); return 2; }
     }
 
@@ -172,7 +175,7 @@ int main(int argc, char** argv) {
                 }
                 fwd.set_fast_moe(&cache, &host);
                 if (adaptive) {
-                    mgr = create_cache_manager(s, cache, arena, CachePolicyConfig{}, fwd.counts());
+                    mgr = create_cache_manager(s, cache, arena, pol, fwd.counts());
                     fwd.set_cache_manager(mgr);
                 }
                 std::printf("fast path: %d cache slots (%.1f%% of experts), %s cache\n", slots, 100.0 * slots / (s.n_layer * s.n_expert),
