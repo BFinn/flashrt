@@ -16,8 +16,7 @@ against the best existing engines on that box.
 
 ## Results
 
-**Same prompts as the reference engines** (`bench/results/2026-09-30-sw119-after-fix` for the
-MTP rows, `2026-09-30-sw110-depthbench` for the no-MTP row, against
+**Same prompts as the reference engines** (`bench/results/2026-09-30-sw124-depthbench`, against
 `bench/results/2026-09-27-w9-validation`):
 - the same token ids (a synthetic prompt followed by an instruction, at 1K / 32K / 134K / 250K
   tokens);
@@ -30,11 +29,11 @@ MTP rows, `2026-09-30-sw110-depthbench` for the no-MTP row, against
 | llama.cpp (expert cache, sparse attention; no MTP), greedy | 4 | 37.4 ± 0.6 | 37.2 ± 1.1 | 32.8 ± 1.6 | 30.7 ± 1.1 |
 | **greedy** | | | | | |
 | Strata 0.1.6, MTP (see the caveat below) | 4 | 87.0 ± 0.7 | 96.0 ± 2.2 | 85.0 ± 2.7 | 80.4 ± 3.6 |
-| flashrt, MTP (2 drafts per round) | 5 | 125.7 ± 3.3 | 106.0 ± 1.7 | 99.5 ± 1.6 | 92.3 ± 1.4 |
-| flashrt, no MTP | 5 | 102.2 ± 1.1 | 94.8 ± 1.1 | 87.5 ± 0.3 | 82.8 ± 0.3 |
+| flashrt, MTP (2 drafts per round) | 5 | 125.8 ± 3.4 | 107.8 ± 0.7 | 104.2 ± 2.0 | 99.1 ± 1.8 |
+| flashrt, no MTP | 5 | 101.3 ± 0.7 | 94.9 ± 1.4 | 93.5 ± 1.3 | 90.3 ± 1.5 |
 | **temperature 1.0** (top-p 0.95, top-k 20) | | | | | |
 | Strata 0.1.6, MTP (n=3 at 250K) | 4 | 80.5 ± 4.1 | 79.1 ± 1.3 | 73.9 ± 1.8 | 69.9 ± 7.2 |
-| flashrt, MTP, sampled drafts | 5 | 118.3 ± 11.0 | 106.1 ± 4.7 | 99.5 ± 5.5 | 96.8 ± 5.1 |
+| flashrt, MTP, sampled drafts | 5 | 124.6 ± 9.8 | 106.7 ± 3.9 | 102.3 ± 3.1 | 102.3 ± 3.5 |
 
 - **Prefix reuse.** Every prompt ends with the same instruction, so a deeper prompt shares only its
   context with the previous one. flashrt reuses 32,768 tokens at 134K and 134,004 at 250K, from
@@ -48,10 +47,13 @@ MTP rows, `2026-09-30-sw110-depthbench` for the no-MTP row, against
   the model's.
 
 What the table shows:
-- **Against llama.cpp:** 2.5-2.7x with neither engine drafting, 2.8-3.4x with flashrt's MTP head.
-- **Against Strata, greedy:** ahead at every depth, by 44%, 10%, 17% and 15%. Without its draft
-  head flashrt is ahead at 1K, 134K and 250K, and level at 32K (94.8 against 96.0).
-- **Against Strata, temperature 1.0:** ahead by 34-47% at every depth.
+- **Against llama.cpp:** 2.6-2.9x with neither engine drafting, 2.9-3.4x with flashrt's MTP head.
+- **Against Strata, greedy:** ahead at every depth, by 45%, 12%, 23% and 23%. Without its draft
+  head flashrt is ahead at 1K, 134K and 250K (by 10-16%), and level at 32K (94.9 against 96.0).
+- **Against Strata, temperature 1.0:** ahead by 35-55% at every depth.
+- **At depth, the last gain came from two kernels** (sw121, sw122): the indexer's block selection
+  on a thread-block cluster and the hot set's CLOCK in parallel, both output-identical. 134K and
+  250K rose 5-10% (sw124 against sw119).
 - **What moved it: the expert cache's warm-up.** The cache is filled from the prompt's routing, and
   this answer routes elsewhere. The policy now starts from scaled-down prompt counts, admits
   sooner, and starts up to 64 uploads per step, committed deterministically (sw99-sw109). Hit rates
