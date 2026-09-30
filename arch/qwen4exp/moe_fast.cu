@@ -633,10 +633,7 @@ MoeFastHost alloc_moe_fast_host(const Spec& s, int max_window) {
 
 namespace {
 constexpr int kMaxTableUpdates = 256;
-static const long kCommitLag = [] {   // FLASHRT_COMMIT_LAG=2: commit two steps after issue (sw107)
-    const char* e = std::getenv("FLASHRT_COMMIT_LAG");
-    return e && e[0] == '2' ? 2L : 1L;
-}();   // per token: evictions and commits (a budget of 64 needs more than 64)
+constexpr long kCommitLag = 1;   // steps from an upload's issue to its commit (2 lost on short agent turns: sw108, sw109)   // per token: evictions and commits (a budget of 64 needs more than 64)
 struct TableUpdates {
     int n;
     int32_t idx[kMaxTableUpdates];
@@ -718,7 +715,7 @@ CacheManager* create_cache_manager(const Spec& s, ExpertCache& cache, const Expe
     arena_register(arena);
     ck(cudaStreamCreateWithFlags(&m->copy, cudaStreamNonBlocking), "cudaStreamCreate copy");
     ck(cudaEventCreateWithFlags(&m->tok_done, cudaEventDisableTiming), "cudaEventCreate");
-    for (int i = 0; i < 2 * cfg.budget; ++i) {   // uploads stay pending two steps (see the commit)
+    for (int i = 0; i < 2 * cfg.budget; ++i) {   // this step's uploads and the previous step's, pending
         cudaEvent_t ev;
         ck(cudaEventCreateWithFlags(&ev, cudaEventDisableTiming), "cudaEventCreate");
         m->events_free.push_back(ev);
