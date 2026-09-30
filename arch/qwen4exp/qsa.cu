@@ -857,8 +857,9 @@ __global__ void __cluster_dims__(kSelCluster, 1, 1) __launch_bounds__(1024)
     } else {
         // tau = the M-th largest key, 8 bits at a time: this CTA's histogram of the next digit over
         // its keys that match the digits found so far (integer counts: order-independent), summed
-        // over the cluster
-        __shared__ int hist[256], tot[256];
+        // over the cluster. Two histogram buffers, alternating by pass: a CTA clears the one it
+        // writes next only after the next pass's cluster barrier, by when every CTA has read it.
+        __shared__ int hist2[2][256], tot[256];
         __shared__ unsigned sh_prefix;
         __shared__ int sh_need;
         if (threadIdx.x == 0) {
@@ -866,6 +867,7 @@ __global__ void __cluster_dims__(kSelCluster, 1, 1) __launch_bounds__(1024)
             sh_need = M;
         }
         for (int shift = 24; shift >= 0; shift -= 8) {
+            int* hist = hist2[(shift >> 3) & 1];
             for (int i = threadIdx.x; i < 256; i += blockDim.x) hist[i] = 0;
             __syncthreads();
             const unsigned prefix = sh_prefix, hmask = shift == 24 ? 0u : ~0u << (shift + 8);
@@ -881,13 +883,13 @@ __global__ void __cluster_dims__(kSelCluster, 1, 1) __launch_bounds__(1024)
                 const unsigned same = __match_any_sync(0xffffffff, bin);
                 if (bin >= 0 && int(threadIdx.x & 31) == __ffs(same) - 1) atomicAdd(&hist[bin], __popc(same));
             }
-            cl.sync();   // every CTA's histogram is complete
+            cl.sync();   // every CTA's histogram is complete (and last pass's buffer read by all)
             for (int d = threadIdx.x; d < 256; d += blockDim.x) {
                 int v = 0;
                 for (int k = 0; k < kSelCluster; ++k) v += cl.map_shared_rank(hist, k)[d];
                 tot[d] = v;
             }
-            cl.sync();   // every CTA has read the others' histograms (they are cleared next pass)
+            __syncthreads();
             if (threadIdx.x < 32) {   // warp 0: the digit holding the need-th largest key
                 const int lane = threadIdx.x, need = sh_need;
                 int part = 0;   // lane owns digits 255 - 8 lane .. 248 - 8 lane (descending)
