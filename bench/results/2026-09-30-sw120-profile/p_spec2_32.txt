@@ -1,0 +1,46 @@
+WARNING: Device-side CUDA Event completion trace is currently enabled.
+         This may increase runtime overhead and the likelihood of false
+         dependencies across CUDA Streams. If you wish to avoid this, please
+         disable the feature with --cuda-event-trace=false.
+WARNING: CPU IP/backtrace sampling not supported, disabling.
+Try the 'nsys status --environment' command to learn more.
+
+WARNING: CPU context switch tracing not supported, disabling.
+Try the 'nsys status --environment' command to learn more.
+
+expert arena registered in 1.9 s
+KV cache: q8_0, host-resident, hot set of 4096 blocks per layer
+MTP draft head: layer 48, 774 MiB of weights in VRAM, 2 drafts per verify round
+VRAM before prefill: 10989 MiB free
+state: MTP head state loaded
+state: loaded $BENCH/state-32k-q8-mtp.bin (32767 positions) in 0.2 s
+MTP draft vocabulary: 33692 tokens (32768 ranked, 924 from the prompt)
+expert cache: 8094 slots (32.9% of experts), filled in 0.3 s from 10928 MiB free
+adaptive cache: decayed LFU, admit 1.00, margin 1.20, swap budget 64, seed scale 0.030 (set up in 0.0 s)
+drafts: the head's argmax, kept while the sampled token equals them
+decode: 128 tokens at depth 32768 in 1.32 s: 97.09 tok/s (speculative, MTP drafts), swaps 2074
+expert cache hit rate 93.94% (101457 hits, 6543 misses: 6543 on the CPU, 0 read over PCIe)
+host per token: 6.06 ms waiting for routing, 2.25 ms running misses
+misses per layer: count (share of layers) and mean host miss time
+   0 :  30.7%     1.3 us
+   1 :  28.7%    74.7 us
+   2 :  17.5%   105.1 us
+   3 :  11.8%   135.8 us
+   4 :   5.2%   163.8 us
+   5 :   2.9%   196.2 us
+   6 :   1.6%   229.1 us
+   7 :   0.7%   266.4 us
+   8 :   0.5%   296.1 us
+   9 :   0.1%   318.8 us
+  10 :   0.2%   868.0 us
+  11 :   0.1%   433.4 us
+  13 :   0.0%   448.9 us
+CUDA graphs: on (1 capture(s))
+speculative: 75 rounds, 1.707 tokens per round, 2.00 drafts verified per round; accepted drafts: 0:45.3% 1:38.7% 2:16.0%
+  per round: draft 2.07 ms, verify 14.99 ms, commit 0.48 ms
+tokens: 945 35166 383 264 40143 1496 13907 55893 10663 1550 9393 383 4855 22950 359 82 44798 321 8308 22120 2980 6121 641 561
+Collecting data...
+Generating '/tmp/nsys-report-da3d.qdstrm'
+[1/1] [0%                          ] p_spec2_32.nsys-rep[1/1] [0%                          ] p_spec2_32.nsys-rep[1/1] [5%                          ] p_spec2_32.nsys-rep[1/1] [=====29%                    ] p_spec2_32.nsys-rep[1/1] [===22%                      ] p_spec2_32.nsys-rep[1/1] [=17%                        ] p_spec2_32.nsys-rep[1/1] [=====31%                    ] p_spec2_32.nsys-rep[1/1] [====26%                     ] p_spec2_32.nsys-rep[1/1] [===22%                      ] p_spec2_32.nsys-rep[1/1] [==19%                       ] p_spec2_32.nsys-rep[1/1] [=17%                        ] p_spec2_32.nsys-rep[1/1] [=15%                        ] p_spec2_32.nsys-rep[1/1] [===22%                      ] p_spec2_32.nsys-rep[1/1] [====27%                     ] p_spec2_32.nsys-rep[1/1] [======33%                   ] p_spec2_32.nsys-rep[1/1] [=======38%                  ] p_spec2_32.nsys-rep[1/1] [=========44%                ] p_spec2_32.nsys-rep[1/1] [==========49%               ] p_spec2_32.nsys-rep[1/1] [============55%             ] p_spec2_32.nsys-rep[1/1] [=============60%            ] p_spec2_32.nsys-rep[1/1] [==============61%           ] p_spec2_32.nsys-rep[1/1] [========================100%] p_spec2_32.nsys-rep[1/1] [========================100%] p_spec2_32.nsys-rep
+Generated:
+	$BENCH/sw120/p_spec2_32.nsys-rep
