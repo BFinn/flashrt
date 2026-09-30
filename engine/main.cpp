@@ -140,8 +140,6 @@ int main(int argc, char** argv) {
         else if (a == "--cache-admit") o.cache_admit = float(std::atof(next()));
         else if (a == "--cache-margin") o.cache_margin = float(std::atof(next()));
         else if (a == "--cache-seed-scale") o.cache_seed_scale = float(std::atof(next()));
-        else if (a == "--cache-early-budget") o.cache_early_budget = std::atoi(next());
-        else if (a == "--cache-early-tokens") o.cache_early_tokens = std::atoi(next());
         else if (a == "--cache-prior") o.cache_prior = next();
         else if (a == "--prefill-chunk") o.prefill_chunk = std::atoi(next());
         else if (a == "--prefill-chunk-max") o.prefill_chunk_max = std::atoi(next());

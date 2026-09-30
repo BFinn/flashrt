@@ -381,8 +381,6 @@ struct Session::Impl {
         cfg.admit = o.cache_admit;
         cfg.margin = o.cache_margin;
         cfg.seed_scale = o.cache_seed_scale;
-        cfg.early_budget = o.cache_early_budget;
-        cfg.early_tokens = o.cache_early_tokens;
         mgr = create_cache_manager(s, cache, arena, cfg, cnt);
         fwd->set_cache_manager(mgr);
         cache_filled = true;

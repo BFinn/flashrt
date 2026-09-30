@@ -632,7 +632,7 @@ MoeFastHost alloc_moe_fast_host(const Spec& s, int max_window) {
 // ---- adaptive expert cache
 
 namespace {
-constexpr int kMaxTableUpdates = 256;   // per token: evictions and commits (an early budget needs more than 64)
+constexpr int kMaxTableUpdates = 256;   // per token: evictions and commits (a budget of 64 needs more than 64)
 struct TableUpdates {
     int n;
     int32_t idx[kMaxTableUpdates];
@@ -672,7 +672,6 @@ struct CacheManager {
     std::vector<float> count;                   // inflated: real count = count / w
     double w = 1.0;                             // weight of an access now
     long token = 0;    // steps
-    long tokens = 0;   // tokens learned from (a window's step has several)
     std::set<std::pair<float, int>> resident;   // (count, key) of the cached experts
     struct Pending {
         int key, slot;
@@ -714,7 +713,7 @@ CacheManager* create_cache_manager(const Spec& s, ExpertCache& cache, const Expe
     arena_register(arena);
     ck(cudaStreamCreateWithFlags(&m->copy, cudaStreamNonBlocking), "cudaStreamCreate copy");
     ck(cudaEventCreateWithFlags(&m->tok_done, cudaEventDisableTiming), "cudaEventCreate");
-    for (int i = 0; i < std::max(cfg.budget, cfg.early_budget); ++i) {
+    for (int i = 0; i < cfg.budget; ++i) {
         cudaEvent_t ev;
         ck(cudaEventCreateWithFlags(&ev, cudaEventDisableTiming), "cudaEventCreate");
         m->events_free.push_back(ev);
@@ -750,8 +749,7 @@ void cache_manager_step(CacheManager* m, const MoeFastHost& h, cudaStream_t stre
                 m->bump(key, float(m->w));
                 if (c.table[key] < 0 && !m->is_pending[key]) missed.push_back(key);
             }
-    const int budget = m->tokens < m->cfg.early_tokens && m->cfg.early_budget > 0 ? m->cfg.early_budget : m->cfg.budget;
-    m->tokens += h.access_prev_T;
+    const int budget = m->cfg.budget;
     if (++m->token % m->cfg.decay_every == 0) {
         m->w /= m->cfg.decay;
         if (m->w > 1e18) m->renormalise();

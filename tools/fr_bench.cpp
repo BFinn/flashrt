@@ -3,7 +3,7 @@
 //
 //   fr_bench MODEL.gguf --ids PROMPT.txt --n-prompt N --gen G [--slots S] [--reserve-mib R]
 //            [--reference] [--workers W] [--no-doorbell] [--spin-us U] [--windows N] [--trace FILE]
-//            [--static-cache] [--swap-budget B] [--cache-admit A] [--cache-margin M] [--cache-seed-scale S] [--cache-early-budget B --cache-early-tokens N] [--pcie-frac F] [--save-state FILE | --load-state FILE] [--no-q3r]
+//            [--static-cache] [--swap-budget B] [--cache-admit A] [--cache-margin M] [--cache-seed-scale S] [--pcie-frac F] [--save-state FILE | --load-state FILE] [--no-q3r]
 //            [--no-graphs] [--kv q8] [--kv-hot BLOCKS] [--count-half-life N] [--mtp DRAFT.gguf [--draft K | --spec K]]
 //
 // Prefills N prompt tokens in 64-token batches (reference path; its routing counts pick the
@@ -93,7 +93,7 @@ int main(int argc, char** argv) {
     int n_prompt = 1024, gen = 128, slots = 0, reserve_mib = 256, workers = 8, windows = 1;
     bool teacher = false;
     bool reference = false, doorbell = true, adaptive = true;
-    int swap_budget = 32;   // as the engine (sw89, sw90)
+    int swap_budget = CachePolicyConfig{}.budget;   // as the engine (sw104)
     CachePolicyConfig pol;   // the adaptive cache's settings; the flags below override them
     float pcie_frac = 0.0f;
     bool q3r = true, graphs = true, kv_q8 = false;
@@ -118,8 +118,6 @@ int main(int argc, char** argv) {
         else if (a == "--cache-admit") pol.admit = float(std::atof(next()));
         else if (a == "--cache-margin") pol.margin = float(std::atof(next()));
         else if (a == "--cache-seed-scale") pol.seed_scale = float(std::atof(next()));
-        else if (a == "--cache-early-budget") pol.early_budget = std::atoi(next());
-        else if (a == "--cache-early-tokens") pol.early_tokens = std::atoi(next());
         else if (a == "--pcie-frac") pcie_frac = float(std::atof(next()));
         else if (a == "--save-state") save_state = next();
         else if (a == "--no-q3r") q3r = false;
@@ -385,8 +383,8 @@ int main(int argc, char** argv) {
             cfg.budget = swap_budget;
             mgr = create_cache_manager(s, cache, arena, cfg, fwd.counts());
             fwd.set_cache_manager(mgr);
-            std::printf("adaptive cache: decayed LFU, admit %.2f, margin %.2f, swap budget %d, seed scale %.3f, early budget %d for %d "
-                        "tokens (set up in %.1f s)\n", cfg.admit, cfg.margin, swap_budget, cfg.seed_scale, cfg.early_budget, cfg.early_tokens,
+            std::printf("adaptive cache: decayed LFU, admit %.2f, margin %.2f, swap budget %d, seed scale %.3f (set up in %.1f s)\n",
+                        cfg.admit, cfg.margin, swap_budget, cfg.seed_scale,
                         std::chrono::duration<double>(Clock::now() - tr).count());
         }
     }

@@ -97,12 +97,12 @@ struct CachePolicyConfig {
     int decay_every = 4;
     float admit = 1.0f;    // 2 until sw100: 1 with margin 1.2 follows a generation that routes unlike its
     float margin = 1.2f;   // prompt sooner (window 9 +3.0%, wikitext +1.6%, teacher-forced; sw99, sw100)
-    int budget = 8;
-    // The warm-up after a fill from a prompt's routing: the counts start at seed_scale times the
-    // prompt's (the fill still follows them), and the first early_tokens tokens may have
-    // early_budget uploads in flight (0: budget throughout). sw104.
-    float seed_scale = 1.0f;
-    int early_budget = 0, early_tokens = 0;
+    int budget = 64;       // uploads in flight: 64 since sw104 (8 until sw89, then 32)
+    // The warm-up after a fill from a prompt's routing: the policy's counts start at seed_scale
+    // times the prompt's, while the fill still follows them. At 1 an expert the answer needs could
+    // not beat the weakest resident for ~70 tokens (sw99, sw104). With budget 64, teacher-forced:
+    // window 9 +7.7%, wikitext +4.4%, window 9 with the MTP head +23.8% (sw104).
+    float seed_scale = 0.03f;
 };
 struct CacheManager;   // opaque; see moe_fast.cu
 
