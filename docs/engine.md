@@ -248,6 +248,8 @@ cache after, from the prefill's routing counts and the startup prior.
 | **Split-K flash-decode attention** | The first kernel spent 7.1 ms per token on attention. | sw2: 7.1 → 0.23 ms |
 | **Deterministic indexer selection** (block order, no float atomics anywhere) | Atomic slot order made the attention sum order, and so the output, vary from run to run. | sw5: runs bit-reproducible since |
 | **Select: 8-bit radix, warp-aggregated histogram, segmented ordered output** | At 245K (61K blocks, one CTA per layer) selection took 1.2 ms per token. | sw20: 1.21 → 0.85 ms; selection unchanged (`fr_parity qsa`) |
+| **Select on an 8-CTA cluster per token** (histograms summed through distributed shared memory, keys held in shared memory, offsets from the CTAs before, one cluster barrier per pass) | One CTA still took 103 µs per call at 245K (sw120: 10.7% of GPU time). The output is the single CTA's, cell for cell. | sw121: 103 → 25 µs per call; 245K plain +9.9%, `--spec 2` +3.7%, 32K +2.9%; fingerprint identical; `test_idx_select` |
+| **Hot-set CLOCK in parallel** (a chunk of the ring per block scan) | One thread stepped the hand slot by slot. Same victims, pairing and hand as the serial sweep. | sw122: 22.4 → 4.4 µs per call; 245K plain +1.9%; fingerprint identical |
 | **fp16 KV storage** | The values were fp16-rounded already. Half the VRAM, same numerics. | sw12: parity identical line for line |
 | **q8_0 KV** (`--kv q8`) | llama.cpp's own q8_0 cache is the noise floor (KLD 0.0078). It frees about 2,000 expert slots at 245K. | sw18: KLD 0.0092; 245K 61-64 → 63-71 tok/s |
 | **Host KV + GPU hot set** (`--kv-hot 4096`) | QSA reads only 2,052 cells per layer per token. Promoting the selected blocks *before* attention keeps attention on GPU memory. | sw19-20 (v1 read misses zero-copy inside attention: slower), sw22 |
@@ -280,6 +282,9 @@ cache after, from the prefill's routing counts and the startup prior.
 
 ## Tried and rejected, or parked
 
+- **L2 prefetch of the next layer's hc mix during the miss wait** (P-5, sw123): the weights reach
+  L2 (the up-mix 15.3 → 11.1 µs), but a bulk prefetch holds the stream about 29 µs, longer than
+  the wait, and per-line hints slowed the step. −1% to −14% in every mode; removed.
 - **A per-round draft length** (P-3, sw114): every round logged (`fr_bench --round-log`), rules
   replayed on them. Stopping at a low head probability, or choosing K from the last round's kept
   count, gains at most about 2% for one rule across contexts, and not in all of them; an oracle
@@ -466,10 +471,11 @@ The scripts run with `set -u`, so they stop if one is unset.
 - **The chunk path holds about 0.45 MiB per token.** moe_q2 and the BF16 per-slot outputs
   removed about 120 KB per token (sw53, sw59), so 245K now fits chunks of 15-16K. The block
   scratch is still sized about 30% above the widest mixer's need.
-- **Hot set:** `k_hot_select` is serial CLOCK in one thread (17 µs per layer), and the copy costs
-  about 30 µs per layer at steady state. Both have room to improve.
-- **`k_idx_select`** still spends about 70 µs per layer at 245K in 4 single-CTA histogram passes.
-  A multi-CTA histogram would roughly halve it (estimate).
+- **Hot set:** the copy costs about 31 µs per layer at 245K (`k_hot_copy`: the promoted blocks
+  over PCIe; about 180 per token). A larger hot set would promote fewer, at the expert cache's
+  expense.
+- **The indexer scores** (`k_idx_scores128`, 37 µs per layer at 245K) read fp32 pooled keys at
+  bandwidth; BF16 keys would halve that, but change the scores (needs the KLD gate).
 - **Failed requests** reset the session to an empty sequence, so the next request starts cold
   (sw92). A doorbell timeout or a sticky CUDA error ends the process (status 3).
 - **Server limits:** text only (no images); tool_choice "required" or a named tool is not
@@ -527,6 +533,6 @@ list, are done (sw85: 32K `--spec 1` 119.0 → 143.1 tok/s, 245K 91.7 → 97.1).
    Decode: the small mat-vecs that share an input, and the norms and SwiGLU in front of a
    mat-vec, are fused (sw73, sw74: plain +4.3%, `--spec 1` +1.9-2.3%). What is left there is
    mostly the hc kernels and the MoE combine.
-3. **Tuning:** multi-CTA select, a parallel hot-set CLOCK. The cache warm-up and prefix reuse
+3. **Tuning:** ~~multi-CTA select, a parallel hot-set CLOCK~~ (done: sw121, sw122). The cache warm-up and prefix reuse
    closed the gap to Strata on window 9's protocol (sw96, sw110).
 4. ~~The MTP head's pass over the prompt~~: done (sw102; the head costs 5-7% of prefill).

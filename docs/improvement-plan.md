@@ -207,7 +207,10 @@ In expected-value order. Each needs its KLD check and a `bench/results` folder.
    text and about +1% on a code edit: the head already predicts copied text, and long windows cost
    a union of CPU misses per token.
 4. **P-5:** multi-CTA `k_idx_select`, a parallel hot-set CLOCK, Q3R and LM-head bandwidth. A few
-   percent each at depth.
+   percent each at depth. **Done in part (sw120-sw124):** the selection on an 8-CTA cluster (245K
+   +9.9%) and the parallel CLOCK (+1.9%), both output-identical; an L2 prefetch of the next hc mix
+   was rejected (sw123). Left: BF16 indexer keys (~2% at 245K, output-changing), the hc mixes
+   (about 5 µs above their floor, 97 per token), the hot-set copy (PCIe).
 5. **Quality beyond KLD** (Grok): a few hundred items of a reasoning eval (for example GSM8K)
    through flashrt and llama.cpp on the same GGUF, with a matching score expected. KLD is
    necessary but not sufficient.
