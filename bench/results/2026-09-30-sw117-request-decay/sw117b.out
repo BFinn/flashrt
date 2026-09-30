@@ -1,0 +1,7 @@
+Running as unit: fr-server-sw117.service; invocation ID: 7f9bbb63ff044700a1ead370aab78f93
+flashrt-check 25/100: 25/25 right this run, 3.9 s per item
+flashrt-check 50/100: 50/50 right this run, 4.3 s per item
+flashrt-check 75/100: 75/75 right this run, 4.4 s per item
+flashrt-check 100/100: 99/100 right this run, 4.9 s per item
+flashrt-check: done, 99/100 right this run
+ALLDONE

@@ -1,0 +1,214 @@
+flashrt: GPU weights loaded in 0.9 s
+flashrt: experts read into the host arena and registered in 28.5 s
+flashrt: forward pass set up in 0.1 s
+flashrt: MTP head loaded in 5.1 s
+flashrt: 8 prefill checkpoints of 112.7 MiB in host RAM
+flashrt: buffers and checkpoints allocated in 0.4 s
+flashrt: expert cache and miss server set up in 0.0 s
+flashrt: qwen4exp, 48 layers, expert cache 7800 slots (31.7%), MTP drafts 2 per round
+[2m2026-09-30T16:21:09.634258Z[0m [32m INFO[0m [2mflashrt_server[0m[2m:[0m engine ready [3mversion[0m[2m=[0m0.1.0 [3march[0m[2m=[0mqwen4exp [3mmax_context[0m[2m=[0m16384
+[2m2026-09-30T16:21:09.634348Z[0m [32m INFO[0m [2mflashrt_server[0m[2m:[0m listening on 127.0.0.1:8090
+flashrt: cache check: hits 84.6%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:21:13.634139Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r0: prompt 114 (reused 0) in 1404 ms, 239 tokens in 1534 ms, Stop
+flashrt: cache check: hits 83.2%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:21:15.693337Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r1: prompt 76 (reused 0) in 622 ms, 211 tokens in 1435 ms, Stop
+flashrt: cache check: hits 83.8%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:21:19.351455Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r2: prompt 107 (reused 0) in 884 ms, 401 tokens in 2772 ms, Stop
+flashrt: cache check: hits 82.0%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:21:21.890850Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r3: prompt 85 (reused 0) in 734 ms, 261 tokens in 1804 ms, Stop
+flashrt: cache check: hits 82.7%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:21:25.129492Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r4: prompt 161 (reused 0) in 1266 ms, 274 tokens in 1971 ms, Stop
+flashrt: cache check: hits 84.1%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:21:29.452185Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r5: prompt 104 (reused 0) in 834 ms, 507 tokens in 3487 ms, Stop
+flashrt: cache check: hits 79.6%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:21:32.192160Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r6: prompt 90 (reused 0) in 790 ms, 264 tokens in 1948 ms, Stop
+flashrt: cache check: hits 80.4%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:21:36.593390Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r7: prompt 119 (reused 0) in 938 ms, 467 tokens in 3462 ms, Stop
+flashrt: cache check: hits 85.6%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:21:42.122508Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r8: prompt 154 (reused 0) in 1227 ms, 665 tokens in 4300 ms, Stop
+flashrt: cache check: hits 84.2%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:21:45.477856Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r9: prompt 110 (reused 0) in 863 ms, 355 tokens in 2491 ms, Stop
+flashrt: cache check: hits 80.5%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:21:49.253880Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r10: prompt 110 (reused 0) in 864 ms, 396 tokens in 2910 ms, Stop
+flashrt: cache check: hits 81.1%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:21:52.833975Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r11: prompt 114 (reused 0) in 880 ms, 385 tokens in 2698 ms, Stop
+flashrt: cache check: hits 88.0%, resident host 7750 / device 7750 of 7800 slots, free 50, table mismatches 0, owner mismatches 0, in flight 50
+[2m2026-09-30T16:22:00.306222Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r12: prompt 117 (reused 0) in 916 ms, 1024 tokens in 6554 ms, Length
+flashrt: cache check: hits 84.5%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:22:05.212627Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r13: prompt 107 (reused 0) in 876 ms, 608 tokens in 4029 ms, Stop
+flashrt: cache check: hits 83.5%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:22:09.232603Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r14: prompt 102 (reused 0) in 843 ms, 477 tokens in 3175 ms, Stop
+flashrt: cache check: hits 80.2%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:22:11.950555Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r15: prompt 144 (reused 0) in 1111 ms, 226 tokens in 1605 ms, Stop
+flashrt: cache check: hits 81.3%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:22:14.148477Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r16: prompt 103 (reused 0) in 856 ms, 198 tokens in 1341 ms, Stop
+flashrt: cache check: hits 85.3%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:22:16.875121Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r17: prompt 107 (reused 0) in 856 ms, 279 tokens in 1869 ms, Stop
+flashrt: cache check: hits 86.7%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:22:18.803462Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r18: prompt 78 (reused 0) in 631 ms, 210 tokens in 1295 ms, Stop
+flashrt: cache check: hits 85.2%, resident host 7766 / device 7766 of 7800 slots, free 34, table mismatches 0, owner mismatches 0, in flight 34
+[2m2026-09-30T16:22:22.799484Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r19: prompt 115 (reused 0) in 1011 ms, 456 tokens in 2983 ms, Stop
+flashrt: cache check: hits 83.7%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:22:27.672268Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r20: prompt 113 (reused 0) in 873 ms, 603 tokens in 3998 ms, Stop
+flashrt: cache check: hits 86.0%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:22:30.148444Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r21: prompt 95 (reused 0) in 766 ms, 272 tokens in 1709 ms, Stop
+flashrt: cache check: hits 81.1%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:22:32.655450Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r22: prompt 105 (reused 0) in 831 ms, 239 tokens in 1674 ms, Stop
+flashrt: cache check: hits 81.2%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:22:34.853954Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r23: prompt 90 (reused 0) in 733 ms, 208 tokens in 1464 ms, Stop
+flashrt: cache check: hits 82.9%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:22:38.501927Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r24: prompt 89 (reused 0) in 732 ms, 410 tokens in 2914 ms, Stop
+flashrt: cache check: hits 83.2%, resident host 7742 / device 7742 of 7800 slots, free 58, table mismatches 0, owner mismatches 0, in flight 58
+[2m2026-09-30T16:22:41.820904Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r25: prompt 117 (reused 0) in 905 ms, 360 tokens in 2412 ms, Stop
+flashrt: cache check: hits 84.7%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:22:45.135394Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r26: prompt 118 (reused 0) in 921 ms, 392 tokens in 2392 ms, Stop
+flashrt: cache check: hits 83.6%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:22:47.886437Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r27: prompt 106 (reused 0) in 836 ms, 286 tokens in 1914 ms, Stop
+flashrt: cache check: hits 82.7%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:22:50.239950Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r28: prompt 100 (reused 0) in 803 ms, 229 tokens in 1549 ms, Stop
+flashrt: cache check: hits 85.7%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:22:53.075604Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r29: prompt 117 (reused 0) in 899 ms, 315 tokens in 1935 ms, Stop
+flashrt: cache check: hits 83.0%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:22:56.126114Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r30: prompt 89 (reused 0) in 797 ms, 318 tokens in 2252 ms, Stop
+flashrt: cache check: hits 82.9%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:22:59.208753Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r31: prompt 113 (reused 0) in 920 ms, 330 tokens in 2160 ms, Stop
+flashrt: cache check: hits 81.4%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:23:01.141184Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r32: prompt 91 (reused 0) in 748 ms, 161 tokens in 1182 ms, Stop
+flashrt: cache check: hits 81.8%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:23:04.245630Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r33: prompt 80 (reused 0) in 683 ms, 357 tokens in 2420 ms, Stop
+flashrt: cache check: hits 83.2%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:23:06.405212Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r34: prompt 91 (reused 0) in 748 ms, 216 tokens in 1409 ms, Stop
+flashrt: cache check: hits 83.7%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:23:09.420314Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r35: prompt 102 (reused 0) in 805 ms, 308 tokens in 2209 ms, Stop
+flashrt: cache check: hits 85.3%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:23:12.187786Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r36: prompt 91 (reused 0) in 742 ms, 298 tokens in 2024 ms, Stop
+flashrt: cache check: hits 84.4%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:23:15.626272Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r37: prompt 113 (reused 0) in 879 ms, 376 tokens in 2558 ms, Stop
+flashrt: cache check: hits 83.9%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:23:18.149006Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r38: prompt 94 (reused 0) in 780 ms, 272 tokens in 1741 ms, Stop
+flashrt: cache check: hits 83.2%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:23:22.376740Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r39: prompt 122 (reused 0) in 921 ms, 482 tokens in 3305 ms, Stop
+flashrt: cache check: hits 76.7%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:23:25.575072Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r40: prompt 94 (reused 0) in 799 ms, 308 tokens in 2398 ms, Stop
+flashrt: cache check: hits 82.9%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:23:30.807493Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r41: prompt 177 (reused 0) in 1536 ms, 544 tokens in 3695 ms, Stop
+flashrt: cache check: hits 81.7%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:23:33.153367Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r42: prompt 131 (reused 0) in 998 ms, 208 tokens in 1346 ms, Stop
+flashrt: cache check: hits 87.4%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:23:35.719050Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r43: prompt 111 (reused 0) in 852 ms, 286 tokens in 1712 ms, Stop
+flashrt: cache check: hits 85.3%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:23:38.937715Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r44: prompt 127 (reused 0) in 989 ms, 346 tokens in 2228 ms, Stop
+flashrt: cache check: hits 82.5%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:23:47.282341Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r45: prompt 142 (reused 0) in 1152 ms, 1024 tokens in 7191 ms, Length
+flashrt: cache check: hits 79.2%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:23:50.790832Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r46: prompt 143 (reused 0) in 1104 ms, 324 tokens in 2402 ms, Stop
+flashrt: cache check: hits 85.2%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:23:54.364027Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r47: prompt 100 (reused 0) in 817 ms, 444 tokens in 2755 ms, Stop
+flashrt: cache check: hits 81.7%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:23:56.667692Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r48: prompt 86 (reused 0) in 714 ms, 226 tokens in 1588 ms, Stop
+flashrt: cache check: hits 83.7%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:23:59.690974Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r49: prompt 93 (reused 0) in 812 ms, 319 tokens in 2210 ms, Stop
+flashrt: cache check: hits 85.6%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:24:02.838358Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r50: prompt 86 (reused 0) in 809 ms, 363 tokens in 2336 ms, Stop
+flashrt: cache check: hits 82.4%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:24:05.684970Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r51: prompt 99 (reused 0) in 803 ms, 283 tokens in 2042 ms, Stop
+flashrt: cache check: hits 82.4%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:24:08.454184Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r52: prompt 112 (reused 0) in 881 ms, 276 tokens in 1886 ms, Stop
+flashrt: cache check: hits 82.3%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:24:11.732747Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r53: prompt 150 (reused 0) in 1183 ms, 316 tokens in 2093 ms, Stop
+flashrt: cache check: hits 79.7%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:24:14.911838Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r54: prompt 131 (reused 0) in 1003 ms, 305 tokens in 2174 ms, Stop
+flashrt: cache check: hits 83.8%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:24:16.749778Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r55: prompt 100 (reused 0) in 798 ms, 159 tokens in 1038 ms, Stop
+flashrt: cache check: hits 86.6%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:24:18.577513Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r56: prompt 95 (reused 0) in 775 ms, 177 tokens in 1050 ms, Stop
+flashrt: cache check: hits 84.3%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:24:22.046421Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r57: prompt 127 (reused 0) in 981 ms, 378 tokens in 2487 ms, Stop
+flashrt: cache check: hits 82.4%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:24:24.673960Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r58: prompt 134 (reused 0) in 1022 ms, 237 tokens in 1604 ms, Stop
+flashrt: cache check: hits 82.4%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:24:26.627646Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r59: prompt 82 (reused 0) in 704 ms, 185 tokens in 1248 ms, Stop
+flashrt: cache check: hits 81.4%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:24:30.021292Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r60: prompt 88 (reused 0) in 725 ms, 359 tokens in 2667 ms, Stop
+flashrt: cache check: hits 81.7%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:24:32.656284Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r61: prompt 111 (reused 0) in 868 ms, 249 tokens in 1765 ms, Stop
+flashrt: cache check: hits 85.2%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:24:36.550995Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r62: prompt 118 (reused 0) in 961 ms, 435 tokens in 2932 ms, Stop
+flashrt: cache check: hits 85.9%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:24:39.477901Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r63: prompt 119 (reused 0) in 924 ms, 324 tokens in 2001 ms, Stop
+flashrt: cache check: hits 81.8%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:24:42.583926Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r64: prompt 142 (reused 0) in 1104 ms, 282 tokens in 2000 ms, Stop
+flashrt: cache check: hits 85.3%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:24:45.204514Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r65: prompt 97 (reused 0) in 780 ms, 291 tokens in 1839 ms, Stop
+flashrt: cache check: hits 86.5%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:24:48.394155Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r66: prompt 108 (reused 0) in 859 ms, 381 tokens in 2329 ms, Stop
+flashrt: cache check: hits 81.4%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:24:52.031063Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r67: prompt 104 (reused 0) in 869 ms, 388 tokens in 2766 ms, Stop
+flashrt: cache check: hits 82.1%, resident host 7763 / device 7763 of 7800 slots, free 37, table mismatches 0, owner mismatches 0, in flight 37
+[2m2026-09-30T16:24:54.179940Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r68: prompt 87 (reused 0) in 735 ms, 212 tokens in 1412 ms, Stop
+flashrt: cache check: hits 82.0%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:24:56.609926Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r69: prompt 101 (reused 0) in 806 ms, 230 tokens in 1622 ms, Stop
+flashrt: cache check: hits 83.8%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:24:59.907056Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r70: prompt 102 (reused 0) in 809 ms, 388 tokens in 2487 ms, Stop
+flashrt: cache check: hits 79.0%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:25:02.745496Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r71: prompt 94 (reused 0) in 826 ms, 264 tokens in 2010 ms, Stop
+flashrt: cache check: hits 82.5%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:25:05.303086Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r72: prompt 99 (reused 0) in 846 ms, 256 tokens in 1710 ms, Stop
+flashrt: cache check: hits 83.9%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:25:08.871724Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r73: prompt 94 (reused 0) in 757 ms, 413 tokens in 2810 ms, Stop
+flashrt: cache check: hits 80.7%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:25:13.454883Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r74: prompt 173 (reused 0) in 1367 ms, 482 tokens in 3214 ms, Stop
+flashrt: cache check: hits 79.8%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:25:18.192390Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r75: prompt 116 (reused 0) in 919 ms, 545 tokens in 3816 ms, Stop
+flashrt: cache check: hits 83.9%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:25:21.631983Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r76: prompt 134 (reused 0) in 1022 ms, 373 tokens in 2416 ms, Stop
+flashrt: cache check: hits 81.6%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:25:24.846453Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r77: prompt 95 (reused 0) in 787 ms, 346 tokens in 2426 ms, Stop
+flashrt: cache check: hits 82.6%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:25:27.557333Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r78: prompt 92 (reused 0) in 755 ms, 281 tokens in 1954 ms, Stop
+flashrt: cache check: hits 84.4%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:25:30.254742Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r79: prompt 98 (reused 0) in 835 ms, 262 tokens in 1860 ms, Stop
+flashrt: cache check: hits 83.9%, resident host 7774 / device 7774 of 7800 slots, free 26, table mismatches 0, owner mismatches 0, in flight 26
+[2m2026-09-30T16:25:32.617382Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r80: prompt 85 (reused 0) in 734 ms, 248 tokens in 1627 ms, Stop
+flashrt: cache check: hits 83.8%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:25:34.650579Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r81: prompt 109 (reused 0) in 864 ms, 170 tokens in 1168 ms, Stop
+flashrt: cache check: hits 81.2%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:25:37.489044Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r82: prompt 80 (reused 0) in 689 ms, 297 tokens in 2148 ms, Stop
+flashrt: cache check: hits 80.9%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:25:39.352832Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r83: prompt 82 (reused 0) in 687 ms, 170 tokens in 1175 ms, Stop
+flashrt: cache check: hits 80.6%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:25:42.654033Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r84: prompt 74 (reused 0) in 595 ms, 349 tokens in 2704 ms, Stop
+flashrt: cache check: hits 81.7%, resident host 7752 / device 7752 of 7800 slots, free 48, table mismatches 0, owner mismatches 0, in flight 48
+[2m2026-09-30T16:25:45.530057Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r85: prompt 133 (reused 0) in 1058 ms, 263 tokens in 1816 ms, Stop
+flashrt: cache check: hits 82.5%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:25:48.547043Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r86: prompt 138 (reused 0) in 1056 ms, 292 tokens in 1960 ms, Stop
+flashrt: cache check: hits 85.6%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:25:52.853890Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r87: prompt 129 (reused 0) in 992 ms, 522 tokens in 3313 ms, Stop
+flashrt: cache check: hits 80.5%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:25:56.041814Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r88: prompt 86 (reused 0) in 721 ms, 353 tokens in 2465 ms, Stop
+flashrt: cache check: hits 83.5%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:26:02.279773Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r89: prompt 99 (reused 0) in 837 ms, 778 tokens in 5399 ms, Stop
+flashrt: cache check: hits 84.7%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:26:05.338319Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r90: prompt 136 (reused 0) in 1050 ms, 289 tokens in 2007 ms, Stop
+flashrt: cache check: hits 82.8%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:26:08.228095Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r91: prompt 86 (reused 0) in 733 ms, 311 tokens in 2155 ms, Stop
+flashrt: cache check: hits 83.6%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:26:11.367980Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r92: prompt 101 (reused 0) in 799 ms, 351 tokens in 2339 ms, Stop
+flashrt: cache check: hits 83.5%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:26:19.824519Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r93: prompt 134 (reused 0) in 1072 ms, 1024 tokens in 7383 ms, Length
+flashrt: cache check: hits 80.6%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:26:23.383795Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r94: prompt 101 (reused 0) in 815 ms, 397 tokens in 2742 ms, Stop
+flashrt: cache check: hits 82.6%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:26:26.675661Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r95: prompt 92 (reused 0) in 763 ms, 364 tokens in 2527 ms, Stop
+flashrt: cache check: hits 82.9%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:26:29.194182Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r96: prompt 82 (reused 0) in 699 ms, 252 tokens in 1818 ms, Stop
+flashrt: cache check: hits 83.4%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:26:32.814111Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r97: prompt 104 (reused 0) in 844 ms, 427 tokens in 2774 ms, Stop
+flashrt: cache check: hits 80.6%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:26:36.391935Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r98: prompt 146 (reused 0) in 1135 ms, 344 tokens in 2442 ms, Stop
+flashrt: cache check: hits 84.2%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+[2m2026-09-30T16:26:39.500764Z[0m [32m INFO[0m [2mflashrt_server::chat[0m[2m:[0m r99: prompt 132 (reused 0) in 1011 ms, 316 tokens in 2096 ms, Stop
+[2m2026-09-30T16:26:39.512916Z[0m [32m INFO[0m [2mflashrt_server[0m[2m:[0m shutting down
+[2m2026-09-30T16:26:40.389745Z[0m [32m INFO[0m [2mflashrt_server::engine[0m[2m:[0m engine output ended
+[2m2026-09-30T16:26:40.389788Z[0m [31mERROR[0m [2mflashrt_server[0m[2m:[0m the engine is down; exiting in 3 s
+[2m2026-09-30T16:26:42.661471Z[0m [32m INFO[0m [2mflashrt_server::engine[0m[2m:[0m engine exited: exit status: 0

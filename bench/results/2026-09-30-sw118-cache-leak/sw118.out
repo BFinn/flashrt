@@ -1,0 +1,53 @@
+100% tests passed, 0 tests failed out of 19
+check: hits 84.6%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+check: hits 83.2%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+check: hits 83.8%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+check: hits 85.2%, resident host 7766 / device 7766 of 7800 slots, free 34, table mismatches 0, owner mismatches 0, in flight 34
+check: hits 83.2%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+check: hits 82.4%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+check: hits 84.4%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+check: hits 84.2%, resident host 7736 / device 7736 of 7800 slots, free 64, table mismatches 0, owner mismatches 0, in flight 64
+kld fast 0.008960, 5120:
+6144:
+7168:
+8191:
+5120:
+6144:
+7168:
+8191:
+96.789% 159486 swaps
+kld win3 0.008824, 5120:
+6144:
+7168:
+8191:
+5122:
+6145:
+7169:
+8191:
+96.789% 84950 swaps
+old w9 decode: 320 tokens at depth 32793 in 3.62 s: 88.41 tok/s (fast path, doorbell),  | expert cache hit rate 82.09% (
+old w9mtp decode: 322 tokens at depth 32793 in 2.99 s: 107.71 tok/s (speculative, MTP draf | expert cache hit rate 72.19% (
+old wiki8k decode: 256 tokens at depth 8192 in 2.43 s: 105.38 tok/s (fast path, doorbell),  | expert cache hit rate 91.07% (
+new w9 decode: 320 tokens at depth 32793 in 3.68 s: 86.86 tok/s (fast path, doorbell),  | expert cache hit rate 82.04% (
+new w9mtp decode: 322 tokens at depth 32793 in 2.95 s: 109.20 tok/s (speculative, MTP draf | expert cache hit rate 72.91% (
+new wiki8k decode: 256 tokens at depth 8192 in 2.38 s: 107.36 tok/s (fast path, doorbell),  | expert cache hit rate 91.03% (
+new w9 decode: 320 tokens at depth 32793 in 3.70 s: 86.59 tok/s (fast path, doorbell),  | expert cache hit rate 82.04% (
+new w9mtp decode: 322 tokens at depth 32793 in 2.95 s: 108.98 tok/s (speculative, MTP draf | expert cache hit rate 72.91% (
+new wiki8k decode: 256 tokens at depth 8192 in 2.37 s: 107.79 tok/s (fast path, doorbell),  | expert cache hit rate 91.03% (
+old w9 decode: 320 tokens at depth 32793 in 3.70 s: 86.53 tok/s (fast path, doorbell),  | expert cache hit rate 82.09% (
+old w9mtp decode: 322 tokens at depth 32793 in 2.91 s: 110.80 tok/s (speculative, MTP draf | expert cache hit rate 72.19% (
+old wiki8k decode: 256 tokens at depth 8192 in 2.37 s: 107.86 tok/s (fast path, doorbell),  | expert cache hit rate 91.07% (
+old w9 decode: 320 tokens at depth 32793 in 3.73 s: 85.90 tok/s (fast path, doorbell),  | expert cache hit rate 82.09% (
+old w9mtp decode: 322 tokens at depth 32793 in 2.89 s: 111.31 tok/s (speculative, MTP draf | expert cache hit rate 72.19% (
+old wiki8k decode: 256 tokens at depth 8192 in 2.34 s: 109.44 tok/s (fast path, doorbell),  | expert cache hit rate 91.07% (
+new w9 decode: 320 tokens at depth 32793 in 3.69 s: 86.83 tok/s (fast path, doorbell),  | expert cache hit rate 82.04% (
+new w9mtp decode: 322 tokens at depth 32793 in 2.99 s: 107.55 tok/s (speculative, MTP draf | expert cache hit rate 72.91% (
+new wiki8k decode: 256 tokens at depth 8192 in 2.33 s: 109.86 tok/s (fast path, doorbell),  | expert cache hit rate 91.03% (
+Running as unit: fr-server-sw117.service; invocation ID: f821ba4944dc4ab1b6beaeae1face3cd
+flashrt-fixed: done, 193/200 right this run
+ALLDONE
+reuse-mtp rc=0 engine exited with 0; 0 check(s) failed
+faults-mtp rc=0 engine exited with 0; 0 check(s) failed
+Running as unit: fr-server-sw112.service; invocation ID: 38241c3581a2464fb7c4b4ce6c5d80aa
+server_smoke rc=0 all checks passed
+ALLDONE
