@@ -1,0 +1,71 @@
+
+== 32k greedy: plain 101.1 tok/s; draft 0.20 + 0.94/draft ms; verify ms by T: 1:9.89, 2:11.88, 3:13.73, 4:15.86
+   measured (draft + verify only): K=1 138.1 tok/s (1.80 tok/round), K=2 141.6 tok/s (2.24 tok/round), K=3 122.9 tok/s (2.32 tok/round)
+   keep draft 1 | earlier kept, by its q: [0.0,0.2) 0.27 (n=33); [0.2,0.4) 0.39 (n=82); [0.4,0.6) 0.55 (n=60); [0.6,0.8) 0.76 (n=33); [0.8,0.9) 0.93 (n=29); [0.9,1.0) 0.96 (n=97)
+   keep draft 2 | earlier kept, by its q: [0.0,0.2) 0.19 (n=31); [0.2,0.4) 0.43 (n=51); [0.4,0.6) 0.53 (n=32); [0.6,0.8) 0.67 (n=24); [0.8,0.9) 0.70 (n=10); [0.9,1.0) 0.96 (n=71)
+   keep draft 3 | earlier kept, by its q: [0.0,0.2) 0.11 (n=9); [0.2,0.4) 0.41 (n=32); [0.4,0.6) 0.48 (n=21); [0.6,0.8) 0.68 (n=22); [0.8,0.9) 0.78 (n=9); [0.9,1.0) 0.91 (n=43)
+   sim fixed K=1                 127.2 tok/s  1.66 tok/round
+   sim fixed K=2                 130.6 tok/s  2.06 tok/round
+   sim fixed K=3                 122.8 tok/s  2.32 tok/round
+   sim fixed oracle              158.5 tok/s  2.32 tok/round
+   sim stop below 0.3, K_max 3   134.7 tok/s  2.13 tok/round
+   best rules: stop below 0.3, K_max 3 134.7; stop below 0.5, K_max 3 134.4; stop below 0.3, K_max 2 134.1; stop below 0.4, K_max 3 133.7
+
+== 32k t1: plain 107.0 tok/s; draft 0.17 + 0.89/draft ms; verify ms by T: 1:9.35, 2:11.28, 3:13.84, 4:15.10
+   measured (draft + verify only): K=1 136.5 tok/s (1.68 tok/round), K=2 137.8 tok/s (2.18 tok/round), K=3 129.2 tok/s (2.32 tok/round)
+   keep draft 1 | earlier kept, by its q: [0.0,0.2) 0.49 (n=98); [0.2,0.4) 0.64 (n=45); [0.4,0.6) 0.62 (n=39); [0.6,0.8) 0.63 (n=41); [0.8,0.9) 0.91 (n=11); [0.9,1.0) 0.93 (n=101)
+   keep draft 2 | earlier kept, by its q: [0.0,0.2) 0.33 (n=78); [0.2,0.4) 0.56 (n=36); [0.4,0.6) 0.68 (n=19); [0.6,0.8) 0.54 (n=24); [0.8,0.9) 0.81 (n=16); [0.9,1.0) 0.81 (n=58)
+   keep draft 3 | earlier kept, by its q: [0.0,0.2) 0.44 (n=45); [0.2,0.4) 0.73 (n=15); [0.4,0.6) 0.45 (n=11); [0.6,0.8) 0.45 (n=22); [0.8,0.9) 0.50 (n=4); [0.9,1.0) 0.89 (n=35)
+   sim fixed K=1                 136.8 tok/s  1.69 tok/round
+   sim fixed K=2                 131.8 tok/s  2.08 tok/round
+   sim fixed K=3                 129.2 tok/s  2.32 tok/round
+   sim fixed oracle              165.4 tok/s  2.32 tok/round
+   best rules: stop below 0.1, K_max 3 135.1; stop below 0.1, K_max 2 134.8; stop below 0.2, K_max 3 133.2; stop below 0.2, K_max 2 132.3
+
+== 245k greedy: plain 81.8 tok/s; draft 0.23 + 1.18/draft ms; verify ms by T: 1:12.22, 2:17.29, 3:21.41, 4:26.45
+   measured (draft + verify only): K=1 103.6 tok/s (1.94 tok/round), K=2 111.8 tok/s (2.68 tok/round), K=3 120.0 tok/s (3.63 tok/round)
+   keep draft 1 | earlier kept, by its q: [0.0,0.2) 0.67 (n=3); [0.2,0.4) 0.75 (n=8); [0.4,0.6) 0.88 (n=8); [0.6,0.8) 0.88 (n=8); [0.8,0.9) 1.00 (n=10); [0.9,1.0) 1.00 (n=177)
+   keep draft 2 | earlier kept, by its q: [0.0,0.2) 0.33 (n=3); [0.2,0.4) 0.27 (n=11); [0.4,0.6) 0.60 (n=15); [0.6,0.8) 0.64 (n=11); [0.8,0.9) 0.80 (n=5); [0.9,1.0) 0.99 (n=164)
+   keep draft 3 | earlier kept, by its q: [0.0,0.2) 0.00 (n=1); [0.2,0.4) 0.40 (n=10); [0.4,0.6) 0.50 (n=8); [0.6,0.8) 0.71 (n=14); [0.8,0.9) 0.62 (n=8); [0.9,1.0) 0.98 (n=146)
+   sim fixed K=1                 105.7 tok/s  1.98 tok/round
+   sim fixed K=2                 118.8 tok/s  2.85 tok/round
+   sim fixed K=3                 120.0 tok/s  3.63 tok/round
+   sim fixed oracle              128.2 tok/s  3.63 tok/round
+   sim stop below 0.5, K_max 3   123.6 tok/s  3.44 tok/round
+   best rules: stop below 0.5, K_max 3 123.6; stop below 0.6, K_max 3 123.2; stop below 0.4, K_max 3 123.2; stop below 0.7, K_max 3 122.9
+
+== 245k t1: plain 83.6 tok/s; draft 0.26 + 1.10/draft ms; verify ms by T: 1:11.96, 2:15.39, 3:20.99, 4:23.90
+   measured (draft + verify only): K=1 104.8 tok/s (1.75 tok/round), K=2 103.5 tok/s (2.43 tok/round), K=3 97.7 tok/s (2.68 tok/round)
+   keep draft 1 | earlier kept, by its q: [0.0,0.2) 0.49 (n=68); [0.2,0.4) 0.66 (n=38); [0.4,0.6) 0.79 (n=28); [0.6,0.8) 0.80 (n=30); [0.8,0.9) 0.81 (n=16); [0.9,1.0) 0.96 (n=109)
+   keep draft 2 | earlier kept, by its q: [0.0,0.2) 0.50 (n=54); [0.2,0.4) 0.45 (n=20); [0.4,0.6) 0.58 (n=19); [0.6,0.8) 0.40 (n=20); [0.8,0.9) 0.91 (n=11); [0.9,1.0) 0.96 (n=98)
+   keep draft 3 | earlier kept, by its q: [0.0,0.2) 0.27 (n=41); [0.2,0.4) 0.27 (n=11); [0.4,0.6) 0.62 (n=8); [0.6,0.8) 0.71 (n=14); [0.8,0.9) 0.45 (n=11); [0.9,1.0) 0.96 (n=74)
+   sim fixed K=1                 105.6 tok/s  1.77 tok/round
+   sim fixed K=2                  98.9 tok/s  2.32 tok/round
+   sim fixed K=3                  97.7 tok/s  2.68 tok/round
+   sim fixed oracle              124.5 tok/s  2.68 tok/round
+   sim stop below 0.3, K_max 3   106.0 tok/s  2.22 tok/round
+   best rules: stop below 0.3, K_max 3 106.0; stop below 0.4, K_max 3 105.9; stop below 0.5, K_max 3 105.4; stop below 0.6, K_max 3 104.8
+
+== w9 greedy: plain 110.0 tok/s; draft 0.18 + 0.95/draft ms; verify ms by T: 1:9.09, 2:12.97, 3:15.76, 4:19.74
+   measured (draft + verify only): K=1 122.7 tok/s (1.73 tok/round), K=2 138.8 tok/s (2.48 tok/round), K=3 132.6 tok/s (3.02 tok/round)
+   keep draft 1 | earlier kept, by its q: [0.0,0.2) 0.00 (n=1); [0.2,0.4) 0.41 (n=17); [0.4,0.6) 0.41 (n=29); [0.6,0.8) 0.84 (n=51); [0.8,0.9) 0.98 (n=59); [0.9,1.0) 0.96 (n=101)
+   keep draft 2 | earlier kept, by its q: [0.0,0.2) 0.00 (n=3); [0.2,0.4) 0.82 (n=51); [0.4,0.6) 0.83 (n=60); [0.6,0.8) 0.66 (n=35); [0.8,0.9) 0.75 (n=20); [0.9,1.0) 0.92 (n=48)
+   keep draft 3 | earlier kept, by its q: [0.0,0.2) 0.70 (n=43); [0.2,0.4) 0.85 (n=60); [0.4,0.6) 0.33 (n=24); [0.6,0.8) 0.62 (n=8); [0.8,0.9) 0.67 (n=3); [0.9,1.0) 0.94 (n=36)
+   sim fixed K=1                 130.5 tok/s  1.84 tok/round
+   sim fixed K=2                 141.0 tok/s  2.52 tok/round
+   sim fixed K=3                 132.6 tok/s  3.02 tok/round
+   sim fixed oracle              160.5 tok/s  3.02 tok/round
+   sim stop below 0.3, K_max 2   141.8 tok/s  2.47 tok/round
+   best rules: stop below 0.3, K_max 2 141.8; stop below 0.2, K_max 2 141.5; stop below 0.1, K_max 2 141.0; stop below 0.4, K_max 2 138.4
+
+== w9 t1: plain 106.4 tok/s; draft 0.21 + 0.90/draft ms; verify ms by T: 1:9.40, 2:14.20, 3:15.89, 4:19.84
+   measured (draft + verify only): K=1 117.6 tok/s (1.80 tok/round), K=2 123.1 tok/s (2.20 tok/round), K=3 112.1 tok/s (2.55 tok/round)
+   keep draft 1 | earlier kept, by its q: [0.0,0.2) 0.40 (n=50); [0.2,0.4) 0.52 (n=23); [0.4,0.6) 0.48 (n=29); [0.6,0.8) 0.55 (n=40); [0.8,0.9) 0.67 (n=24); [0.9,1.0) 0.93 (n=137)
+   keep draft 2 | earlier kept, by its q: [0.0,0.2) 0.17 (n=29); [0.2,0.4) 0.44 (n=18); [0.4,0.6) 0.46 (n=13); [0.6,0.8) 0.77 (n=22); [0.8,0.9) 0.61 (n=18); [0.9,1.0) 0.95 (n=111)
+   keep draft 3 | earlier kept, by its q: [0.0,0.2) 0.24 (n=25); [0.2,0.4) 0.75 (n=8); [0.4,0.6) 0.69 (n=13); [0.6,0.8) 0.62 (n=16); [0.8,0.9) 0.50 (n=8); [0.9,1.0) 0.88 (n=82)
+   sim fixed K=1                 110.8 tok/s  1.70 tok/round
+   sim fixed K=2                 122.8 tok/s  2.20 tok/round
+   sim fixed K=3                 112.2 tok/s  2.55 tok/round
+   sim fixed oracle              148.6 tok/s  2.55 tok/round
+   sim stop below 0.6, K_max 3   128.3 tok/s  2.16 tok/round
+   best rules: stop below 0.6, K_max 3 128.3; stop below 0.8, K_max 3 128.1; stop below 0.7, K_max 3 127.9; stop below 0.6, K_max 2 127.3

@@ -280,6 +280,10 @@ cache after, from the prefill's routing counts and the startup prior.
 
 ## Tried and rejected, or parked
 
+- **A per-round draft length** (P-3, sw114): every round logged (`fr_bench --round-log`), rules
+  replayed on them. Stopping at a low head probability, or choosing K from the last round's kept
+  count, gains at most about 2% for one rule across contexts, and not in all of them; an oracle
+  would gain 7-21%. With sampled drafts, gating on the drawn draft's q breaks exactness.
 - **PCIe zero-copy misses** (`--pcie-frac`, Strata's idea): no gain at 2K or 245K. A 1.32 MB
   expert read over PCIe lengthens the GPU's part of each layer more than it saves the CPU. The
   flag remains, off by default. (sw15)

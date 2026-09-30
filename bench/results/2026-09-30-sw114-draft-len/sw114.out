@@ -1,0 +1,25 @@
+plain_32k_greedy rc=0 decode: 128 tokens at depth 33408 in 1.35 s: 94.72 tok/s (fast path, doorbell), window 6,  | 
+plain_32k_t1 rc=0 decode: 128 tokens at depth 33408 in 1.17 s: 109.49 tok/s (fast path, doorbell), window 6, | 
+spec1_32k_greedy rc=0 decode: 128 tokens at depth 33411 in 0.89 s: 143.98 tok/s (speculative, MTP drafts), windo | speculative: 429 rounds, 1.797 tokens per round, 1.00 drafts verified 
+spec1_32k_t1 rc=0 decode: 129 tokens at depth 33409 in 0.90 s: 142.87 tok/s (speculative, MTP drafts), windo | speculative: 457 rounds, 1.685 tokens per round, 1.00 drafts verified 
+spec2_32k_greedy rc=0 decode: 130 tokens at depth 33412 in 0.82 s: 158.42 tok/s (speculative, MTP drafts), windo | speculative: 346 rounds, 2.237 tokens per round, 2.00 drafts verified 
+spec2_32k_t1 rc=0 decode: 130 tokens at depth 33410 in 1.07 s: 121.09 tok/s (speculative, MTP drafts), windo | speculative: 354 rounds, 2.181 tokens per round, 2.00 drafts verified 
+spec3_32k_greedy rc=0 decode: 131 tokens at depth 33411 in 0.95 s: 138.06 tok/s (speculative, MTP drafts), windo | speculative: 334 rounds, 2.317 tokens per round, 3.00 drafts verified 
+spec3_32k_t1 rc=0 decode: 128 tokens at depth 33417 in 1.09 s: 117.67 tok/s (speculative, MTP drafts), windo | speculative: 335 rounds, 2.319 tokens per round, 3.00 drafts verified 
+plain_245k_greedy rc=0 decode: 128 tokens at depth 246400 in 1.57 s: 81.48 tok/s (fast path, doorbell), window 6, | 
+plain_245k_t1 rc=0 decode: 128 tokens at depth 246400 in 1.57 s: 81.66 tok/s (fast path, doorbell), window 6, | 
+spec1_245k_greedy rc=0 decode: 129 tokens at depth 246404 in 1.23 s: 104.94 tok/s (speculative, MTP drafts), wind | speculative: 399 rounds, 1.937 tokens per round, 1.00 drafts verified 
+spec1_245k_t1 rc=0 decode: 129 tokens at depth 246401 in 1.24 s: 104.07 tok/s (speculative, MTP drafts), wind | speculative: 439 rounds, 1.754 tokens per round, 1.00 drafts verified 
+spec2_245k_greedy rc=0 decode: 129 tokens at depth 246403 in 1.10 s: 117.45 tok/s (speculative, MTP drafts), wind | speculative: 288 rounds, 2.681 tokens per round, 2.00 drafts verified 
+spec2_245k_t1 rc=0 decode: 130 tokens at depth 246402 in 1.01 s: 129.01 tok/s (speculative, MTP drafts), wind | speculative: 318 rounds, 2.428 tokens per round, 2.00 drafts verified 
+spec3_245k_greedy rc=0 decode: 128 tokens at depth 246408 in 1.09 s: 117.62 tok/s (speculative, MTP drafts), wind | speculative: 214 rounds, 3.626 tokens per round, 3.00 drafts verified 
+spec3_245k_t1 rc=0 decode: 128 tokens at depth 246407 in 1.33 s: 96.37 tok/s (speculative, MTP drafts), windo | speculative: 289 rounds, 2.682 tokens per round, 3.00 drafts verified 
+plain_w9_greedy rc=0 decode: 128 tokens at depth 33433 in 1.09 s: 117.84 tok/s (fast path, doorbell), window 6, | 
+plain_w9_t1 rc=0 decode: 128 tokens at depth 33433 in 1.15 s: 111.40 tok/s (fast path, doorbell), window 6, | 
+spec1_w9_greedy rc=0 decode: 129 tokens at depth 33434 in 0.89 s: 144.82 tok/s (speculative, MTP drafts), windo | speculative: 445 rounds, 1.730 tokens per round, 1.00 drafts verified 
+spec1_w9_t1 rc=0 decode: 129 tokens at depth 33435 in 1.08 s: 119.78 tok/s (speculative, MTP drafts), windo | speculative: 428 rounds, 1.801 tokens per round, 1.00 drafts verified 
+spec2_w9_greedy rc=0 decode: 129 tokens at depth 33437 in 0.54 s: 240.74 tok/s (speculative, MTP drafts), windo | speculative: 312 rounds, 2.478 tokens per round, 2.00 drafts verified 
+spec2_w9_t1 rc=0 decode: 130 tokens at depth 33438 in 0.85 s: 152.21 tok/s (speculative, MTP drafts), windo | speculative: 352 rounds, 2.202 tokens per round, 2.00 drafts verified 
+spec3_w9_greedy rc=0 decode: 131 tokens at depth 33441 in 0.59 s: 221.35 tok/s (speculative, MTP drafts), windo | speculative: 258 rounds, 3.019 tokens per round, 3.00 drafts verified 
+spec3_w9_t1 rc=0 decode: 128 tokens at depth 33438 in 0.60 s: 212.89 tok/s (speculative, MTP drafts), windo | speculative: 303 rounds, 2.551 tokens per round, 3.00 drafts verified 
+ALLDONE

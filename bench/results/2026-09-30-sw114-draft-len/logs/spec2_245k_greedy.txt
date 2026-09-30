@@ -1,0 +1,40 @@
+expert arena registered in 1.9 s
+KV cache: q8_0, host-resident, hot set of 4096 blocks per layer
+MTP draft head: layer 48, 774 MiB of weights in VRAM, 2 drafts per verify round
+VRAM before prefill: 10653 MiB free
+state: MTP head state loaded
+state: loaded $BENCH/state-245k-q8-mtp.bin (245759 positions) in 1.4 s
+MTP draft vocabulary: 39015 tokens (32768 ranked, 6247 from the prompt)
+expert cache: 7833 slots (31.9% of experts), filled in 0.2 s from 10584 MiB free
+adaptive cache: decayed LFU, admit 1.00, margin 1.20, swap budget 64, seed scale 0.030 (set up in 0.0 s)
+drafts: the head's argmax, kept while the sampled token equals them
+decode: 129 tokens at depth 245760 in 1.37 s: 94.41 tok/s (speculative, MTP drafts), window 1, hit rate 86.05%, swaps 2543
+decode: 128 tokens at depth 245889 in 1.05 s: 121.69 tok/s (speculative, MTP drafts), window 2, hit rate 83.30%, swaps 5249
+decode: 129 tokens at depth 246017 in 1.06 s: 121.16 tok/s (speculative, MTP drafts), window 3, hit rate 84.32%, swaps 7865
+decode: 128 tokens at depth 246146 in 1.10 s: 116.62 tok/s (speculative, MTP drafts), window 4, hit rate 84.06%, swaps 10453
+decode: 129 tokens at depth 246274 in 1.28 s: 101.00 tok/s (speculative, MTP drafts), window 5, hit rate 79.01%, swaps 13289
+decode: 129 tokens at depth 246403 in 1.10 s: 117.45 tok/s (speculative, MTP drafts), window 6, hit rate 82.67%, swaps 16039
+expert cache hit rate 83.30% (345477 hits, 69243 misses: 69243 on the CPU, 0 read over PCIe)
+host per token: 4.44 ms waiting for routing, 3.26 ms running misses
+misses per layer: count (share of layers) and mean host miss time
+   0 :   7.0%     1.5 us
+   1 :  11.7%    76.2 us
+   2 :  14.0%   101.3 us
+   3 :  14.1%   139.6 us
+   4 :  12.4%   171.7 us
+   5 :  10.4%   212.1 us
+   6 :   8.4%   241.8 us
+   7 :   6.4%   263.1 us
+   8 :   4.7%   297.8 us
+   9 :   3.7%   339.8 us
+  10 :   2.5%   372.4 us
+  11 :   1.7%   421.1 us
+  12 :   1.0%   429.8 us
+  13 :   0.7%   461.7 us
+  14 :   0.5%   500.0 us
+  15 :   0.4%   529.1 us
+  16+:   0.4%   688.8 us
+CUDA graphs: on (1 capture(s))
+speculative: 288 rounds, 2.681 tokens per round, 2.00 drafts verified per round; accepted drafts: 0:10.8% 1:10.4% 2:78.8%
+  per round: draft 2.58 ms, verify 21.41 ms, commit 0.14 ms
+tokens: 279 2136 9875 1116 6725 328 46973 84 16094 2770 328 318 7063 328 20483 14208 328 847 557 3750 364 780 13727 314
