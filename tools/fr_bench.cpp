@@ -30,6 +30,7 @@
 // prompt's distinct tokens, at most 65536 rows. --draft-pmin P stops a round's drafting at the
 // first draft whose probability under the head is below P (then fewer than K are verified;
 // none if the first is below P).
+// --round-log FILE writes one line per speculative round (see the loop), for draft-length studies.
 // --prefill-chunk C prefills C tokens per call (default 64: the CPU reference path; above 64 the
 // chunk path with the experts streamed to the GPU); "auto" picks the longest chunk the free VRAM
 // holds (up to 16,384), as flashrt-engine does.
@@ -85,6 +86,7 @@ int main(int argc, char** argv) {
     int draft_k = 4, spec_k = 0, vocab_n = 32768, chunk = 64;
     float draft_pmin = 0.0f;
     bool accept_probe = false;
+    std::string round_log;
     bool argmax_drafts = false;
     sample::Params sp;
     sp.temperature = 0.0f;
@@ -139,6 +141,7 @@ int main(int argc, char** argv) {
         else if (a == "--draft-vocab-n") vocab_n = std::atoi(next());
         else if (a == "--draft-pmin") draft_pmin = float(std::atof(next()));
         else if (a == "--accept-probe") accept_probe = true;
+        else if (a == "--round-log") round_log = next();
         else if (a == "--argmax-drafts") argmax_drafts = true;
         else if (a == "--temp") sp.temperature = float(std::atof(next()));
         else if (a == "--top-k") sp.top_k = std::atoi(next());
@@ -523,6 +526,10 @@ int main(int argc, char** argv) {
         for (int i = 0; i < keep; ++i) out.push_back({ix[i], e2[i] / z2});
     };
     if (sampled) mtp->set_draft_sampling(sp, seed);
+    // --round-log FILE: one line per speculative round: window, position, drafts verified, drafts
+    // kept, draft ms, verify ms, then each draft's probability under the head (MtpHead::draft_probs)
+    std::FILE* rlog = round_log.empty() ? nullptr : std::fopen(round_log.c_str(), "w");
+    if (!round_log.empty() && !rlog) throw std::runtime_error("cannot write " + round_log);
     cudaProfilerStart();   // nsys --capture-range=cudaProfilerApi profiles the decode loop only
     for (int wi = 0; wi < windows; ++wi) {
         const long hits0 = host.hits, misses0 = host.misses, gmiss0 = host.gpu_misses;
@@ -616,6 +623,12 @@ int main(int argc, char** argv) {
             draft_s += std::chrono::duration<double>(t1 - t0).count();
             verify_s += std::chrono::duration<double>(t2 - t1).count();
             commit_s += std::chrono::duration<double>(t3 - t2).count();
+            if (rlog && draft_pmin <= 0) {   // outside the timed phases
+                std::fprintf(rlog, "%d %d %d %d %.3f %.3f", wi, p, kd, a, 1e3 * std::chrono::duration<double>(t1 - t0).count(),
+                             1e3 * std::chrono::duration<double>(t2 - t1).count());
+                for (float q : mtp->draft_probs(kd)) std::fprintf(rlog, " %.4f", q);
+                std::fprintf(rlog, "\n");
+            }
         }
         for (int i = 0; spec_k == 0 && i < gen; ++i) {
             if (mtp) {   // draft from (h_{p-1}, x_p): the first step is also position p's catch-up
@@ -649,6 +662,7 @@ int main(int argc, char** argv) {
         std::printf("\n");
     }
     cudaProfilerStop();
+    if (rlog) std::fclose(rlog);
     if (!reference)
         std::printf("expert cache hit rate %.2f%% (%ld hits, %ld misses: %ld on the CPU, %ld read over PCIe)\n",
                     100.0 * host.hits / std::max(1L, host.hits + host.misses + host.gpu_misses), host.hits,

@@ -493,10 +493,12 @@ int MtpHead::load_state(const std::string& path, float* h_carry_dev) {
 
 namespace {
 // the chain's bookkeeping after a step: the drafted token becomes the next step's input
-// (dp[0]), the position advances, and the token is recorded
+// (dp[0]), the position advances, and the token is recorded, with (argmax drafts) its
+// probability under the head at drafts[8 + step] as a float
 __global__ void k_chain_next(const int32_t* v, int32_t* dp, int32_t* drafts) {
     const int j = dp[3];
     drafts[j] = v[1];
+    drafts[8 + j] = v[2];
     dp[0] = v[1];
     dp[1] += 1;
     dp[3] = j + 1;
@@ -519,7 +521,7 @@ std::vector<int32_t> MtpHead::draft_chain(int row, int pos, int k) {
         if (sampled_) sample::draft_row(chain_logits_, vocab(), dcfg_dev_, chain_dp_, ids_dev, amax_dev_, q_ids_, q_p_, q_n_, stream_);
         else {
             argmax_dev(stream_, chain_logits_, vocab(), amax_dev_);
-            k_draft_top<<<1, 1024, 0, stream_>>>(chain_logits_, vocab(), ids_dev, amax_dev_, false);
+            k_draft_top<<<1, 1024, 0, stream_>>>(chain_logits_, vocab(), ids_dev, amax_dev_, true);
         }
     };
     draft_step();
@@ -552,6 +554,27 @@ std::vector<int32_t> MtpHead::draft_chain(int row, int pos, int k) {
     ck(cudaMemcpyAsync(amax_host_, chain_drafts_, size_t(k) * 4, cudaMemcpyDeviceToHost, stream_), "drafts to host");
     ck(cudaStreamSynchronize(stream_), "draft chain");
     return std::vector<int32_t>(amax_host_, amax_host_ + k);
+}
+
+std::vector<float> MtpHead::draft_probs(int k) {
+    std::vector<float> pr(size_t(k), 0.0f);
+    if (!sampled_) {
+        ck(cudaMemcpyAsync(pr.data(), chain_drafts_ + 8, size_t(k) * 4, cudaMemcpyDeviceToHost, stream_), "draft probs");
+        ck(cudaStreamSynchronize(stream_), "draft probs");
+        return pr;
+    }
+    const int m = sample::kMaxTopK;
+    std::vector<int32_t> ids(size_t(k) * m), n(size_t(k)), d(size_t(k));
+    std::vector<float> q(size_t(k) * m);
+    ck(cudaMemcpyAsync(ids.data(), q_ids_, ids.size() * 4, cudaMemcpyDeviceToHost, stream_), "draft q");
+    ck(cudaMemcpyAsync(q.data(), q_p_, q.size() * 4, cudaMemcpyDeviceToHost, stream_), "draft q");
+    ck(cudaMemcpyAsync(n.data(), q_n_, n.size() * 4, cudaMemcpyDeviceToHost, stream_), "draft q");
+    ck(cudaMemcpyAsync(d.data(), chain_drafts_, d.size() * 4, cudaMemcpyDeviceToHost, stream_), "drafts");
+    ck(cudaStreamSynchronize(stream_), "draft q");
+    for (int j = 0; j < k; ++j)
+        for (int i = 0; i < n[size_t(j)]; ++i)
+            if (ids[size_t(j) * m + i] == d[size_t(j)]) pr[size_t(j)] = q[size_t(j) * m + i];
+    return pr;
 }
 
 int32_t MtpHead::argmax(const float* logits_row_dev, float* p_top) {

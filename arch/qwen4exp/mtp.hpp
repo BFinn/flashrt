@@ -62,6 +62,9 @@ public:
     // pos - 1), then k - 1 chained steps at positions pos .., each replaying one captured graph
     // that feeds its own draft and streams to the next.
     std::vector<int32_t> draft_chain(int row, int pos, int k);
+    // After draft_chain(.., k): each draft's probability under the head (its q for sampled
+    // drafts, the top token's softmax for argmax drafts). One host sync.
+    std::vector<float> draft_probs(int k);
     // Sampled drafts (temperature > 0): each draft is drawn from the head's logits through the
     // sampler chain p, with its q kept on the device for sample::spec_verify (q_ids / q_p / q_n,
     // [k][kMaxTopK]), the drafts at drafts_dev(). Temperature <= 0: argmax drafts again.
