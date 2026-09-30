@@ -54,12 +54,6 @@ void validate(const GenerateRequest& r, int n_vocab, int max_ctx, int K) {
     if (!(p.min_p >= 0.0f && p.min_p < 1.0f)) throw std::runtime_error("min_p must be in [0, 1)");
 }
 
-// An A/B toggle set to 0 (FLASHRT_<name>=0: the old path)
-bool getenv_off(const char* name) {
-    const char* e = std::getenv(name);
-    return e && e[0] == '0';
-}
-
 // True when the device is usable: waits for the queued work, clears a one-off error, and fails
 // on a sticky one (it reports again).
 bool cuda_usable() {
@@ -470,7 +464,7 @@ GenerateResult Session::run(const GenerateRequest& r, const std::function<void(i
     int step = m.o.prefill_batch;
     if (chunked) {   // experts stream to the GPU; the expert cache's memory is lent to the chunks
         m.cache_release();
-        if (m.mtp && !getenv_off("FLASHRT_MTP_MIRROR")) m.mtp->prefill_begin(from, end);   // before the chunk length is picked: its mirror and chunk buffers
+        if (m.mtp) m.mtp->prefill_begin(from, end);   // before the chunk length is picked: its mirror and chunk buffers
         m.fwd->set_prefill_lookahead(P.data(), end);
         size_t free_b = 0, total_b = 0;
         ck(cudaMemGetInfo(&free_b, &total_b), "cudaMemGetInfo");

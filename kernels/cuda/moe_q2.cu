@@ -535,20 +535,11 @@ void run(const uint8_t* experts, size_t stride, int E, int n, int ff, const floa
         constexpr int AB = decltype(ab)::value;
         const int xb = T * n / AB;
         k_quant<AB><<<(xb + 7) / 8, 256, 0, stream>>>(x, xb, w.xq, w.xdm);
-        auto gate_up = [&](auto nst) {
-            constexpr int NST = decltype(nst)::value;
-            const size_t sm = sizeof(Stage<2, AB>) * NST;
-            ck(cudaFuncSetAttribute(k_moe_q2<2, AB, NST>, cudaFuncAttributeMaxDynamicSharedMemorySize, int(sm)), "moe_q2 smem");
-            k_moe_q2<2, AB, NST><<<dim3(ff / kRT, mt), kThreads, sm, stream>>>(experts, stride, 0, gu, ff, n, w.xq, w.xdm, w.tok_of,
-                                                                              w.bounds, w.tiles, w.n_tiles, w.hq, w.hdm, nullptr, nullptr);
-        };
-        static const int stages = [] {
-            const char* e = std::getenv("FLASHRT_MOE_GU_STAGES");
-            return e ? std::atoi(e) : 2;
-        }();
-        if (stages >= 4) gate_up(std::integral_constant<int, 4>{});
-        else if (stages == 3) gate_up(std::integral_constant<int, 3>{});
-        else gate_up(std::integral_constant<int, 2>{});
+        constexpr int NST = 2;   // gate and up pipeline stages (3 and 4 were no faster: sw55)
+        const size_t sm = sizeof(Stage<2, AB>) * NST;
+        ck(cudaFuncSetAttribute(k_moe_q2<2, AB, NST>, cudaFuncAttributeMaxDynamicSharedMemorySize, int(sm)), "moe_q2 smem");
+        k_moe_q2<2, AB, NST><<<dim3(ff / kRT, mt), kThreads, sm, stream>>>(experts, stride, 0, gu, ff, n, w.xq, w.xdm, w.tok_of, w.bounds,
+                                                                          w.tiles, w.n_tiles, w.hq, w.hdm, nullptr, nullptr);
         const size_t smem = down_smem_bytes(ff, AB);   // above the 48 KB default: opt in (cheap; once per layer)
         auto down = [&](auto* y) {
             using OutT = std::remove_pointer_t<decltype(y)>;

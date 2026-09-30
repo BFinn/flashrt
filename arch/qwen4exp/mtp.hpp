@@ -92,7 +92,7 @@ public:
     // Also, for the prefill's length, a second buffer set for calls of up to chunk_rows() rows:
     // forward() with more than max_batch rows uses it, and runs the MoE as grouped expert GEMMs
     // over the whole call (every expert read once per call) instead of 8-row mat-vec slices.
-    // chunk_input() holds a call's h_prev rows. FLASHRT_MTP_CHUNK=0: batches of max_batch as before.
+    // chunk_input() holds a call's h_prev rows.
     void prefill_begin(int pos, int end_pos);
     void prefill_end();
     int chunk_rows() const { return chunk_.cap; }

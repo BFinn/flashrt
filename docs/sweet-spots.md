@@ -143,7 +143,7 @@ All default to the tuned setting. Setting one to `0` restores the older path for
 | `FLASHRT_MOE_YD16` | on | BF16 per-slot expert outputs | sw59 |
 | `FLASHRT_MOE_AB64` | off | per-64 activation scales (faster, fails KLD) | sw57 |
 | `FLASHRT_MOE_GU_STAGES` | 2 | gate/up pipeline stages | sw55 |
-| `FLASHRT_MOE_J` | 0 (the widest) | ggml MoE token-tile width (MMQ path) | sw51, sw52 |
+| `FLASHRT_MOE_J` | 0 (the widest) | ggml MoE token-tile width (MMQ path) | sw48 |
 | `FLASHRT_HC_GATE16` | on | BF16 hc gate in prefill | sw59 |
 | `FLASHRT_HC_Q8` | down | hc matrices as Q8P (down; up costs KLD) | sw66-sw68 |
 | `FLASHRT_HC_DOWN2` / `FLASHRT_HC_UP2` | on | hc decode kernels v2 | sw75 |

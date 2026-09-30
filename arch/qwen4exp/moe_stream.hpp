@@ -4,8 +4,7 @@
 // (one copy, 676 MB, while the previous layer computes) and runs as grouped int8 tensor-core
 // products read straight from the arena's planar Q2_0 (kernels/cuda/moe_q2.h), then the
 // routing-weighted sum and the gated shared expert. Same math as moe_block (the CPU reference
-// path). FLASHRT_MOE_Q2MMA=0 converts the slice to ggml's Q2_0 layout and uses ggml's MMQ
-// (gemm::moe) instead.
+// path). It replaced ggml's MMQ over a slice converted to ggml's layout (sw55).
 #pragma once
 
 #include "arch/qwen4exp/blocks.hpp"
@@ -19,7 +18,7 @@ namespace flashrt::qwen4exp {
 struct ExpertStream;
 
 // max_tokens: the largest chunk; the buffers (two planar layer slices, the chunk's routing and
-// expert activations; with the MMQ path, a converted slice too) are allocated here. Registers the arena with CUDA
+// expert activations) are allocated here. Registers the arena with CUDA
 // for full-speed copies (once per process).
 ExpertStream* create_expert_stream(const Spec& s, const ExpertArena& arena, int max_tokens);
 void destroy_expert_stream(ExpertStream* es);

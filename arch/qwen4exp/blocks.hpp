@@ -97,13 +97,12 @@ struct LinearOut {
 };
 bool linear_multi_ok(const LinearOut* outs, int n, int T);
 void linear_multi(const BlockCtx& c, const LinearOut* outs, int n, const float* x, int T);
-// Decode epilogue fusions (FLASHRT_FUSE_EPI=0: off): a producer kernel writes the q8_1 activations
-// of the next mat-vec directly (gemv::swiglu_q8_1, gemv::gated_rms_norm_q8_1). q8_act says whether
-// W's decode mat-vec takes q8_1 activations (ggml MMVQ; not float, Q3R or Q8P).
-bool fuse_epi();
+// Decode epilogue fusions (sw74): a producer kernel writes the q8_1 activations of the next
+// mat-vec directly (gemv::swiglu_q8_1, gemv::gated_rms_norm_q8_1). q8_act says whether W's decode
+// mat-vec takes q8_1 activations (ggml MMVQ; not float, Q3R or Q8P).
 bool q8_act(const GpuTensor& W, int T);
-// linear() for n matrices of one input; with fuse_epi, the ones taking q8_1 activations share one
-// quantization of x
+// linear() for n matrices of one input; the ones taking q8_1 activations share one quantization of
+// x, and in prefill the BF16 products one conversion
 void linear_shared(const BlockCtx& c, const GpuTensor* const* Ws, float* const* ys, int n, const float* x, int T);
 
 // Hyper-connection mix. which: 0 = before the mixer (hc_attn_*), 1 = before the MoE

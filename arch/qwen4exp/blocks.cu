@@ -567,21 +567,11 @@ void hc_fused_launch(const float* x, const float* w_norm, WD Wd, const uint16_t*
         ck(cudaFuncSetAttribute(k_hc_down<TT, WD>, cudaFuncAttributeMaxDynamicSharedMemorySize, 96 * 1024), "hc_down smem");
         attr = true;
     }
-    static const bool v2 = [] {   // FLASHRT_HC_DOWN2=0: the one-row-per-warp kernel
-        const char* e = std::getenv("FLASHRT_HC_DOWN2");
-        return !(e && e[0] == '0');
-    }();
-    static const bool up2 = [] {   // FLASHRT_HC_UP2=0: the old up kernel, no PDL
-        const char* e = std::getenv("FLASHRT_HC_UP2");
-        return !(e && e[0] == '0');
-    }();
-    static const bool comb2 = [] {   // FLASHRT_HC_COMB2=0: the combine as its own kernel
-        const char* e = std::getenv("FLASHRT_HC_COMB2");
-        return !(e && e[0] == '0');
-    }();
-    const bool down2 = v2 && n % 256 == 0 && n / 256 <= kHcDownMaxK && rank % kHcDownRpw == 0;
-    const bool upv2 = up2 && rank == 320 && hc == 4;
-    const bool fold = comb.out && comb2 && down2 && upv2 && n % 4 == 0;
+    // the v2 kernels (sw75) and the folded combine (sw78) where the shape allows; the first
+    // kernels otherwise
+    const bool down2 = n % 256 == 0 && n / 256 <= kHcDownMaxK && rank % kHcDownRpw == 0;
+    const bool upv2 = rank == 320 && hc == 4;
+    const bool fold = comb.out && down2 && upv2 && n % 4 == 0;
     if (comb.out && !fold) {
         k_hc_combine<<<dim3((n + 255) / 256, TT), 256, 0, st>>>(comb.x, comb.out, comb.inj, n, hc, TT);
         comb = HcComb{};
@@ -1458,21 +1448,13 @@ __global__ void __launch_bounds__(128) k_bf16_multi(Bf16Segs segs, const float* 
 }
 }  // namespace
 
-bool fuse_epi() {
-    static const bool on = [] {
-        const char* e = std::getenv("FLASHRT_FUSE_EPI");
-        return !(e && e[0] == '0');
-    }();
-    return on;
-}
-
 bool q8_act(const GpuTensor& W, int T) {
     return T >= 1 && T <= gemv::kMaxTokens && W.type < kTypeQ3R && gemv::supported(W.type) && !gemv::is_float(W.type);
 }
 
 void linear_shared(const BlockCtx& c, const GpuTensor* const* Ws, float* const* ys, int n, const float* x, int T) {
     constexpr uint32_t kBF16 = 30;   // GGML_TYPE_BF16
-    if (T >= kGemmMinTokens && fuse_epi()) {   // prefill: the BF16 products share one conversion of x
+    if (T >= kGemmMinTokens) {   // prefill: the BF16 products share one conversion of x
         int nb = 0;
         for (int i = 0; i < n; ++i) nb += Ws[i]->type == kBF16 && Ws[i]->cols() == Ws[0]->cols();
         if (nb >= 2) {
@@ -1495,7 +1477,7 @@ void linear_shared(const BlockCtx& c, const GpuTensor* const* Ws, float* const* 
     }
     int nq = 0;
     for (int i = 0; i < n; ++i) nq += q8_act(*Ws[i], T);
-    const bool share = fuse_epi() && nq >= 2 && Ws[0]->cols() > 0;
+    const bool share = nq >= 2 && Ws[0]->cols() > 0;
     if (share) gemv::quantize_q8_1(x, Ws[0]->cols(), T, c.scratch.q8, c.stream);
     for (int i = 0; i < n; ++i) {
         if (share && q8_act(*Ws[i], T)) {
@@ -1507,11 +1489,7 @@ void linear_shared(const BlockCtx& c, const GpuTensor* const* Ws, float* const* 
 
 bool linear_multi_ok(const LinearOut* outs, int n, int T) {
     constexpr uint32_t kBF16 = 30;   // GGML_TYPE_BF16
-    static const bool on = [] {       // FLASHRT_LINEAR_MULTI=0: separate launches
-        const char* e = std::getenv("FLASHRT_LINEAR_MULTI");
-        return !(e && e[0] == '0');
-    }();
-    if (!on || n < 1 || n > 4 || T < 1 || T > gemv::kMaxTokens) return false;
+    if (n < 1 || n > 4 || T < 1 || T > gemv::kMaxTokens) return false;
     for (int i = 0; i < n; ++i)
         if (outs[i].W->type != kBF16 || outs[i].W->cols() != outs[0].W->cols() || outs[i].W->cols() % 256) return false;
     return true;
@@ -1551,12 +1529,8 @@ void linear(const BlockCtx& c, const GpuTensor& W, const float* x, float* y, int
             q3r::unpack(W.dev, bs.q3k_tmp, rows, cols, c.stream);
             Wp = bs.q3k_tmp;
         }
-        // Q3_K -> Q8_0 (exact; ggml's Q8_0 MMQ is about 1.37x faster than its Q3_K; FLASHRT_Q3_Q8=0: off)
-        static const bool q3_q8 = [] {
-            const char* e = std::getenv("FLASHRT_Q3_Q8");
-            return !(e && e[0] == '0');
-        }();
-        if (mm_type == 11u && q3_q8 && cols % 256 == 0) {
+        // Q3_K -> Q8_0 (exact; ggml's Q8_0 MMQ is about 1.37x faster than its Q3_K, sw69)
+        if (mm_type == 11u && cols % 256 == 0) {
             const size_t need = size_t(rows) * (cols / 32) * 34 + gemv::kWeightTailPad;
             if (bs.q8_tmp_bytes < need) {
                 if (bs.q8_tmp) cudaFree(bs.q8_tmp);
@@ -1725,13 +1699,8 @@ void hc_mix_impl(const BlockCtx& c, int il, int which, float* x, const float* co
         gemm::gemm_bf16(wd.dev, xb, lo, hcd, s.hc_rank, T, c.stream);
         if (w_inj && !fuse_inj) gemm::gemm_bf16(w_inj->dev, xb, inject, hcd, w_inj->rows(), T, c.stream);
         k_scale_silu<<<(T * s.hc_rank + 255) / 256, 256, 0, c.stream>>>(lo, T * s.hc_rank, 1.0f / hc);
-        // the up product writes the gate in BF16 (half the traffic of gate and gated mean;
-        // FLASHRT_HC_GATE16=0: float)
-        static const bool gate16 = [] {
-            const char* e = std::getenv("FLASHRT_HC_GATE16");
-            return !(e && e[0] == '0');
-        }();
-        if (gate16 && !xn_out && wu.type == kBF16) {
+        // the up product writes the gate in BF16 (half the traffic of gate and gated mean, sw59)
+        if (!xn_out && wu.type == kBF16) {
             gemm::gemm_bf16_out(wu.dev, lo, gate, s.hc_rank, hcd, T, bs.gemm_ws, bs.gemm_ws_bytes, c.stream);
             k_gated_mean_x<<<dim3((n + 255) / 256, T), 256, 0, c.stream>>>(x, inv, wn, reinterpret_cast<const __nv_bfloat16*>(gate), mixed, n,
                                                                          hc, T);
@@ -1770,79 +1739,6 @@ __global__ void k_hc_init(const float* emb, float* x, int n, int hc) {
         for (int s = 0; s < hc; ++s) x[(size_t(t) * hc + s) * n + i] = v;
     }
 }
-
-__global__ void k_route_topk(const float* logits, int E, int K, int32_t* ids, float* wts, uint32_t* counts, uint32_t* tail, int tail_from) {
-    __shared__ float red[32];
-    __shared__ float selp[32];
-    const int t = blockIdx.x, e = threadIdx.x, lane = e & 31, warp = e >> 5, nw = blockDim.x >> 5;
-    const float lg = e < E ? logits[size_t(t) * E + e] : -INFINITY;
-    float m = lg;
-    for (int o = 16; o > 0; o >>= 1) m = fmaxf(m, __shfl_xor_sync(0xffffffff, m, o));
-    if (lane == 0) red[warp] = m;
-    __syncthreads();
-    m = red[0];
-    for (int w = 1; w < nw; ++w) m = fmaxf(m, red[w]);
-    __syncthreads();
-    const float ex = e < E ? __expf(lg - m) : 0.0f;
-    float sum = ex;
-    for (int o = 16; o > 0; o >>= 1) sum += __shfl_xor_sync(0xffffffff, sum, o);
-    if (lane == 0) red[warp] = sum;
-    __syncthreads();
-    sum = 0.0f;
-    for (int w = 0; w < nw; ++w) sum += red[w];
-    const float pe = e < E ? ex / sum : -1.0f;
-    // Only candidates can be in the top K: p >= the K-th largest warp maximum (K warps hold an
-    // element at least that large). Everything ranked ahead of a candidate is a candidate, so
-    // ranking among the candidates gives the global rank (higher p first, ties by lower index),
-    // as k_route does in decode. Was a rank count over all E (sw81).
-    __shared__ float wmax[32];
-    __shared__ int cand_i[1024];
-    __shared__ float cand_p[1024];
-    __shared__ int n_cand;
-    {
-        float wm = pe;
-        for (int o = 16; o > 0; o >>= 1) wm = fmaxf(wm, __shfl_xor_sync(0xffffffff, wm, o));
-        if (lane == 0) wmax[warp] = wm;
-        if (e == 0) n_cand = 0;
-    }
-    __syncthreads();
-    float thr = -1.0f;
-    if (K <= nw)
-        for (int w = 0; w < nw; ++w) {
-            const float v = wmax[w];
-            int ahead = 0;
-            for (int u = 0; u < nw; ++u) ahead += (wmax[u] > v) | ((wmax[u] == v) & (u < w));
-            if (ahead == K - 1) thr = v;
-        }
-    const bool cand = e < E && pe >= thr;
-    if (cand) {
-        const int ci = atomicAdd(&n_cand, 1);
-        cand_i[ci] = e;
-        cand_p[ci] = pe;
-    }
-    __syncthreads();
-    if (cand) {
-        int rank = 0;
-        const int nc = n_cand;
-        for (int j = 0; j < nc; ++j) {
-            const float pj = cand_p[j];
-            rank += (pj > pe) | ((pj == pe) & (cand_i[j] < e));
-        }
-        if (rank < K) {
-            ids[size_t(t) * K + rank] = e;
-            selp[rank] = pe;
-            if (counts) atomicAdd(counts + e, 1u);
-            if (tail && t >= tail_from) atomicAdd(tail + e, 1u);
-        }
-    }
-    __syncthreads();
-    if (e == 0) {
-        float ws = 0.0f;
-        for (int k = 0; k < K; ++k) ws += selp[k];
-        ws = fmaxf(ws, 6.103515625e-5f);
-        for (int k = 0; k < K; ++k) wts[size_t(t) * K + k] = selp[k] / ws;
-    }
-}
 }  // namespace
 
 void hc_init(const BlockCtx& c, const float* emb, float* x, int T) {
@@ -1853,8 +1749,8 @@ void hc_init(const BlockCtx& c, const float* emb, float* x, int T) {
 
 namespace {
 // One warp per token (sw81): the logits in registers (element 32 i + lane), max and sum by
-// shuffles, then K rounds of warp argmax (higher p first, ties to the lower index; the same rule
-// as k_route_topk, whose p may differ in the last bit through the sum's order).
+// shuffles, then K rounds of warp argmax (higher p first, ties to the lower index). It replaced a
+// block-per-token kernel whose softmax summed in another order (sw81, sw94).
 template <int V>
 __global__ void __launch_bounds__(256) k_route_topk_w(const float* logits, int T, int E, int K, int32_t* ids, float* wts, uint32_t* counts,
                                                       uint32_t* tail, int tail_from) {
@@ -1917,13 +1813,8 @@ __global__ void __launch_bounds__(256) k_route_topk_w(const float* logits, int T
 void moe_route_topk(cudaStream_t stream, const float* logits, int T, int E, int k, int32_t* ids, float* wts, uint32_t* counts,
                     uint32_t* tail_counts, int tail_from) {
     if (E > 1024 || k > 32) throw std::runtime_error("moe_route_topk: unsupported shape");
-    static const bool warp = [] {   // FLASHRT_ROUTE_WARP=0: the block-per-token kernel
-        const char* e = std::getenv("FLASHRT_ROUTE_WARP");
-        return !(e && e[0] == '0');
-    }();
-    if (warp && E <= 512) k_route_topk_w<16><<<(T + 7) / 8, 256, 0, stream>>>(logits, T, E, k, ids, wts, counts, tail_counts, tail_from);
-    else if (warp) k_route_topk_w<32><<<(T + 7) / 8, 256, 0, stream>>>(logits, T, E, k, ids, wts, counts, tail_counts, tail_from);
-    else k_route_topk<<<T, ((E + 31) / 32) * 32, 0, stream>>>(logits, E, k, ids, wts, counts, tail_counts, tail_from);
+    if (E <= 512) k_route_topk_w<16><<<(T + 7) / 8, 256, 0, stream>>>(logits, T, E, k, ids, wts, counts, tail_counts, tail_from);
+    else k_route_topk_w<32><<<(T + 7) / 8, 256, 0, stream>>>(logits, T, E, k, ids, wts, counts, tail_counts, tail_from);
     ck(cudaGetLastError(), "moe_route_topk");
 }
 
@@ -2016,7 +1907,7 @@ void gdn_mixer(const BlockCtx& c, int il, const float* x, int T, GdnState& st, f
         float* ys2[2] = {beta, alpha};
         linear_shared(c, ws2, ys2, 2, x, T);
     }
-    const bool conv_l2 = dk == 128 && fuse_epi();   // the conv kernel normalises q and k (a block per head)
+    const bool conv_l2 = dk == 128;   // the conv kernel normalises q and k (a block per head)
     if (T > 8) {
         const int bt = conv_l2 ? 128 : 256;
         k_gdn_conv_par<<<dim3((ch + bt - 1) / bt, T), bt, 0, c.stream>>>(qkv, st.conv,
@@ -2030,15 +1921,7 @@ void gdn_mixer(const BlockCtx& c, int il, const float* x, int T, GdnState& st, f
     // L2-normalise the q and k heads (the first 2 * groups heads of each token's channels)
     if (!conv_l2) k_l2_norm<<<T * 2 * s.ssm_groups, 128, 0, c.stream>>>(conv, dk, ch, 2 * s.ssm_groups, float(s.rms_eps));
     if (!ab_fused) k_gdn_gates<<<(T * H + 127) / 128, 128, 0, c.stream>>>(alpha, beta, dt_bias, ssm_a, H, T);
-    static const bool col_on = [] {
-        const char* e = std::getenv("FLASHRT_GDN_COL");
-        return !(e && e[0] == '0');
-    }();
-    static const bool chunk_on = [] {   // the chunked form on tensor cores (sw71); FLASHRT_GDN_CHUNK=0: the column kernel
-        const char* e = std::getenv("FLASHRT_GDN_CHUNK");
-        return !(e && e[0] == '0');
-    }();
-    if (dk == 128 && T >= kGdnChunk && !win && chunk_on) {   // prefill: the chunked form
+    if (dk == 128 && T >= kGdnChunk && !win) {   // prefill: the chunked form on tensor cores (sw71)
         BlockScratch& bs = c.scratch;
         const size_t need = gdn_chunk_ws_bytes(s);
         if (bs.gdn_ws_bytes < need) {
@@ -2047,7 +1930,7 @@ void gdn_mixer(const BlockCtx& c, int il, const float* x, int T, GdnState& st, f
             bs.gdn_ws_bytes = need;
         }
         gdn_delta_prefill(s, st.S, conv, alpha, beta, o, T, true, bs.gdn_ws, c.stream);
-    } else if (dk == 128 && T >= 16 && col_on)   // prefill; decode keeps the block kernel
+    } else if (dk == 128 && T >= 16)   // prefill (short batches, windows); decode keeps the block kernel
         k_gdn_delta_col<128><<<dim3(H, 128 / (16 * kGdnColWarps)), 32 * kGdnColWarps, 0, c.stream>>>(st.S, st.S, win ? win->S_bak : nullptr, conv, alpha, beta, o, T,
                                                                      s.ssm_groups, H, ch);
     else if (dk == 128)
@@ -2056,7 +1939,7 @@ void gdn_mixer(const BlockCtx& c, int il, const float* x, int T, GdnState& st, f
     if (o_inner) ck(cudaMemcpyAsync(o_inner, o, size_t(T) * inner * 4, cudaMemcpyDeviceToDevice, c.stream), "copy o");
     const GpuTensor& w_out = c.w.layer(il, "ssm_out.weight");
     const float* w_norm = static_cast<const float*>(c.w.layer(il, "ssm_norm.weight").dev);
-    if (fuse_epi() && q8_act(w_out, T) && gemv::gated_rms_norm_q8_1_ok(dk, H)) {   // decode: the norm writes ssm_out's activations
+    if (q8_act(w_out, T) && gemv::gated_rms_norm_q8_1_ok(dk, H)) {   // decode: the norm writes ssm_out's activations
         gemv::gated_rms_norm_q8_1(o, w_norm, z, dk, H, float(s.rms_eps), T, c.scratch.q8, c.stream);
         gemv::matvec_q(w_out.type, w_out.dev, c.scratch.q8, out, inner, w_out.rows(), T, c.stream);
     } else {
@@ -3316,16 +3199,12 @@ void qsa_mixer(const BlockCtx& c, int il, const float* x, int T, int pos0, QsaCa
     // rows and attention partials stay small at depth; each token only needs its own position
     const int S = T > 256 ? 128 : T;
     if (sel_out && S < T) throw std::runtime_error("qsa_mixer: sel_out needs T <= 256");
-    // sub-batches of kAttnTcMinTokens or more attend with the tensor-core kernel, unless they read
-    // through the hot set (decode windows) or run in a graph; FLASHRT_ATTN_TC=0 turns it off
-    static const bool tc_on = [] {
-        const char* e = std::getenv("FLASHRT_ATTN_TC");
-        return !(e && e[0] == '0');
-    }();
+    // sub-batches of kAttnTcMinTokens or more attend with the tensor-core kernel (sw46), unless
+    // they read through the hot set (decode windows) or run in a graph
     const bool tc_kv = kv.mK || !kv.hot_blocks;
     for (int t0 = 0; t0 < T; t0 += S) {
         const int Ts = std::min(S, T - t0), p0 = pos0 + t0;
-        const bool tc = tc_on && tc_kv && !graph && Ts >= kAttnTcMinTokens;
+        const bool tc = tc_kv && !graph && Ts >= kAttnTcMinTokens;
         const float* qi_s = qi + size_t(t0) * IH * ID;
         const float* q_s = q + size_t(t0) * H * D;
         const int32_t* cells = nullptr;
@@ -3334,11 +3213,7 @@ void qsa_mixer(const BlockCtx& c, int il, const float* x, int T, int pos0, QsaCa
             const int max_nb = graph ? kv.capacity / r : (p0 + Ts) / r;
             BlockScratch& bs = c.scratch;
             qsa_scratch_reserve(c.s, bs, Ts, max_nb, tc ? -1 : 0);
-            static const bool idx_tc_on = [] {
-                const char* e = std::getenv("FLASHRT_IDX_TC");
-                return !(e && e[0] == '0');
-            }();
-            if (ID == 128 && IH == 4 && !graph && Ts >= kAttnTcMinTokens && idx_tc_on) {
+            if (ID == 128 && IH == 4 && !graph && Ts >= kAttnTcMinTokens) {   // tensor-core scores (sw49)
                 const int ty = (Ts + kIdxTcTokens - 1) / kIdxTcTokens;
                 const int tiles = (max_nb + kIdxTcKeys - 1) / kIdxTcKeys;
                 const int tx = std::max(1, std::min((tiles + 3) / 4, 2048 / ty));   // about 4 key tiles per CTA

@@ -585,11 +585,7 @@ MtpHead::~MtpHead() {
 
 void MtpHead::prefill_begin(int pos, int end_pos) {
     qsa_mirror_begin(s_, kv_, pos, end_pos, stream_);
-    static const bool chunk_on = [] {   // FLASHRT_MTP_CHUNK=0: the prompt pass in batches of max_batch
-        const char* e = std::getenv("FLASHRT_MTP_CHUNK");
-        return !(e && e[0] == '0');
-    }();
-    if (chunk_on && !chunk_.cap) alloc_bufs(chunk_, kChunkRows, true);
+    if (!chunk_.cap) alloc_bufs(chunk_, kChunkRows, true);
 }
 
 void MtpHead::prefill_end() {

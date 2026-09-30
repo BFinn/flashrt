@@ -306,11 +306,7 @@ MoePlan moe_prepare(uint32_t t, int E, const float* x, bool x_per_slot, const in
     int64_t mx = 1;
     for (int e = 0; e < E; ++e) mx = std::max<int64_t>(mx, hb[e + 1] - hb[e]);
     p.ncols_max = mx;
-    static const int force_j = [] {
-        const char* e = std::getenv("FLASHRT_MOE_J");
-        return e ? std::atoi(e) : 0;
-    }();
-    p.ncols_opt = force_j > 0 ? std::min<int64_t>(mx, force_j) : mx;
+    p.ncols_opt = mx;   // the widest token tile that fits (narrower tiles were slower: sw48)
     p.act = reinterpret_cast<const int*>(w.act);
     p.ids_dst = w.ids_dst;
     p.bounds = w.bounds;

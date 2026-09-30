@@ -347,11 +347,11 @@ __global__ void k_moe_down_g(const uint8_t* const* g_ptr, const int8_t* g_slot, 
 // Windows: one block per token t (blockIdx.x), each with its own logits, x, hit list, route
 // record and routed flag.
 // miss_n[t] (device) gets the token's CPU miss count: a token without misses skips the x copy
-// here and the mailbox wait and read in k_moe_combine_db (FLASHRT_DB_SKIP=0: off; sw77).
+// here and the mailbox wait and read in k_moe_combine_db (sw77).
 __global__ void k_route(const float* logits, const int32_t* table, int E, int K, const uint8_t* slots, size_t slot_bytes,
                         const uint8_t** hit_ptr, float* hit_w, int32_t* hit_n, const uint8_t* arena_dev, size_t arena_stride,
                         int layer, float pcie_frac, int pcie_max, int32_t* route_dev, const float* x, int n, uint8_t* mb,
-                        size_t x_off, uint32_t seq, const int32_t* dp, int32_t* miss_n, int skip) {
+                        size_t x_off, uint32_t seq, const int32_t* dp, int32_t* miss_n) {
     if (dp) seq = uint32_t(dp[2]);
     const int tok = blockIdx.x;
     logits += size_t(tok) * E;
@@ -476,12 +476,12 @@ __global__ void k_route(const float* logits, const int32_t* table, int E, int K,
         route_dev[1] = nm;
         route_dev[kRouteGpu] = ng;
         *hit_n = nh + ng;
-        miss_n[tok] = skip ? nm : 1;
+        miss_n[tok] = nm;
         s_nm = nm;
     }
     __syncthreads();
     if (mb) {
-        if (s_nm > 0 || !skip) {   // the CPU reads x only for its misses
+        if (s_nm > 0) {   // the CPU reads x only for its misses
             float* xh = reinterpret_cast<float*>(mb + x_off) + size_t(tok) * n;
             for (int i = e; i < n; i += blockDim.x) xh[i] = x[i];
         }
@@ -535,14 +535,6 @@ __global__ void k_moe_combine_db(float* out, const float* yh, const float* hit_w
     for (int k = 0; k < K; ++k) acc += hit_w[t * Kmax + k] * yh[(size_t(t) * Kmax + k) * n + i];
     const float g = 1.0f / (1.0f + __expf(-gate[t]));
     out[size_t(t) * n + i] = acc + shexp[size_t(t) * n + i] * g;
-}
-
-bool db_skip() {
-    static const bool on = [] {
-        const char* e = std::getenv("FLASHRT_DB_SKIP");
-        return !(e && e[0] == '0');
-    }();
-    return on;
 }
 
 __global__ void k_swiglu_1(float* g, const float* u, int n) {   // any number of rows
@@ -1026,7 +1018,7 @@ void moe_block_fast(const BlockCtx& c, int il, const float* x, const ExpertCache
     uint8_t* mb = h.doorbell ? h.mbox_dev + size_t(il) * h.mbox_stride : nullptr;
     k_route<<<T, ((E + 31) / 32) * 32, 0, c.stream>>>(logits, cache.table_dev + size_t(il) * E, E, K, cache.slots, cache.slot_bytes,
                                                      hit_ptr, hit_w, hit_n, h.arena_dev, h.arena_stride, il, h.pcie_frac, h.pcie_max,
-                                                     route_dev, x, n, mb, mb_x_off(h.max_window), h.seq, c.dparams, miss_n, db_skip() ? 1 : 0);
+                                                     route_dev, x, n, mb, mb_x_off(h.max_window), h.seq, c.dparams, miss_n);
     if (!h.doorbell) {
         ck(cudaMemcpyAsync(h.route_host, route_dev, size_t(kRouteInts) * 4, cudaMemcpyDeviceToHost, c.stream), "route to host");
         ck(cudaMemcpyAsync(h.x_host, x, size_t(n) * 4, cudaMemcpyDeviceToHost, c.stream), "x to host");
@@ -1041,7 +1033,7 @@ void moe_block_fast(const BlockCtx& c, int il, const float* x, const ExpertCache
         linear_shared(c, ws, ys, 2, x, T);
     }
     const GpuTensor& w_down = c.w.layer(il, "ffn_down_shexp.weight");
-    if (fuse_epi() && q8_act(w_down, T)) {   // SwiGLU writes the down projection's activations
+    if (q8_act(w_down, T)) {   // SwiGLU writes the down projection's activations
         gemv::swiglu_q8_1(sg, su, ffs, T, c.scratch.q8, c.stream);
         gemv::matvec_q(w_down.type, w_down.dev, c.scratch.q8, sh, ffs, n, T, c.stream);
     } else {
