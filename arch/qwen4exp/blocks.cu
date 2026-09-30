@@ -12,6 +12,7 @@
 #include <cuda_fp16.h>
 
 #include <algorithm>
+#include <atomic>
 #include <stdexcept>
 
 namespace flashrt::qwen4exp {
@@ -24,8 +25,14 @@ size_t scratch_q8_bytes(const Spec& s) { return gemv::q8_1_bytes(std::max<int64_
 size_t scratch_hc_bf16_bytes(const Spec& s) { return size_t(2) * s.hc_rank * s.hc_count * s.d_model * 2; }   // down and up
 }  // namespace
 
+uint64_t new_scratch_version() {
+    static std::atomic<uint64_t> v{0};
+    return ++v;
+}
+
 BlockScratch alloc_block_scratch(const Spec& s, int max_tokens) {
     BlockScratch b;
+    b.version = new_scratch_version();
     b.f32_elems = scratch_f32_elems(s, max_tokens);
     ck(cudaMalloc(&b.f32, b.f32_elems * 4), "cudaMalloc block scratch");
     b.q8_bytes = scratch_q8_bytes(s);

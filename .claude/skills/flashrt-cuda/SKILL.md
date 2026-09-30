@@ -81,7 +81,7 @@ If the current kernel is already near that ceiling, the gain is not in the kerne
   arithmetic and write an error word on timeout rather than trapping. Keep that pattern for
   any new device-side wait.
 - **Rewinds.** Anything stateful in the forward (GDN state, conv history, PLE history) must be
-  restorable by `ForwardRef::commit` after a partial accept. KV writes need nothing, because
+  restorable by `Forward::commit` after a partial accept. KV writes need nothing, because
   rejected positions are rewritten before being read.
 - **Compile flags.** Only the vendored ggml target (`flashrt_gemv`) builds with
   `--use_fast_math`. flashrt's own kernels are precise; changing that is an output change and

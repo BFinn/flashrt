@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-#include "arch/qwen4exp/forward_ref.hpp"
+#include "arch/qwen4exp/forward.hpp"
 
 #include "core/gguf.hpp"
 #include "core/platform.hpp"
@@ -26,7 +26,7 @@ float* dalloc(size_t elems) {
 }
 }  // namespace
 
-ForwardRef::ForwardRef(const Gguf& g, const Spec& s, const GpuWeights& w, const ExpertArena& arena, CpuPool& pool,
+Forward::Forward(const Gguf& g, const Spec& s, const GpuWeights& w, const ExpertArena& arena, CpuPool& pool,
                        int max_ctx, int max_batch, bool kv_q8, int kv_hot_blocks)
     : s_(s), w_(w), max_batch_(max_batch) {
     ple_ = parse_ple(g);
@@ -55,7 +55,7 @@ ForwardRef::ForwardRef(const Gguf& g, const Spec& s, const GpuWeights& w, const 
     ck(cudaHostAlloc(&argmax_host_, 4, cudaHostAllocDefault), "cudaHostAlloc argmax");
 }
 
-ForwardRef::~ForwardRef() {
+Forward::~Forward() {
     for (int il : s_.gdn_layers) free_gdn_state(gdn_[il]);
     for (int il : s_.qsa_layers) free_qsa_cache(kv_[il]);
     for (int il : s_.ple_layers) free_ple_state(ple_state_[il]);
@@ -90,10 +90,10 @@ void state_io(FILE* f, void* dev, size_t bytes, bool save, std::vector<uint8_t>&
 }
 }  // namespace
 
-void ForwardRef::save_state(const std::string& path) { state_file(path, true); }
-void ForwardRef::load_state(const std::string& path) { state_file(path, false); }
+void Forward::save_state(const std::string& path) { state_file(path, true); }
+void Forward::load_state(const std::string& path) { state_file(path, false); }
 
-void ForwardRef::state_file(const std::string& path, bool save) {
+void Forward::state_file(const std::string& path, bool save) {
     ck(cudaStreamSynchronize(stream_), "state");
     FILE* f = std::fopen(path.c_str(), save ? "wb" : "rb");
     if (!f) throw std::runtime_error("cannot open state file " + path);
@@ -141,14 +141,14 @@ void ForwardRef::state_file(const std::string& path, bool save) {
     std::fclose(f);
 }
 
-int32_t ForwardRef::argmax(const float* logits_row_dev) {
+int32_t Forward::argmax(const float* logits_row_dev) {
     argmax_dev(stream_, logits_row_dev, s_.n_vocab, argmax_dev_);
     ck(cudaMemcpyAsync(argmax_host_, argmax_dev_, 4, cudaMemcpyDeviceToHost, stream_), "argmax to host");
     ck(cudaStreamSynchronize(stream_), "argmax");
     return *argmax_host_;
 }
 
-void ForwardRef::reset() {
+void Forward::reset() {
     for (int il : s_.gdn_layers) reset_gdn_state(s_, gdn_[il], stream_);
     for (int il : s_.ple_layers) reset_ple_state(s_, ple_, ple_state_[il], stream_);
     for (int il : s_.qsa_layers) {   // K/V and pooled keys are overwritten as positions advance; the ring is not
@@ -164,7 +164,7 @@ void ForwardRef::reset() {
 }
 
 // embedding, hyper-connection streams, and the layers before the first PLE layer
-void ForwardRef::enqueue_pre(const BlockCtx& c, const int32_t* seq, int T) {
+void Forward::enqueue_pre(const BlockCtx& c, const int32_t* seq, int T) {
     embed(c, seq ? seq + pos_ : nullptr, T, emb_);
     hc_init(c, emb_, x_, T);
     for (int il = 0; il < first_ple_layer(); ++il) enqueue_layer(c, il, T);
@@ -172,7 +172,7 @@ void ForwardRef::enqueue_pre(const BlockCtx& c, const int32_t* seq, int T) {
 
 
 // the PLE rows (already in ple_host_.raw_pinned), the remaining layers, and the head
-void ForwardRef::enqueue_post(const BlockCtx& c, int T, int out_from, float* logits_dev) {
+void Forward::enqueue_post(const BlockCtx& c, int T, int out_from, float* logits_dev) {
     const Spec& s = s_;
     const int n = s.d_model, hc = s.hc_count;
     if (!s.ple_layers.empty()) ple_upload(c, ple_host_, T, pemb_);
@@ -190,7 +190,7 @@ void ForwardRef::enqueue_post(const BlockCtx& c, int T, int out_from, float* log
 
 // In a prefill chunk the combine that ends a layer is deferred into the next layer's first mix
 // (hc_combine_mix fuses it into the norm) unless a PLE block comes between.
-void ForwardRef::enqueue_layer(const BlockCtx& c, int il, int T) {
+void Forward::enqueue_layer(const BlockCtx& c, int il, int T) {
     const Spec& s = s_;
     for (int pl : s.ple_layers)
         if (pl == il) {
@@ -217,7 +217,7 @@ void ForwardRef::enqueue_layer(const BlockCtx& c, int il, int T) {
     else hc_combine(c, x_, blk_, inject_, T);
 }
 
-void ForwardRef::enable_windows(int W) {
+void Forward::enable_windows(int W) {
     if (W <= max_window_) return;
     if (W > max_batch_) throw std::runtime_error("enable_windows: window longer than the batch");
     for (GdnWindow& w : gdn_win_) free_gdn_window(w);
@@ -229,7 +229,7 @@ void ForwardRef::enable_windows(int W) {
     max_window_ = W;
 }
 
-void ForwardRef::forward_window(const int32_t* seq, int T, float* logits_dev) {
+void Forward::forward_window(const int32_t* seq, int T, float* logits_dev) {
     if (T < 1 || T > max_window_ || !fast_cache_ || !fast_host_->doorbell || T > fast_host_->max_window)
         throw std::runtime_error("forward_window: windows not enabled, or no fast MoE in doorbell mode");
     if (window_pos0_ >= 0) throw std::runtime_error("forward_window: the previous window was not committed");
@@ -245,7 +245,7 @@ void ForwardRef::forward_window(const int32_t* seq, int T, float* logits_dev) {
     in_window_ = false;
 }
 
-void ForwardRef::commit(int n) {
+void Forward::commit(int n) {
     if (window_pos0_ < 0 || n < 0 || n > window_T_) throw std::runtime_error("commit: no window, or n out of range");
     if (n < window_T_) {
         const BlockCtx c{s_, w_, dec_.scratch, stream_};
@@ -258,7 +258,7 @@ void ForwardRef::commit(int n) {
     window_pos0_ = -1;
 }
 
-std::vector<std::pair<void*, size_t>> ForwardRef::ckpt_parts() {
+std::vector<std::pair<void*, size_t>> Forward::ckpt_parts() {
     const Spec& s = s_;
     const size_t gch = size_t(2 * s.ssm_groups * s.ssm_state + s.ssm_heads * s.ssm_state);
     std::vector<std::pair<void*, size_t>> parts;
@@ -271,19 +271,19 @@ std::vector<std::pair<void*, size_t>> ForwardRef::ckpt_parts() {
     return parts;
 }
 
-size_t ForwardRef::checkpoint_bytes() {
+size_t Forward::checkpoint_bytes() {
     size_t total = 0;
     for (const auto& p : ckpt_parts()) total += (p.second + 255) & ~size_t(255);
     return total;
 }
 
-void ForwardRef::reserve_checkpoint() {
+void Forward::reserve_checkpoint() {
     if (ckpt_) return;
     ckpt_bytes_ = checkpoint_bytes();
     ck(cudaMalloc(&ckpt_, ckpt_bytes_), "cudaMalloc checkpoint");
 }
 
-void ForwardRef::save_checkpoint_to(void* dst) {
+void Forward::save_checkpoint_to(void* dst) {
     if (window_pos0_ >= 0) throw std::runtime_error("save_checkpoint: a window is open");
     size_t off = 0;
     for (const auto& p : ckpt_parts()) {
@@ -293,13 +293,13 @@ void ForwardRef::save_checkpoint_to(void* dst) {
     ck(cudaStreamSynchronize(stream_), "checkpoint");
 }
 
-void ForwardRef::save_checkpoint() {
+void Forward::save_checkpoint() {
     reserve_checkpoint();
     save_checkpoint_to(ckpt_);
     ckpt_pos_ = pos_;
 }
 
-void ForwardRef::restore_checkpoint_from(const void* src, int pos) {
+void Forward::restore_checkpoint_from(const void* src, int pos) {
     if (window_pos0_ >= 0) throw std::runtime_error("restore_checkpoint: a window is open");
     size_t off = 0;
     for (const auto& p : ckpt_parts()) {
@@ -312,19 +312,19 @@ void ForwardRef::restore_checkpoint_from(const void* src, int pos) {
     have_access_ = false;
 }
 
-void ForwardRef::restore_checkpoint() {
+void Forward::restore_checkpoint() {
     if (ckpt_pos_ < 0) throw std::runtime_error("restore_checkpoint: none saved");
     restore_checkpoint_from(ckpt_, ckpt_pos_);
 }
 
-int ForwardRef::first_ple_layer() const { return s_.ple_layers.empty() ? s_.n_layer : s_.ple_layers.front(); }
+int Forward::first_ple_layer() const { return s_.ple_layers.empty() ? s_.n_layer : s_.ple_layers.front(); }
 
-bool ForwardRef::graph_eligible(int T, int out_from, float* logits_dev) const {
+bool Forward::graph_eligible(int T, int out_from, float* logits_dev) const {
     return use_graphs_ && (T == 1 || in_window_) && T <= kMaxGraphTokens && out_from == 0 && logits_dev && fast_cache_ &&
            fast_host_->doorbell && embed_graph_capable(w_) && s_.idx_dim == 128;
 }
 
-void ForwardRef::drop_graphs() {
+void Forward::drop_graphs() {
     for (auto& row : graphs_)
         for (Graphs& gs : row) {
             for (cudaGraphExec_t* g : {&gs.pre, &gs.post})
@@ -336,7 +336,7 @@ void ForwardRef::drop_graphs() {
         }
 }
 
-ForwardRef::Graphs& ForwardRef::capture_graphs(int T, float* logits_dev) {
+Forward::Graphs& Forward::capture_graphs(int T, float* logits_dev) {
     Graphs& gs = graphs_[T][in_window_ ? 1 : 0];
     for (cudaGraphExec_t* g : {&gs.pre, &gs.post})
         if (*g) {
@@ -371,12 +371,12 @@ ForwardRef::Graphs& ForwardRef::capture_graphs(int T, float* logits_dev) {
     gs.logits = logits_dev;
     gs.ple_pinned = ple_host_.raw_pinned;
     gs.ple_dev = ple_host_.raw_dev;
-    gs.scratch = dec_.scratch;
+    gs.scratch_version = dec_.scratch.version;
     ++graph_captures_;
     return gs;
 }
 
-void ForwardRef::alloc_bufs(Bufs& b, int T) {
+void Forward::alloc_bufs(Bufs& b, int T) {
     free_bufs(b);
     const size_t n = s_.d_model, hc = s_.hc_count, B = size_t(T);
     b.scratch = alloc_block_scratch(s_, T);
@@ -390,14 +390,14 @@ void ForwardRef::alloc_bufs(Bufs& b, int T) {
     b.cap = T;
 }
 
-void ForwardRef::free_bufs(Bufs& b) {
+void Forward::free_bufs(Bufs& b) {
     if (!b.cap) return;
     free_block_scratch(b.scratch);
     for (float* p : {b.emb, b.x, b.mixed, b.inject, b.blk, b.pemb, b.norm}) cudaFree(p);
     b = Bufs{};
 }
 
-void ForwardRef::use_bufs(Bufs& b) {
+void Forward::use_bufs(Bufs& b) {
     emb_ = b.emb;
     x_ = b.x;
     mixed_ = b.mixed;
@@ -408,7 +408,7 @@ void ForwardRef::use_bufs(Bufs& b) {
     scr_ = &b.scratch;
 }
 
-void ForwardRef::release_chunk_buffers() {
+void Forward::release_chunk_buffers() {
     if (ple_next_rows_.valid()) ple_next_rows_.wait();
     ple_next_pos_ = -1;
     look_seq_ = nullptr;
@@ -424,7 +424,7 @@ void ForwardRef::release_chunk_buffers() {
     counts_dev_ = tail_counts_dev_ = nullptr;
 }
 
-std::vector<uint32_t> ForwardRef::fill_counts(float tail_weight) const {
+std::vector<uint32_t> Forward::fill_counts(float tail_weight) const {
     std::vector<uint32_t> c = counts_;
     double sc = 0, st = 0;
     for (size_t i = 0; i < c.size(); ++i) {
@@ -437,13 +437,13 @@ std::vector<uint32_t> ForwardRef::fill_counts(float tail_weight) const {
     return c;
 }
 
-size_t ForwardRef::chunk_buffer_bytes() const {
+size_t Forward::chunk_buffer_bytes() const {
     if (!chunk_.cap) return 0;
     const size_t n = s_.d_model, hc = s_.hc_count, B = size_t(chunk_.cap);
     return expert_stream_bytes(estream_) + chunk_.scratch.f32_elems * 4 + chunk_.scratch.q8_bytes + B * (6 * n + hc * n + hc) * 4;
 }
 
-size_t ForwardRef::chunk_bytes(int T, int end_pos) const {
+size_t Forward::chunk_bytes(int T, int end_pos) const {
     const Spec& s = s_;
     const size_t n = s.d_model, hc = s.hc_count, B = size_t(T);
     size_t b = block_scratch_bytes(s, T) + B * (6 * n + hc * n + hc) * 4;   // alloc_bufs
@@ -461,7 +461,7 @@ size_t ForwardRef::chunk_bytes(int T, int end_pos) const {
     return b + b / 32 + (size_t(64) << 20);   // allocator rounding, the Q3_K weight copy
 }
 
-int ForwardRef::pick_chunk(int n, int end_pos, size_t free_bytes, int max_chunk) const {
+int Forward::pick_chunk(int n, int end_pos, size_t free_bytes, int max_chunk) const {
     if (n <= max_batch_) return n;
     const size_t avail = free_bytes - std::min(free_bytes, size_t(256) << 20);
     int c = std::min(max_chunk, n);
@@ -471,38 +471,51 @@ int ForwardRef::pick_chunk(int n, int end_pos, size_t free_bytes, int max_chunk)
     return std::min(c, ((n + k - 1) / k + 255) / 256 * 256);
 }
 
-void ForwardRef::forward(const int32_t* seq, int T, int out_from, float* logits_dev) {
-    if (T < 1) throw std::runtime_error("ForwardRef: bad batch size");
-    const Spec& s = s_;
+void Forward::forward(const int32_t* seq, int T, int out_from, float* logits_dev) {
+    if (T < 1) throw std::runtime_error("Forward: bad batch size");
     in_chunk_ = T > max_batch_;
-    if (in_chunk_) {
-        if (in_window_) throw std::runtime_error("ForwardRef: a window cannot be a prefill chunk");
-        if (chunk_.cap < T) {
-            alloc_bufs(chunk_, T);
-            destroy_expert_stream(estream_);
-            estream_ = create_expert_stream(s, *moe_host_.arena, T);
-        }
-        if (!counts_dev_) {
-            ck(cudaMalloc(&counts_dev_, counts_.size() * 4), "cudaMalloc routing counts");
-            ck(cudaMemset(counts_dev_, 0, counts_.size() * 4), "memset routing counts");
-            ck(cudaMalloc(&tail_counts_dev_, counts_.size() * 4), "cudaMalloc routing counts");
-            ck(cudaMemset(tail_counts_dev_, 0, counts_.size() * 4), "memset routing counts");
-        }
-        use_bufs(chunk_);
-        const int need = std::max(look_n_, pos_ + T);   // host KV: chunks attend from a VRAM mirror up to the prompt's end
-        for (int il : s.qsa_layers) {
-            if (kv_[il].mK && kv_[il].mcap < pos_ + T) qsa_mirror_end(kv_[il]);
-            qsa_mirror_begin(s, kv_[il], pos_, need, stream_);
-        }
-        expert_stream_prefetch(estream_, 0);   // layer 0's experts copy while the embedding and PLE run
-    } else {
-        use_bufs(dec_);
-    }
-    const BlockCtx c{s, w_, *scr_, stream_};
+    if (in_chunk_) begin_chunk(T);
+    else use_bufs(dec_);
     const bool graph = graph_eligible(T, out_from, logits_dev);
     if (!graph) drop_graphs();   // an eager pass may regrow scratch the graphs point at
-    for (int il : s.qsa_layers)
-        if (pos_ + T > kv_[il].capacity) throw std::runtime_error("ForwardRef: KV cache full");
+    for (int il : s_.qsa_layers)
+        if (pos_ + T > kv_[il].capacity) throw std::runtime_error("Forward: KV cache full");
+    std::future<void> ple_rows = fetch_ple_rows(seq, T);
+    const bool fast = (T == 1 || in_window_) && fast_cache_;
+    // rows of this call inside the prompt's last prefill_tail_ tokens count into tail_counts_
+    moe_host_.tail_counts = prefill_tail_ > 0 ? &tail_counts_ : nullptr;
+    moe_host_.tail_from = prefill_tail_ > 0 && look_n_ > 0 && !fast ? std::max(0, look_n_ - prefill_tail_ - pos_) : (1 << 30);
+    const bool db = fast && fast_host_->doorbell;
+    if (db) doorbell_begin_token(*fast_host_, T);
+    if (graph) run_graphs(seq, T, logits_dev, ple_rows);
+    else run_eager(seq, T, out_from, logits_dev, ple_rows);
+    end_step(T, fast, db);
+}
+
+void Forward::begin_chunk(int T) {
+    const Spec& s = s_;
+    if (in_window_) throw std::runtime_error("Forward: a window cannot be a prefill chunk");
+    if (chunk_.cap < T) {
+        alloc_bufs(chunk_, T);
+        destroy_expert_stream(estream_);
+        estream_ = create_expert_stream(s, *moe_host_.arena, T);
+    }
+    if (!counts_dev_) {
+        ck(cudaMalloc(&counts_dev_, counts_.size() * 4), "cudaMalloc routing counts");
+        ck(cudaMemset(counts_dev_, 0, counts_.size() * 4), "memset routing counts");
+        ck(cudaMalloc(&tail_counts_dev_, counts_.size() * 4), "cudaMalloc routing counts");
+        ck(cudaMemset(tail_counts_dev_, 0, counts_.size() * 4), "memset routing counts");
+    }
+    use_bufs(chunk_);
+    const int need = std::max(look_n_, pos_ + T);   // host KV: chunks attend from a VRAM mirror up to the prompt's end
+    for (int il : s.qsa_layers) {
+        if (kv_[il].mK && kv_[il].mcap < pos_ + T) qsa_mirror_end(kv_[il]);
+        qsa_mirror_begin(s, kv_[il], pos_, need, stream_);
+    }
+    expert_stream_prefetch(estream_, 0);   // layer 0's experts copy while the embedding and PLE run
+}
+
+std::future<void> Forward::fetch_ple_rows(const int32_t* seq, int T) {
     // the PLE rows come from the SSD: read them on another thread while the embedding and the
     // layers before the first PLE layer run
     std::future<void> ple_rows;
@@ -515,73 +528,76 @@ void ForwardRef::forward(const int32_t* seq, int T, int out_from, float* logits_
             ple_next_pos_ = -1;
         }
     }
-    const bool have_rows = !s.ple_layers.empty() && ple_next_pos_ == pos_ && ple_next_T_ == T;
+    const bool have_rows = !s_.ple_layers.empty() && ple_next_pos_ == pos_ && ple_next_T_ == T;
     ple_next_pos_ = -1;
-    if (!s.ple_layers.empty() && !have_rows) ple_rows = std::async(std::launch::async, [&] {
+    if (!s_.ple_layers.empty() && !have_rows) ple_rows = std::async(std::launch::async, [this, seq, pos = pos_, T] {
             unpin_current_thread();
-            ple_fetch(ple_host_, seq, pos_, T);
+            ple_fetch(ple_host_, seq, pos, T);
         });
-    const bool fast = (T == 1 || in_window_) && fast_cache_;
-    // rows of this call inside the prompt's last prefill_tail_ tokens count into tail_counts_
-    moe_host_.tail_counts = prefill_tail_ > 0 ? &tail_counts_ : nullptr;
-    moe_host_.tail_from = prefill_tail_ > 0 && look_n_ > 0 && !fast ? std::max(0, look_n_ - prefill_tail_ - pos_) : (1 << 30);
-    const bool db = fast && fast_host_->doorbell;
-    if (db) doorbell_begin_token(*fast_host_, T);
-    if (graph) {
-        params_host_[0] = seq[pos_];
-        params_host_[1] = pos_;
-        params_host_[2] = int32_t(fast_host_->seq);
-        for (int t = 1; t < T; ++t) params_host_[2 + t] = seq[pos_ + t];
-        Graphs* gs = &graphs_[T][in_window_ ? 1 : 0];
-        if (gs->pre && !same_buffers(gs->scratch, dec_.scratch)) {   // another length's capture grew the scratch
-            drop_graphs();
-            gs = &graphs_[T][in_window_ ? 1 : 0];
-        }
-        if (!gs->pre || gs->logits != logits_dev) {
-            if (ple_rows.valid()) ple_rows.wait();   // the PLE buffers must exist before capture
-            if (!s.ple_layers.empty() && ple_host_.raw_dev_bytes < ple_host_.raw_pinned_bytes) {   // grow the device side too
-                if (ple_host_.raw_dev) cudaFree(ple_host_.raw_dev);
-                ck(cudaMalloc(&ple_host_.raw_dev, ple_host_.raw_pinned_bytes), "cudaMalloc ple rows");
-                ple_host_.raw_dev_bytes = ple_host_.raw_pinned_bytes;
-                for (auto& row : graphs_)   // the old graphs point at the old buffer
-                    for (Graphs& g : row)
-                        if (&g != gs && g.pre) {
-                            drop_graphs();
-                            break;
-                        }
-            }
-            gs = &capture_graphs(T, logits_dev);
-            // capturing may have grown the scratch under the other lengths' graphs
-            for (auto& row : graphs_)
-                for (Graphs& g : row)
-                    if (&g != gs && g.pre && !same_buffers(g.scratch, dec_.scratch))
-                        for (cudaGraphExec_t* e : {&g.pre, &g.post})
-                            if (*e) {
-                                cudaGraphExecDestroy(*e);
-                                *e = nullptr;
-                            }
-        }
-        ck(cudaGraphLaunch(gs->pre, stream_), "launch graph (pre)");
-        if (ple_rows.valid()) ple_rows.get();
-        if (ple_host_.raw_pinned != gs->ple_pinned || ple_host_.raw_dev != gs->ple_dev)
-            throw std::runtime_error("ForwardRef: PLE buffers moved under a captured graph");
-        ck(cudaGraphLaunch(gs->post, stream_), "launch graph (post)");
-    } else {
-        enqueue_pre(c, seq, T);
-        if (ple_rows.valid()) ple_rows.get();
-        enqueue_post(c, T, out_from, logits_dev);
-        // the next chunk's n-gram rows, while this one computes
-        const int next = pos_ + T, nT = std::min(T, look_n_ - next);
-        if (in_chunk_ && look_seq_ && !s.ple_layers.empty() && nT > max_batch_) {
-            ple_next_pos_ = next;
-            ple_next_T_ = nT;
-            const int32_t* ls = look_seq_;
-            ple_next_rows_ = std::async(std::launch::async, [this, ls, next, nT] {
-                unpin_current_thread();
-                ple_fetch(ple_next_, ls, next, nT);
-            });
-        }
+    return ple_rows;
+}
+
+void Forward::run_graphs(const int32_t* seq, int T, float* logits_dev, std::future<void>& ple_rows) {
+    const Spec& s = s_;
+    params_host_[0] = seq[pos_];
+    params_host_[1] = pos_;
+    params_host_[2] = int32_t(fast_host_->seq);
+    for (int t = 1; t < T; ++t) params_host_[2 + t] = seq[pos_ + t];
+    Graphs* gs = &graphs_[T][in_window_ ? 1 : 0];
+    if (gs->pre && gs->scratch_version != dec_.scratch.version) {   // another length's capture grew the scratch
+        drop_graphs();
+        gs = &graphs_[T][in_window_ ? 1 : 0];
     }
+    if (!gs->pre || gs->logits != logits_dev) {
+        if (ple_rows.valid()) ple_rows.wait();   // the PLE buffers must exist before capture
+        if (!s.ple_layers.empty() && ple_host_.raw_dev_bytes < ple_host_.raw_pinned_bytes) {   // grow the device side too
+            if (ple_host_.raw_dev) cudaFree(ple_host_.raw_dev);
+            ck(cudaMalloc(&ple_host_.raw_dev, ple_host_.raw_pinned_bytes), "cudaMalloc ple rows");
+            ple_host_.raw_dev_bytes = ple_host_.raw_pinned_bytes;
+            for (auto& row : graphs_)   // the old graphs point at the old buffer
+                for (Graphs& g : row)
+                    if (&g != gs && g.pre) {
+                        drop_graphs();
+                        break;
+                    }
+        }
+        gs = &capture_graphs(T, logits_dev);
+        // capturing may have grown the scratch under the other lengths' graphs
+        for (auto& row : graphs_)
+            for (Graphs& g : row)
+                if (&g != gs && g.pre && g.scratch_version != dec_.scratch.version)
+                    for (cudaGraphExec_t* e : {&g.pre, &g.post})
+                        if (*e) {
+                            cudaGraphExecDestroy(*e);
+                            *e = nullptr;
+                        }
+    }
+    ck(cudaGraphLaunch(gs->pre, stream_), "launch graph (pre)");
+    if (ple_rows.valid()) ple_rows.get();
+    if (ple_host_.raw_pinned != gs->ple_pinned || ple_host_.raw_dev != gs->ple_dev)
+        throw std::runtime_error("Forward: PLE buffers moved under a captured graph");
+    ck(cudaGraphLaunch(gs->post, stream_), "launch graph (post)");
+}
+
+void Forward::run_eager(const int32_t* seq, int T, int out_from, float* logits_dev, std::future<void>& ple_rows) {
+    const BlockCtx c{s_, w_, *scr_, stream_};
+    enqueue_pre(c, seq, T);
+    if (ple_rows.valid()) ple_rows.get();
+    enqueue_post(c, T, out_from, logits_dev);
+    // the next chunk's n-gram rows, while this one computes
+    const int next = pos_ + T, nT = std::min(T, look_n_ - next);
+    if (in_chunk_ && look_seq_ && !s_.ple_layers.empty() && nT > max_batch_) {
+        ple_next_pos_ = next;
+        ple_next_T_ = nT;
+        const int32_t* ls = look_seq_;
+        ple_next_rows_ = std::async(std::launch::async, [this, ls, next, nT] {
+            unpin_current_thread();
+            ple_fetch(ple_next_, ls, next, nT);
+        });
+    }
+}
+
+void Forward::end_step(int T, bool fast, bool db) {
     // the adaptive cache learns from the previous step while this one runs on the GPU
     if (fast && cache_mgr_ && have_access_) cache_manager_step(cache_mgr_, *fast_host_, stream_);
     ck(cudaStreamSynchronize(stream_), "forward");

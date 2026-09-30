@@ -42,7 +42,7 @@ void convert_q8_0_to_q2_0(const uint8_t* src, uint8_t* dst, size_t nblocks64, in
 class MtpHead {
 public:
     // g: the draft GGUF; target, target_w: the target model (embedding, LM head, shapes). The KV
-    // cache is sized and formatted like the target's (kv_q8, kv_hot_blocks: see ForwardRef).
+    // cache is sized and formatted like the target's (kv_q8, kv_hot_blocks: see Forward).
     MtpHead(const Gguf& g, const Spec& target, const GpuWeights& target_w, cudaStream_t stream, int max_ctx, int max_batch,
             bool kv_q8 = false, int kv_hot_blocks = 0, int expert_bits = 4);
     ~MtpHead();
@@ -179,7 +179,7 @@ private:
     int32_t *q_ids_ = nullptr, *q_n_ = nullptr;
     float* q_p_ = nullptr;
     int32_t chain_init_[4] = {};   // host source of the chain's parameter reset (stable for the async copy)
-    BlockScratch chain_scratch_;   // the buffers the chain graph was captured with
+    uint64_t chain_scratch_version_ = 0;   // of the buffers the chain graph was captured with
     float* ckpt_ = nullptr;         // [ring | h]
 };
 

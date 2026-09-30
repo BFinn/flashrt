@@ -38,9 +38,9 @@ TOOLS = [
 SYSTEM = ("You are a careful C++, CUDA and Rust reviewer working in a repository through tools. Read the files you need, "
           "then report concrete defects with file and line, the failure they cause, and a fix. Be brief between tool calls.")
 TASK = ("Review how the engine reuses a previous conversation's state: engine/session.cpp first, then what it calls in "
-        "arch/qwen4exp/forward_ref.cu and arch/qwen4exp/mtp.cu. Look for states that can be restored for the wrong tokens.")
+        "arch/qwen4exp/forward.cu and arch/qwen4exp/mtp.cu. Look for states that can be restored for the wrong tokens.")
 # given in order when the model calls no tool
-NEXT_FILES = ["engine/session.hpp", "engine/session.cpp", "arch/qwen4exp/forward_ref.hpp", "arch/qwen4exp/mtp.hpp",
+NEXT_FILES = ["engine/session.hpp", "engine/session.cpp", "arch/qwen4exp/forward.hpp", "arch/qwen4exp/mtp.hpp",
               "engine/main.cpp", "server/src/engine.rs", "server/src/chat.rs", "arch/qwen4exp/moe_fast.hpp",
               "core/cpu_pool.hpp", "arch/qwen4exp/blocks.hpp", "docs/design.md", "bench/engine_smoke.py"]
 

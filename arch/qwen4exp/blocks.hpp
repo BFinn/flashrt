@@ -56,15 +56,14 @@ struct BlockScratch {
     size_t hc_bf16_bytes = 0;
     int32_t* tok_dev = nullptr;   // token ids of a many-token embed()
     size_t tok_cap = 0;
+    // A new value whenever a buffer a captured graph bakes in is (re)allocated: f32, q8 and hc_bf16
+    // (alloc_block_scratch), the indexer lists and attention partials (qsa_scratch_reserve). A
+    // graph captured at another version is stale.
+    uint64_t version = 0;
 };
 BlockScratch alloc_block_scratch(const Spec& s, int max_tokens);
 size_t block_scratch_bytes(const Spec& s, int max_tokens);   // what alloc_block_scratch takes
-// The addresses a captured graph bakes in: a graph is stale once any of them changes (a
-// scratch that grows is reallocated).
-inline bool same_buffers(const BlockScratch& a, const BlockScratch& b) {
-    return a.f32 == b.f32 && a.q8 == b.q8 && a.idx_scores == b.idx_scores && a.idx_cells == b.idx_cells && a.idx_counts == b.idx_counts &&
-           a.attn_part == b.attn_part;
-}
+uint64_t new_scratch_version();   // for BlockScratch::version: unique in the process
 void free_block_scratch(BlockScratch& b);
 
 struct BlockCtx {

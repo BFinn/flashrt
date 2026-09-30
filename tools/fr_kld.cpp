@@ -24,7 +24,7 @@
 // --prefill-chunk C runs the prefill steps in chunks of C tokens (above the batch: the chunk path,
 // experts streamed to the GPU); without --fast every scored logit then comes from a chunk.
 #include "arch/qwen4exp/experts.hpp"
-#include "arch/qwen4exp/forward_ref.hpp"
+#include "arch/qwen4exp/forward.hpp"
 #include "arch/qwen4exp/gpu_weights.hpp"
 #include "arch/qwen4exp/moe_fast.hpp"
 #include "arch/qwen4exp/spec.hpp"
@@ -107,7 +107,7 @@ int main(int argc, char** argv) {
     const std::vector<int> cpus = physical_cpus();
     CpuPool pool(8, cpus);
     if (window > 0 && (!fast || window > 8 || window > batch)) { std::fprintf(stderr, "--window needs --fast and 1..8\n"); return 2; }
-    ForwardRef fwd(g, s, w, arena, pool, ctx + 8, batch, kv_q8 || kv_hot > 0, kv_hot);
+    Forward fwd(g, s, w, arena, pool, ctx + 8, batch, kv_q8 || kv_hot > 0, kv_hot);
     if (window > 0) fwd.enable_windows(window);
     std::printf("KV cache: %s, hot set %d blocks per layer\n", kv_q8 || kv_hot > 0 ? "q8_0" : "fp16", kv_hot);
 

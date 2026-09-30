@@ -1101,6 +1101,7 @@ void qsa_scratch_reserve(const Spec& s, BlockScratch& bs, int T, int max_nb, int
         if (bs.idx_scores) cudaFree(bs.idx_scores);
         bs.idx_scores_elems = size_t(T) * max_nb * 2;
         ck(cudaMalloc(&bs.idx_scores, bs.idx_scores_elems * 4), "cudaMalloc idx scores");
+        bs.version = new_scratch_version();
     }
     if (bs.idx_cells_elems < size_t(T) * ldc) {
         if (bs.idx_cells) cudaFree(bs.idx_cells);
@@ -1108,12 +1109,14 @@ void qsa_scratch_reserve(const Spec& s, BlockScratch& bs, int T, int max_nb, int
         bs.idx_cells_elems = size_t(T) * ldc * 2;
         ck(cudaMalloc(&bs.idx_cells, bs.idx_cells_elems * 4), "cudaMalloc idx cells");
         ck(cudaMalloc(&bs.idx_counts, bs.idx_cells_elems / ldc * 4), "cudaMalloc idx counts");
+        bs.version = new_scratch_version();
     }
     const size_t need = size_t(T) * s.n_head * std::max(n_splits, 0) * (s.head_dim_k + 2);
     if (bs.attn_part_elems < need) {
         if (bs.attn_part) cudaFree(bs.attn_part);
         bs.attn_part_elems = need;
         ck(cudaMalloc(&bs.attn_part, need * 4), "cudaMalloc attention partials");
+        bs.version = new_scratch_version();
     }
 }
 

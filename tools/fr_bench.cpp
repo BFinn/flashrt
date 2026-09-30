@@ -45,7 +45,7 @@
 // speculative round and plain steps from the same state (rewound after each), comparing the
 // tokens sampled at the first two positions.
 #include "arch/qwen4exp/experts.hpp"
-#include "arch/qwen4exp/forward_ref.hpp"
+#include "arch/qwen4exp/forward.hpp"
 #include "arch/qwen4exp/gpu_weights.hpp"
 #include "arch/qwen4exp/moe_fast.hpp"
 #include "arch/qwen4exp/mtp.hpp"
@@ -147,7 +147,7 @@ int main(int argc, char** argv) {
         else if (a == "--dist-test") dist_test = std::atoi(next());
         else if (a == "--teacher") teacher = true;
         else if (a == "--save-counts") save_counts = next();
-        else if (a == "--prefill-chunk") {   // a length, or "auto": the longest that fits the free VRAM (ForwardRef::pick_chunk)
+        else if (a == "--prefill-chunk") {   // a length, or "auto": the longest that fits the free VRAM (Forward::pick_chunk)
             const std::string v = next();
             chunk = v == "auto" ? 0 : std::max(1, std::atoi(v.c_str()));
         }
@@ -183,7 +183,7 @@ int main(int argc, char** argv) {
     CpuPool pool(workers, cpus);   // pins this thread to cpus[0]
     if (spec_k > 0 && mtp_path.empty()) { std::fprintf(stderr, "--spec needs --mtp\n"); return 2; }
     if (spec_k > 0) draft_k = spec_k;
-    ForwardRef fwd(g, s, w, arena, pool, n_prompt + windows * gen + 16 + draft_k, 64, kv_q8 || kv_hot > 0, kv_hot);
+    Forward fwd(g, s, w, arena, pool, n_prompt + windows * gen + 16 + draft_k, 64, kv_q8 || kv_hot > 0, kv_hot);
     if (spec_k > 0) fwd.enable_windows(spec_k + 1);
     fwd.set_count_half_life(half_life);
     std::printf("KV cache: %s%s\n", kv_q8 || kv_hot > 0 ? "q8_0" : "fp16",

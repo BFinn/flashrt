@@ -61,7 +61,7 @@ struct MoeFastHost {
     // the experts each layer selected for the last step's tokens, [token][n_layer][top_k] (for
     // cache policy and traces); complete once forward() returns
     std::vector<int32_t> access;
-    std::vector<int32_t> access_prev;   // the previous step's (ForwardRef copies it at step end)
+    std::vector<int32_t> access_prev;   // the previous step's (Forward copies it at step end)
     int access_prev_T = 0;              // tokens in access_prev
     // statistics
     long hits = 0, misses = 0, gpu_misses = 0;   // misses: CPU-served; gpu_misses: read over PCIe

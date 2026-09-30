@@ -2,7 +2,7 @@
 #include "engine/session.hpp"
 
 #include "arch/qwen4exp/experts.hpp"
-#include "arch/qwen4exp/forward_ref.hpp"
+#include "arch/qwen4exp/forward.hpp"
 #include "arch/qwen4exp/gpu_weights.hpp"
 #include "arch/qwen4exp/moe_fast.hpp"
 #include "arch/qwen4exp/mtp.hpp"
@@ -72,7 +72,7 @@ struct Session::Impl {
     ExpertArena arena;
     std::vector<int> cpus;
     std::unique_ptr<CpuPool> pool;
-    std::unique_ptr<ForwardRef> fwd;
+    std::unique_ptr<Forward> fwd;
     std::unique_ptr<Gguf> g_mtp;
     std::unique_ptr<MtpHead> mtp;
     ExpertCache cache;
@@ -118,7 +118,7 @@ struct Session::Impl {
         pool = std::make_unique<CpuPool>(o.workers, cpus);   // pins this thread to cpus[0] for now
         const bool spec = !o.mtp.empty() && o.spec_k > 0;
         const int W = spec ? o.spec_k + 1 : 1;
-        fwd = std::make_unique<ForwardRef>(g, s, w, arena, *pool, o.max_ctx + 16, o.prefill_batch, o.kv_q8 || o.kv_hot > 0, o.kv_hot);
+        fwd = std::make_unique<Forward>(g, s, w, arena, *pool, o.max_ctx + 16, o.prefill_batch, o.kv_q8 || o.kv_hot > 0, o.kv_hot);
         fwd->set_count_half_life(4096);
         hrow = size_t(s.hc_count) * s.d_model;
         stage("forward pass set up");

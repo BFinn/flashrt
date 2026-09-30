@@ -43,7 +43,7 @@ per-experiment evidence is in `bench/results/2026-09-2*`, each folder with a REA
 
 ## One decode token (fast path)
 
-`ForwardRef::forward(seq, T = 1, ...)` in `arch/qwen4exp/forward_ref.cu`:
+`Forward::forward(seq, T = 1, ...)` in `arch/qwen4exp/forward.cu`:
 
 1. **The host posts the token.**
    - `doorbell_begin_token` bumps the doorbell sequence number and wakes the miss server.
@@ -119,7 +119,7 @@ A round, in `fr_bench --spec K` and `flashrt-engine --spec K`:
    At temperature > 0 each draft is **sampled** from the head's q: its logits through the
    target's sampler chain, with a salted per-position draw (`sample::draft_row`). q is kept on
    the GPU. Greedy decoding and `--argmax-drafts` / `FLASHRT_ARGMAX_DRAFTS=1` use the argmax.
-2. **Verify** (`ForwardRef::forward_window`): the target runs the window `x_p, d_1 .. d_K` (T =
+2. **Verify** (`Forward::forward_window`): the target runs the window `x_p, d_1 .. d_K` (T =
    K + 1 tokens) in one doorbell step on the fast path, captured as a graph pair per T.
 3. **Accept:**
    - **Sampled drafts** (`sample::spec_verify`, sw85): draft j is kept when u * q(d) < p(d);
@@ -131,7 +131,7 @@ A round, in `fr_bench --spec K` and `flashrt-engine --spec K`:
    - **Argmax drafts:** every row is sampled (greedy is argmax), and drafts are kept while the
      sampled token equals the draft. With a deterministic draft this is also exact, and
      token-for-token equal to plain sampling (position-keyed draws, `test_sample`).
-4. **Commit** (`ForwardRef::commit(a + 1)`): the recurrent states are rewound to the kept tokens.
+4. **Commit** (`Forward::commit(a + 1)`): the recurrent states are rewound to the kept tokens.
 
 **The head** is the NextN block of the draft GGUF (`-noembd`: the target's embedding and LM head
 are borrowed). Its input at position p is the target's final hyper-connection streams at p - 1
@@ -158,7 +158,7 @@ window's cost.
 ## Prefill in chunks (P3)
 
 A `forward()` of more tokens than the decode batch is a chunk. The engine picks the length
-(`ForwardRef::pick_chunk`): the longest, up to 16,384, whose buffers fit the free VRAM, estimated
+(`Forward::pick_chunk`): the longest, up to 16,384, whose buffers fit the free VRAM, estimated
 from the allocation formulas (`chunk_bytes`). That is 16,384 at 32K and about 10-11K beside 245K
 of KV. `fr_bench --prefill-chunk auto` does the same.
 - **Dense layers** run as matrix-matrix products (`kernels/cuda/ggml_gemm.h`): ggml's MMQ int8

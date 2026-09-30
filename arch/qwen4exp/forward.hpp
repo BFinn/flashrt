@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
-// qwen4exp forward pass over one sequence, with its caches and recurrent states. The name is
-// historical: it began as the correctness-first reference and is now the engine's whole forward
-// pass (a rename is planned: docs/improvement-plan.md, H-2). Its modes:
+// qwen4exp forward pass over one sequence, with its caches and recurrent states (it began as the
+// correctness-first reference, ForwardRef, and became the engine's whole forward pass). Its modes:
 // - decode, one token or a verify window (forward_window, commit), captured as CUDA graphs; routed
 //   experts hit the VRAM expert cache and misses run on the CPU through doorbells (moe_fast.hpp);
 // - prefill chunks (T above max_batch), each layer's experts streamed to the GPU (moe_stream.hpp);
@@ -31,17 +30,17 @@ struct Gguf;
 
 namespace flashrt::qwen4exp {
 
-class ForwardRef {
+class Forward {
 public:
     // max_ctx: KV capacity; max_batch: tokens per forward() call (scratch sizing); kv_q8: the
     // QSA KV cache in Q8_0 (llama.cpp's q8_0 cache) instead of fp16.
     // kv_hot_blocks > 0 (q8 only): the KV cache in host memory with that many 4-cell blocks per
     // layer hot on the GPU (see QsaCache).
-    ForwardRef(const Gguf& g, const Spec& s, const GpuWeights& w, const ExpertArena& arena, CpuPool& pool, int max_ctx,
+    Forward(const Gguf& g, const Spec& s, const GpuWeights& w, const ExpertArena& arena, CpuPool& pool, int max_ctx,
                int max_batch, bool kv_q8 = false, int kv_hot_blocks = 0);
-    ~ForwardRef();
-    ForwardRef(const ForwardRef&) = delete;
-    ForwardRef& operator=(const ForwardRef&) = delete;
+    ~Forward();
+    Forward(const Forward&) = delete;
+    Forward& operator=(const Forward&) = delete;
 
     // Clears every cache and state: the next forward() starts a new sequence at position 0. Also
     // drops an uncommitted window and what a forward() that threw left half done.
@@ -148,6 +147,15 @@ private:
     void enqueue_pre(const BlockCtx& c, const int32_t* seq, int T);
     void enqueue_post(const BlockCtx& c, int T, int out_from, float* logits_dev);
     void enqueue_layer(const BlockCtx& c, int il, int T);
+    // forward()'s steps: a chunk's buffers, mirror and first expert copy; the PLE rows (the
+    // lookahead's, or a read started here); the call as captured graphs (decode and windows) or
+    // eagerly (batches and chunks); then the sync, the doorbell and cache bookkeeping, the chunk's
+    // routing counts and pos_.
+    void begin_chunk(int T);
+    std::future<void> fetch_ple_rows(const int32_t* seq, int T);
+    void run_graphs(const int32_t* seq, int T, float* logits_dev, std::future<void>& ple_rows);
+    void run_eager(const int32_t* seq, int T, int out_from, float* logits_dev, std::future<void>& ple_rows);
+    void end_step(int T, bool fast, bool db);
     int first_ple_layer() const;
     bool graph_eligible(int T, int out_from, float* logits_dev) const;
     struct Graphs;
@@ -209,7 +217,7 @@ private:
         float* logits = nullptr;
         const void* ple_pinned = nullptr;
         const void* ple_dev = nullptr;
-        BlockScratch scratch;   // the buffers it was captured with
+        uint64_t scratch_version = 0;   // of the buffers it was captured with
     };
     Graphs graphs_[kMaxGraphTokens + 1][2];
     long graph_captures_ = 0;

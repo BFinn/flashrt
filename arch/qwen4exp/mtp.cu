@@ -527,7 +527,7 @@ std::vector<int32_t> MtpHead::draft_chain(int row, int pos, int k) {
     ck(cudaMemcpyAsync(h_in_, x_ + size_t(row) * hc * n, size_t(hc) * n * 4, cudaMemcpyDeviceToDevice, stream_), "chain h");
     if (k > 1) {
         cudaGraphExec_t& graph = sampled_ ? chain_graph_s_ : chain_graph_;   // one per draft kind
-        if ((chain_graph_ || chain_graph_s_) && !same_buffers(chain_scratch_, dec_.scratch)) {   // an eager call grew the scratch
+        if ((chain_graph_ || chain_graph_s_) && chain_scratch_version_ != dec_.scratch.version) {   // an eager call grew the scratch
             for (cudaGraphExec_t* gp : {&chain_graph_, &chain_graph_s_})
                 if (*gp) {
                     cudaGraphExecDestroy(*gp);
@@ -545,7 +545,7 @@ std::vector<int32_t> MtpHead::draft_chain(int row, int pos, int k) {
             ck(cudaStreamEndCapture(stream_, &g), "end MTP capture");
             ck(cudaGraphInstantiate(&graph, g, 0), "instantiate MTP graph");
             cudaGraphDestroy(g);
-            chain_scratch_ = dec_.scratch;
+            chain_scratch_version_ = dec_.scratch.version;
         }
         for (int j = 1; j < k; ++j) ck(cudaGraphLaunch(graph, stream_), "launch MTP graph");
     }
