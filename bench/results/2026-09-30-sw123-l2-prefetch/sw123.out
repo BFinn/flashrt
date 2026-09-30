@@ -1,0 +1,29 @@
+m0 plain245 decode: 256 tokens at depth 245760 in 2.68 s: 95.55 tok/s (fast path, doorbell),
+m0 plain32 decode: 256 tokens at depth 32768 in 2.29 s: 111.71 tok/s (fast path, doorbell),
+m0 spec32 decode: 256 tokens at depth 32768 in 2.51 s: 101.97 tok/s (speculative, MTP draf
+m1 plain245 decode: 256 tokens at depth 245760 in 2.78 s: 92.15 tok/s (fast path, doorbell),
+m1 plain32 decode: 256 tokens at depth 32768 in 2.42 s: 105.91 tok/s (fast path, doorbell),
+m1 spec32 decode: 256 tokens at depth 32768 in 2.45 s: 104.33 tok/s (speculative, MTP draf
+m2 plain245 decode: 256 tokens at depth 245760 in 2.96 s: 86.39 tok/s (fast path, doorbell),
+m2 plain32 decode: 256 tokens at depth 32768 in 2.71 s: 94.60 tok/s (fast path, doorbell), 
+m2 spec32 decode: 256 tokens at depth 32768 in 2.65 s: 96.64 tok/s (speculative, MTP draft
+m1 plain245 decode: 256 tokens at depth 245760 in 2.84 s: 90.17 tok/s (fast path, doorbell),
+m1 plain32 decode: 256 tokens at depth 32768 in 2.42 s: 105.66 tok/s (fast path, doorbell),
+m1 spec32 decode: 256 tokens at depth 32768 in 2.46 s: 104.24 tok/s (speculative, MTP draf
+m2 plain245 decode: 256 tokens at depth 245760 in 2.95 s: 86.87 tok/s (fast path, doorbell),
+m2 plain32 decode: 256 tokens at depth 32768 in 2.64 s: 97.11 tok/s (fast path, doorbell), 
+m2 spec32 decode: 256 tokens at depth 32768 in 2.60 s: 98.48 tok/s (speculative, MTP draft
+m0 plain245 decode: 256 tokens at depth 245760 in 2.67 s: 95.85 tok/s (fast path, doorbell),
+m0 plain32 decode: 256 tokens at depth 32768 in 2.25 s: 113.95 tok/s (fast path, doorbell),
+m0 spec32 decode: 256 tokens at depth 32768 in 2.43 s: 105.48 tok/s (speculative, MTP draf
+m2 plain245 decode: 256 tokens at depth 245760 in 2.98 s: 85.82 tok/s (fast path, doorbell),
+m2 plain32 decode: 256 tokens at depth 32768 in 2.68 s: 95.58 tok/s (fast path, doorbell), 
+m2 spec32 decode: 256 tokens at depth 32768 in 2.66 s: 96.09 tok/s (speculative, MTP draft
+m0 plain245 decode: 256 tokens at depth 245760 in 2.66 s: 96.20 tok/s (fast path, doorbell),
+m0 plain32 decode: 256 tokens at depth 32768 in 2.36 s: 108.36 tok/s (fast path, doorbell),
+m0 spec32 decode: 256 tokens at depth 32768 in 2.39 s: 106.96 tok/s (speculative, MTP draf
+m1 plain245 decode: 256 tokens at depth 245760 in 2.83 s: 90.44 tok/s (fast path, doorbell),
+m1 plain32 decode: 256 tokens at depth 32768 in 2.64 s: 96.80 tok/s (fast path, doorbell), 
+m1 spec32 decode: 256 tokens at depth 32768 in 2.56 s: 99.89 tok/s (speculative, MTP draft
+FINGERPRINT-IDENTICAL
+ALLDONE

@@ -1,0 +1,23 @@
+expert arena registered in 1.9 s
+KV cache: q8_0, host-resident, hot set of 4096 blocks per layer
+VRAM before prefill: 11695 MiB free
+state: loaded $BENCH/state-245k-q8-mtp.bin (245759 positions) in 1.3 s
+expert cache: 8674 slots (35.3% of experts), filled in 0.3 s from 11692 MiB free
+adaptive cache: decayed LFU, admit 1.00, margin 1.20, swap budget 64, seed scale 0.030 (set up in 0.0 s)
+decode: 256 tokens at depth 245760 in 2.73 s: 93.67 tok/s (fast path, doorbell), swaps 6058
+expert cache hit rate 90.56% (111274 hits, 11606 misses: 11606 on the CPU, 0 read over PCIe)
+host per token: 7.96 ms waiting for routing, 1.93 ms running misses
+misses per layer: count (share of layers) and mean host miss time
+   0 :  50.1%     0.6 us
+   1 :  28.0%    53.2 us
+   2 :  11.9%    80.8 us
+   3 :   4.7%   113.2 us
+   4 :   2.4%   141.4 us
+   5 :   1.1%   178.0 us
+   6 :   0.7%   213.7 us
+   7 :   0.5%   247.4 us
+   8 :   0.4%   279.8 us
+   9 :   0.3%   318.8 us
+  10 :   0.1%   381.0 us
+CUDA graphs: on (1 capture(s))
+tokens: 279 37298 353 6636 1208 3643 3920 1901 71 25483 310 10000 836 3471 2552 303 279 3809 641 2302 21504 279 14208 1083

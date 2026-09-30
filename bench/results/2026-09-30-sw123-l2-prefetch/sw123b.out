@@ -1,0 +1,21 @@
+m0 plain245 decode: 256 tokens at depth 245760 in 2.73 s: 93.67 tok/s (fast path, doorbell),
+m0 plain32 decode: 256 tokens at depth 32768 in 2.23 s: 114.79 tok/s (fast path, doorbell),
+m0 spec32 decode: 256 tokens at depth 32768 in 2.39 s: 107.31 tok/s (speculative, MTP draf
+m3 plain245 decode: 256 tokens at depth 245760 in 2.80 s: 91.53 tok/s (fast path, doorbell),
+m3 plain32 decode: 256 tokens at depth 32768 in 2.28 s: 112.42 tok/s (fast path, doorbell),
+m3 spec32 decode: 256 tokens at depth 32768 in 2.44 s: 105.05 tok/s (speculative, MTP draf
+m3 plain245 decode: 256 tokens at depth 245760 in 2.71 s: 94.30 tok/s (fast path, doorbell),
+m3 plain32 decode: 256 tokens at depth 32768 in 2.32 s: 110.30 tok/s (fast path, doorbell),
+m3 spec32 decode: 256 tokens at depth 32768 in 2.53 s: 101.31 tok/s (speculative, MTP draf
+m0 plain245 decode: 256 tokens at depth 245760 in 2.68 s: 95.50 tok/s (fast path, doorbell),
+m0 plain32 decode: 256 tokens at depth 32768 in 2.23 s: 114.77 tok/s (fast path, doorbell),
+m0 spec32 decode: 256 tokens at depth 32768 in 2.39 s: 107.24 tok/s (speculative, MTP draf
+m0 plain245 decode: 256 tokens at depth 245760 in 2.73 s: 93.73 tok/s (fast path, doorbell),
+m0 plain32 decode: 256 tokens at depth 32768 in 2.23 s: 114.91 tok/s (fast path, doorbell),
+m0 spec32 decode: 256 tokens at depth 32768 in 2.39 s: 107.22 tok/s (speculative, MTP draf
+m3 plain245 decode: 256 tokens at depth 245760 in 2.70 s: 94.99 tok/s (fast path, doorbell),
+m3 plain32 decode: 256 tokens at depth 32768 in 2.33 s: 109.88 tok/s (fast path, doorbell),
+m3 spec32 decode: 256 tokens at depth 32768 in 2.48 s: 103.30 tok/s (speculative, MTP draf
+diff: $BENCH/sw123/fp-new.txt: No such file or directory
+FINGERPRINT-DIFFERS
+ALLDONE

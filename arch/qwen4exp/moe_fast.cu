@@ -12,7 +12,6 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
-#include <cstdlib>
 #include <cstring>
 #include <stdexcept>
 #include <string>
@@ -1013,74 +1012,6 @@ void free_moe_fast_host(MoeFastHost& h) {
     h = MoeFastHost{};
 }
 
-namespace {
-// L2 prefetch of up to 8 byte ranges: one bulk prefetch (sm_90+) per 64 KB piece, a thread each.
-// A hint only: nothing waits for it and no value depends on it.
-struct PrefetchRanges {
-    const char* p[8];
-    uint32_t bytes[8];
-    int n;
-};
-constexpr uint32_t kPrefetchPiece = 64u << 10;
-__global__ void k_l2_prefetch(PrefetchRanges r) {
-#if __CUDA_ARCH__ >= 900
-    int first[9];   // first piece of each range
-    first[0] = 0;
-    for (int k = 0; k < r.n; ++k) first[k + 1] = first[k] + int((r.bytes[k] + kPrefetchPiece - 1) / kPrefetchPiece);
-    for (int g = threadIdx.x; g < first[r.n]; g += blockDim.x) {
-        int k = 0;
-        while (g >= first[k + 1]) ++k;
-        const uint32_t off = uint32_t(g - first[k]) * kPrefetchPiece;
-        const uint32_t len = min(kPrefetchPiece, r.bytes[k] - off) & ~15u;   // a multiple of 16
-        if (len) asm volatile("cp.async.bulk.prefetch.L2.global [%0], %1;" ::"l"(r.p[k] + off), "r"(len) : "memory");
-    }
-#endif
-}
-
-// The same with a per-line prefetch hint (128 B), spread over the grid: the kernel ends once the
-// hints are issued
-__global__ void k_l2_prefetch_lines(PrefetchRanges r) {
-    size_t first[9];
-    first[0] = 0;
-    for (int k = 0; k < r.n; ++k) first[k + 1] = first[k] + (r.bytes[k] + 127) / 128;
-    for (size_t g = size_t(blockIdx.x) * blockDim.x + threadIdx.x; g < first[r.n]; g += size_t(gridDim.x) * blockDim.x) {
-        int k = 0;
-        while (g >= first[k + 1]) ++k;
-        asm volatile("prefetch.global.L2 [%0];" ::"l"(r.p[k] + (g - first[k]) * 128));
-    }
-}
-
-// FLASHRT_L2_PREFETCH: while the combine waits for the CPU misses, prefetch the next layer's hc mix
-// weights into L2 (1: the attention mix; 2: the FFN mix too; 3: the attention mix by line hints;
-// 0: off)
-int l2_prefetch_mode() {
-    static const int m = [] {
-        const char* e = std::getenv("FLASHRT_L2_PREFETCH");
-        return e ? std::atoi(e) : 1;
-    }();
-    return m;
-}
-
-void prefetch_next_hc(const BlockCtx& c, int il) {
-    const int mode = l2_prefetch_mode();
-    if (mode <= 0 || il + 1 >= c.s.n_layer) return;
-    PrefetchRanges r{};
-    for (const char* which : {".hc_attn_", ".hc_ffn_"}) {
-        if (which[4] == 'f' && mode != 2) break;
-        for (const char* part : {"norm.weight", "down.weight", "up.weight", "inject.weight"}) {
-            const GpuTensor* t = c.w.find("blk." + std::to_string(il + 1) + which + part);
-            if (t && r.n < 8 && t->bytes < (size_t(1) << 32)) {
-                r.p[r.n] = static_cast<const char*>(t->dev);
-                r.bytes[r.n] = uint32_t(t->bytes);
-                ++r.n;
-            }
-        }
-    }
-    if (r.n && mode == 3) k_l2_prefetch_lines<<<168, 256, 0, c.stream>>>(r);
-    else if (r.n) k_l2_prefetch<<<1, 256, 0, c.stream>>>(r);
-}
-}  // namespace
-
 void moe_block_fast(const BlockCtx& c, int il, const float* x, const ExpertCache& cache, MoeFastHost& h, float* out, int T) {
     const Spec& s = c.s;
     const int n = s.d_model, E = s.n_expert, K = s.top_k, ff = s.d_ff_expert, ffs = s.d_ff_shared;
@@ -1137,7 +1068,6 @@ void moe_block_fast(const BlockCtx& c, int il, const float* x, const ExpertCache
     if (!rg_fused) linear(c, *rg[1].W, x, gate, T);
 
     if (h.doorbell) {   // 3'. the miss server fills the mailbox; the combine waits for it on the GPU
-        prefetch_next_hc(c, il);   // fetched while the combine waits
         k_moe_combine_db<<<dim3((n + 255) / 256, T), 256, 0, c.stream>>>(out, yh, hit_w, hit_n, mb, mb_out_off(n, h.max_window), h.seq,
                                                                         sh, gate, n, K, c.dparams, miss_n);
         ck(cudaGetLastError(), "moe_block_fast");
