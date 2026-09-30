@@ -1,0 +1,29 @@
+wiki32k spec 1 rc=0 speculative: 367 rounds, 1.398 tokens per round, 1.00 drafts verified per round; accepted drafts: 0:60.2% 1:39.8%
+  per round: draft 1.09 ms, verify 11.22 ms, commit 0.32 ms
+code spec 1 rc=0 speculative: 256 rounds, 2.000 tokens per round, 1.00 drafts verified per round; accepted drafts: 0:0.0% 1:100.0%
+  per round: draft 1.12 ms, verify 14.76 ms, commit 0.01 ms
+wiki32k spec 2 rc=0 speculative: 329 rounds, 1.559 tokens per round, 2.00 drafts verified per round; accepted drafts: 0:58.4% 1:27.4% 2:14.3%
+  per round: draft 2.01 ms, verify 13.11 ms, commit 0.47 ms
+code spec 2 rc=0 speculative: 172 rounds, 3.000 tokens per round, 2.00 drafts verified per round; accepted drafts: 0:0.0% 1:0.0% 2:100.0%
+  per round: draft 2.09 ms, verify 19.05 ms, commit 0.01 ms
+wiki32k spec 3 rc=0 speculative: 321 rounds, 1.604 tokens per round, 3.00 drafts verified per round; accepted drafts: 0:60.1% 1:25.2% 2:8.7% 3:5.9%
+  per round: draft 2.94 ms, verify 15.20 ms, commit 0.52 ms
+code spec 3 rc=0 speculative: 128 rounds, 4.000 tokens per round, 3.00 drafts verified per round; accepted drafts: 0:0.0% 1:0.0% 2:0.0% 3:100.0%
+  per round: draft 3.05 ms, verify 23.91 ms, commit 0.01 ms
+wiki32k spec 4 rc=0 speculative: 313 rounds, 1.636 tokens per round, 4.00 drafts verified per round; accepted drafts: 0:58.8% 1:26.5% 2:8.9% 3:3.8% 4:1.9%
+  per round: draft 3.87 ms, verify 20.37 ms, commit 0.55 ms
+code spec 4 rc=0 speculative: 104 rounds, 4.942 tokens per round, 4.00 drafts verified per round; accepted drafts: 0:0.0% 1:0.0% 2:1.0% 3:3.8% 4:95.2%
+  per round: draft 4.02 ms, verify 31.82 ms, commit 0.06 ms
+wiki32k spec 5 rc=0 speculative: 315 rounds, 1.625 tokens per round, 5.00 drafts verified per round; accepted drafts: 0:59.7% 1:26.7% 2:7.9% 3:3.8% 4:1.0% 5:1.0%
+  per round: draft 4.79 ms, verify 23.67 ms, commit 0.56 ms
+code spec 5 rc=0 speculative: 89 rounds, 5.843 tokens per round, 5.00 drafts verified per round; accepted drafts: 0:0.0% 1:0.0% 2:0.0% 3:4.5% 4:6.7% 5:88.8%
+  per round: draft 4.99 ms, verify 37.14 ms, commit 0.10 ms
+wiki32k spec 6 rc=0 speculative: 316 rounds, 1.630 tokens per round, 6.00 drafts verified per round; accepted drafts: 0:59.8% 1:26.9% 2:7.9% 3:3.5% 4:0.6% 5:0.3% 6:0.9%
+  per round: draft 5.72 ms, verify 25.54 ms, commit 0.56 ms
+code spec 6 rc=0 speculative: 77 rounds, 6.766 tokens per round, 6.00 drafts verified per round; accepted drafts: 0:0.0% 1:0.0% 2:0.0% 3:2.6% 4:6.5% 5:2.6% 6:88.3%
+  per round: draft 5.95 ms, verify 44.04 ms, commit 0.10 ms
+wiki32k spec 7 rc=0 speculative: 314 rounds, 1.631 tokens per round, 7.00 drafts verified per round; accepted drafts: 0:59.9% 1:26.8% 2:8.0% 3:3.5% 4:1.0% 5:0.3% 6:0.0% 7:0.6%
+  per round: draft 6.64 ms, verify 28.34 ms, commit 0.56 ms
+code spec 7 rc=0 speculative: 69 rounds, 7.565 tokens per round, 7.00 drafts verified per round; accepted drafts: 0:0.0% 1:0.0% 2:1.4% 3:1.4% 4:5.8% 5:4.3% 6:4.3% 7:82.6%
+  per round: draft 6.88 ms, verify 48.98 ms, commit 0.15 ms
+ALLDONE

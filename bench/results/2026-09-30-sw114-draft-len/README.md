@@ -68,6 +68,12 @@ round can predict; the oracle's headroom needs a better predictor (target-side s
 shape for sampled drafts), which these logs cannot test. Notable on the way: at 245K greedy on
 repetitive text K = 3 beats K = 2 (measured 120.0 against 111.8 tok/s, draft + verify).
 
+**Caveat (found in sw115).** `fr_bench` does not stop greedy decoding at the end of the answer, and
+greedy text then loops or repeats an end token. Window 9's greedy answer ends at token 524 of its
+768 here (sw115, the same prompt), so the w9 greedy rows include rounds on a repeated token, which
+flatters long K; the 245K greedy text also turns repetitive late. The note above that K = 3 beats
+K = 2 at 245K greedy should be read with that in mind. The sampled rows are not affected.
+
 The instrumentation stays: `--round-log`, and the chain records the argmax drafts' probabilities
 (one small reduction per draft step).
 

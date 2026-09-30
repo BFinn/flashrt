@@ -17,9 +17,10 @@ estimate):
   C  as B, but only when the lookup's first token equals the head's first draft (the head drafts
      one token in any case);
   D  the head's 2 drafts, extended by lookup from the context plus those drafts, up to M in all.
-Usage: lookup.py DIR SW114_LOGDIR NAME:IDS:N:COST ...
+Usage: lookup.py DIR SW114_LOGDIR NAME:IDS:N:COST[:VERIFY] ...
   NAME.gen and NAME.drafts in DIR; IDS the ids file under DIR/ids; N the prompt length; COST the
-  sw114 context whose costs apply (32k, 245k, w9). A sequence is cut at its first end-of-turn
+  sw114 context whose costs apply (32k, 245k, w9); VERIFY, a path prefix of sw115c's round logs
+  (PREFIX_spec{1..7}.rounds), replaces the verify costs for T = 2..8 with measured ones. A sequence is cut at its first end-of-turn
   token (248046, <|im_end|>) or the first repeated 64-gram: greedy text past that loops.
 """
 import os
@@ -35,7 +36,7 @@ def ints(path):
     return [int(x) for x in open(path).read().split()]
 
 
-def costs(logdir, ctx):
+def costs(logdir, ctx, measured=None):
     # draft phase a + b * drafts and verify ms per T from sw114's greedy runs (see its simulate.py)
     def rounds(p):
         return [l.split() for l in open(p)]
@@ -52,14 +53,22 @@ def costs(logdir, ctx):
     mx = st.mean(k for k, _ in dk)
     my = st.mean(v for _, v in dk)
     b = sum((k - mx) * (y - my) for k, y in dk) / sum((k - mx) ** 2 for k, _ in dk)
-    slope = (ver[4] - ver[2]) / 2
-    return my - b * mx, b, lambda T: ver[T] if T in ver else ver[4] + slope * (T - 4)
+    if measured:
+        for k in range(1, 8):
+            p = f"{measured}_spec{k}.rounds"
+            if os.path.exists(p):
+                ver[k + 1] = st.mean(float(x[5]) for x in rounds(p))
+    top = max(ver)
+    slope = (ver[top] - ver[top - 2]) / 2
+    return my - b * mx, b, lambda T: ver[T] if T in ver else ver[top] + slope * (T - top)
 
 
 def main():
     d, logdir = sys.argv[1], sys.argv[2]
     for spec in sys.argv[3:]:
-        name, idf, n, ctx = spec.split(":")
+        f = spec.split(":")
+        name, idf, n, ctx = f[:4]
+        measured = f[4] if len(f) > 4 else None
         n = int(n)
         gen = ints(os.path.join(d, name + ".gen"))
         cut = len(gen)
@@ -80,7 +89,8 @@ def main():
         for line in open(os.path.join(d, name + ".drafts")):
             f = [int(x) for x in line.split()]
             heads[f[0]] = f[1:]
-        a0, b0, ver = costs(logdir, ctx)
+        a0, b0, ver = costs(logdir, ctx, measured)
+        print(f"{name}: verify ms by T " + ", ".join(f"{T}:{ver(T):.1f}" for T in range(1, 9)) + ("" if measured else " (T > 4 extrapolated)"))
 
         def head_kept(p, k):
             dr = heads.get(p, [])[:k]
@@ -110,7 +120,7 @@ def main():
                     return None
                 return e
 
-            for M in (2, 4, 8):
+            for M in (2, 4, 7):
                 res = {}
                 for pol in "ABCD":
                     last.clear()

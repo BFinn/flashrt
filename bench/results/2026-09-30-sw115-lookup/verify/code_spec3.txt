@@ -1,0 +1,38 @@
+expert arena registered in 1.9 s
+KV cache: q8_0, host-resident, hot set of 4096 blocks per layer
+MTP draft head: layer 48, 774 MiB of weights in VRAM, 3 drafts per verify round
+VRAM before prefill: 11023 MiB free
+prefill chunk: 9216 tokens (auto; estimated 5450 MiB)
+  chunk at      0: 9216 tokens in 1.97 s (4682 tok/s)
+prefill: 18219 tokens in 3.7 s (4863.5 tok/s, chunks of 9216, experts streamed to the GPU)
+VRAM after prefill: 10134 MiB used, 5705 MiB free (chunk buffers 4759 MiB)
+MTP draft vocabulary: 33208 tokens (32768 ranked, 440 from the prompt)
+expert cache: 8055 slots (32.8% of experts), filled in 0.3 s from 10876 MiB free
+adaptive cache: decayed LFU, admit 1.00, margin 1.20, swap budget 64, seed scale 0.030 (set up in 0.0 s)
+drafts: the head's argmax, kept while the sampled token equals them
+decode: 256 tokens at depth 18219 in 1.93 s: 132.71 tok/s (speculative, MTP drafts), window 1, hit rate 73.69%, swaps 4032
+decode: 256 tokens at depth 18475 in 1.53 s: 167.57 tok/s (speculative, MTP drafts), window 2, hit rate 84.25%, swaps 8118
+expert cache hit rate 78.97% (194075 hits, 51685 misses: 51685 on the CPU, 0 read over PCIe)
+host per token: 2.32 ms waiting for routing, 3.46 ms running misses
+misses per layer: count (share of layers) and mean host miss time
+   0 :   1.2%     2.0 us
+   1 :   4.1%    73.4 us
+   2 :   6.9%   112.3 us
+   3 :   9.2%   141.8 us
+   4 :  10.3%   177.7 us
+   5 :   9.9%   204.9 us
+   6 :   9.9%   246.2 us
+   7 :   9.1%   286.1 us
+   8 :   7.7%   316.4 us
+   9 :   6.2%   345.2 us
+  10 :   5.1%   389.7 us
+  11 :   3.8%   400.9 us
+  12 :   3.3%   462.2 us
+  13 :   2.6%   470.5 us
+  14 :   2.3%   502.3 us
+  15 :   1.9%   538.6 us
+  16+:   6.6%   687.1 us
+CUDA graphs: on (1 capture(s))
+speculative: 128 rounds, 4.000 tokens per round, 3.00 drafts verified per round; accepted drafts: 0:0.0% 1:0.0% 2:0.0% 3:100.0%
+  per round: draft 3.05 ms, verify 23.91 ms, commit 0.01 ms
+tokens: 71093 10504 198 320 34313 35274 35555 25 8644 12 17 13 15 198 1032 328 1077 32773 16451 19 4431 3082 4493 34558

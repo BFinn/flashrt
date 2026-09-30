@@ -284,6 +284,10 @@ cache after, from the prefill's routing counts and the startup prior.
   replayed on them. Stopping at a low head probability, or choosing K from the last round's kept
   count, gains at most about 2% for one rule across contexts, and not in all of them; an oracle
   would gain 7-21%. With sampled drafts, gating on the drawn draft's q breaks exactness.
+- **Prompt-lookup drafts** (P-4, sw115): n-gram drafts, alone or stacked on the head, replayed on
+  greedy and teacher-forced text with measured window costs: −8% to +5% by text, about +1% on a
+  code edit. The head keeps 100% of its drafts on copied code already, and each extra window
+  token costs its own CPU misses (about 5 ms on code, 2 ms on 32K prose).
 - **PCIe zero-copy misses** (`--pcie-frac`, Strata's idea): no gain at 2K or 245K. A 1.32 MB
   expert read over PCIe lengthens the GPU's part of each layer more than it saves the CPU. The
   flag remains, off by default. (sw15)

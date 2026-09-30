@@ -203,6 +203,9 @@ In expected-value order. Each needs its KLD check and a `bench/results` folder.
    the P-2 result favours. **P-3 tried (sw114): not adopted.** Replayed on logged rounds, one rule
    for all contexts gains at most about 2%, inconsistently, below the simulator's error; the
    oracle's 7-21% needs a better predictor than the head's probability or the last round.
+   **P-4 tried (sw115): not adopted.** Lookup drafts, alone or stacked, range from −8% to +5% by
+   text and about +1% on a code edit: the head already predicts copied text, and long windows cost
+   a union of CPU misses per token.
 4. **P-5:** multi-CTA `k_idx_select`, a parallel hot-set CLOCK, Q3R and LM-head bandwidth. A few
    percent each at depth.
 5. **Quality beyond KLD** (Grok): a few hundred items of a reasoning eval (for example GSM8K)

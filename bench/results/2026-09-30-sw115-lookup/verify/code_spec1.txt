@@ -1,0 +1,38 @@
+expert arena registered in 1.8 s
+KV cache: q8_0, host-resident, hot set of 4096 blocks per layer
+MTP draft head: layer 48, 774 MiB of weights in VRAM, 1 drafts per verify round
+VRAM before prefill: 11029 MiB free
+prefill chunk: 9216 tokens (auto; estimated 5450 MiB)
+  chunk at      0: 9216 tokens in 1.96 s (4694 tok/s)
+prefill: 18219 tokens in 3.7 s (4867.8 tok/s, chunks of 9216, experts streamed to the GPU)
+VRAM after prefill: 10128 MiB used, 5711 MiB free (chunk buffers 4759 MiB)
+MTP draft vocabulary: 33208 tokens (32768 ranked, 440 from the prompt)
+expert cache: 8058 slots (32.8% of experts), filled in 0.3 s from 10880 MiB free
+adaptive cache: decayed LFU, admit 1.00, margin 1.20, swap budget 64, seed scale 0.030 (set up in 0.0 s)
+drafts: the head's argmax, kept while the sampled token equals them
+decode: 256 tokens at depth 18219 in 2.20 s: 116.58 tok/s (speculative, MTP drafts), window 1, hit rate 78.42%, swaps 7441
+decode: 256 tokens at depth 18475 in 1.88 s: 136.27 tok/s (speculative, MTP drafts), window 2, hit rate 85.03%, swaps 14354
+expert cache hit rate 81.73% (200849 hits, 44911 misses: 44911 on the CPU, 0 read over PCIe)
+host per token: 3.83 ms waiting for routing, 3.15 ms running misses
+misses per layer: count (share of layers) and mean host miss time
+   0 :   9.9%     1.2 us
+   1 :  17.4%    54.5 us
+   2 :  18.8%    87.1 us
+   3 :  14.9%   117.5 us
+   4 :  11.8%   150.6 us
+   5 :   8.3%   182.0 us
+   6 :   5.2%   215.0 us
+   7 :   4.2%   251.8 us
+   8 :   2.8%   281.9 us
+   9 :   2.1%   319.5 us
+  10 :   1.4%   344.0 us
+  11 :   1.0%   384.1 us
+  12 :   0.7%   417.5 us
+  13 :   0.5%   448.0 us
+  14 :   0.3%   479.4 us
+  15 :   0.2%   503.4 us
+  16+:   0.2%   662.8 us
+CUDA graphs: on (1 capture(s))
+speculative: 256 rounds, 2.000 tokens per round, 1.00 drafts verified per round; accepted drafts: 0:0.0% 1:100.0%
+  per round: draft 1.12 ms, verify 14.76 ms, commit 0.01 ms
+tokens: 71093 10504 198 320 34313 35274 35555 25 8644 12 17 13 15 198 1032 328 1077 32773 16451 19 4431 3082 4493 34558

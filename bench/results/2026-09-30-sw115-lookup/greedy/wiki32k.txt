@@ -1,0 +1,36 @@
+expert arena registered in 1.8 s
+KV cache: q8_0, host-resident, hot set of 4096 blocks per layer
+MTP draft head: layer 48, 774 MiB of weights in VRAM, 3 drafts per token (probe)
+VRAM before prefill: 11157 MiB free
+state: MTP head state loaded
+state: loaded $BENCH/state-32k-q8-mtp.bin (32767 positions) in 0.2 s
+MTP draft vocabulary: 33692 tokens (32768 ranked, 924 from the prompt)
+expert cache: 8222 slots (33.5% of experts), filled in 0.3 s from 11096 MiB free
+adaptive cache: decayed LFU, admit 1.00, margin 1.20, swap budget 64, seed scale 0.030 (set up in 0.0 s)
+decode: 256 tokens at depth 32768 in 3.12 s: 82.01 tok/s (fast path, doorbell), window 1, hit rate 92.56%, swaps 4896
+decode: 256 tokens at depth 33024 in 3.05 s: 83.80 tok/s (fast path, doorbell), window 2, hit rate 93.85%, swaps 8649
+decode: 256 tokens at depth 33280 in 3.13 s: 81.83 tok/s (fast path, doorbell), window 3, hit rate 94.07%, swaps 11975
+decode: 256 tokens at depth 33536 in 3.21 s: 79.81 tok/s (fast path, doorbell), window 4, hit rate 89.95%, swaps 18433
+decode: 256 tokens at depth 33792 in 3.38 s: 75.79 tok/s (fast path, doorbell), window 5, hit rate 89.98%, swaps 26029
+decode: 256 tokens at depth 34048 in 3.25 s: 78.80 tok/s (fast path, doorbell), window 6, hit rate 91.74%, swaps 32125
+expert cache hit rate 92.02% (678481 hits, 58799 misses: 58799 on the CPU, 0 read over PCIe)
+host per token: 7.05 ms waiting for routing, 1.75 ms running misses
+misses per layer: count (share of layers) and mean host miss time
+   0 :  55.0%     0.5 us
+   1 :  25.6%    58.2 us
+   2 :  11.0%    85.4 us
+   3 :   4.7%   114.5 us
+   4 :   2.0%   149.6 us
+   5 :   0.9%   182.8 us
+   6 :   0.5%   205.7 us
+   7 :   0.2%   239.7 us
+   8 :   0.1%   306.8 us
+   9 :   0.0%   312.0 us
+  10 :   0.0%   339.7 us
+CUDA graphs: on (1 capture(s))
+MTP probe: 1534 starts, 0.98 ms per draft step (3 steps per token)
+  accepted drafts L:  0:13.0% 1:11.8% 2:8.5% 3:66.8%
+  per-step acceptance (P(L > j | L >= j)): 87.0% 86.4% 88.7%
+  tokens per verify round with k drafts (1 + E[min(L, k)]): k=1 1.870 k=2 2.623 k=3 3.290
+  first drafts vs target: [310 3807 383 | 24304 383 279] [264 3807 383 | 383 279 44798] [279 44798 321 | 279 44798 641] [44798 641 561 | 44798 641 4855] [321 279 1809 | 641 4855 22950] [561 1809 557 | 4855 22950 8619]
+tokens: 5820 24304 383 279 44798 641 4855 22950 8619 290 220 16 267 71136 421 551 1362 524 3222 279 2234 1691 4860 641

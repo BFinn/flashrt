@@ -1,0 +1,38 @@
+expert arena registered in 1.9 s
+KV cache: q8_0, host-resident, hot set of 4096 blocks per layer
+MTP draft head: layer 48, 774 MiB of weights in VRAM, 3 drafts per token (probe)
+VRAM before prefill: 11183 MiB free
+prefill chunk: 9216 tokens (auto; estimated 5450 MiB)
+  chunk at      0: 9216 tokens in 1.97 s (4668 tok/s)
+prefill: 18219 tokens in 3.8 s (4855.0 tok/s, chunks of 9216, experts streamed to the GPU)
+VRAM after prefill: 9974 MiB used, 5865 MiB free (chunk buffers 4759 MiB)
+MTP draft vocabulary: 33208 tokens (32768 ranked, 440 from the prompt)
+expert cache: 8176 slots (33.3% of experts), filled in 0.3 s from 11036 MiB free
+adaptive cache: decayed LFU, admit 1.00, margin 1.20, swap budget 64, seed scale 0.030 (set up in 0.0 s)
+decode: 256 tokens at depth 18219 in 3.47 s: 73.75 tok/s (fast path, doorbell), window 1, hit rate 82.00%, swaps 10878
+decode: 256 tokens at depth 18475 in 3.37 s: 76.00 tok/s (fast path, doorbell), window 2, hit rate 85.53%, swaps 20166
+decode: 256 tokens at depth 18731 in 3.39 s: 75.56 tok/s (fast path, doorbell), window 3, hit rate 85.60%, swaps 29207
+decode: 256 tokens at depth 18987 in 3.32 s: 77.10 tok/s (fast path, doorbell), window 4, hit rate 84.79%, swaps 38185
+decode: 256 tokens at depth 19243 in 3.29 s: 77.89 tok/s (fast path, doorbell), window 5, hit rate 85.97%, swaps 47390
+decode: 256 tokens at depth 19499 in 3.32 s: 77.03 tok/s (fast path, doorbell), window 6, hit rate 87.52%, swaps 55578
+expert cache hit rate 85.24% (628426 hits, 108854 misses: 108854 on the CPU, 0 read over PCIe)
+host per token: 6.58 ms waiting for routing, 2.89 ms running misses
+misses per layer: count (share of layers) and mean host miss time
+   0 :  32.6%     0.6 us
+   1 :  29.4%    50.9 us
+   2 :  17.9%    82.3 us
+   3 :   9.5%   113.3 us
+   4 :   4.9%   149.8 us
+   5 :   2.5%   176.3 us
+   6 :   1.5%   213.2 us
+   7 :   0.8%   250.3 us
+   8 :   0.5%   280.8 us
+   9 :   0.2%   308.2 us
+  10 :   0.1%   344.5 us
+CUDA graphs: on (1 capture(s))
+MTP probe: 1534 starts, 0.98 ms per draft step (3 steps per token)
+  accepted drafts L:  0:0.0% 1:0.1% 2:0.7% 3:99.2%
+  per-step acceptance (P(L > j | L >= j)): 100.0% 99.9% 99.3%
+  tokens per verify round with k drafts (1 + E[min(L, k)]): k=1 2.000 k=2 2.999 k=3 3.991
+  first drafts vs target: [10504 198 320 | 10504 198 320] [198 320 34313 | 198 320 34313] [320 34313 35274 | 320 34313 35274] [34313 35274 35555 | 34313 35274 35555] [35274 35555 25 | 35274 35555 25] [35555 25 8644 | 35555 25 8644]
+tokens: 71093 10504 198 320 34313 35274 35555 25 8644 12 17 13 15 198 1032 328 1077 32773 16451 19 4431 3082 4493 34558
