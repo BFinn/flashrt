@@ -1,0 +1,8 @@
+build: 0 warnings
+ctest: 100% tests passed, 0 tests failed out of 21
+FINGERPRINT-IDENTICAL
+engine_smoke rc=0 5 pass
+Running as unit: fr-server-sw132.service; invocation ID: d174442599ed48b4ba6c9736dbd05330
+server ready=1
+smoke rc=0 21 ok, 0 fail
+ALLDONE

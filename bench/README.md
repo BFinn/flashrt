@@ -6,7 +6,7 @@
 | `strata_depthbench.py` | a line-protocol engine (Strata's `GEN`) | Same prompts and token ids as depthbench (tokenized by a running llama-server); `--sampling`, `--set`, `--n-depths` |
 | `summarize.py` | the `SUMMARY` lines of either | Mean ± sd per arm and depth; runs ended early by a sampled EOS are excluded |
 | `engine_smoke.py` | `flashrt-engine` over its JSON-lines protocol | Requests, prefix reuse, cancellation |
-| `server_smoke.py` | a running `flashrt-server` | 16 end-to-end checks of the OpenAI and Anthropic APIs (tools, reasoning, streaming, stops, prefix reuse, disconnects, sampling limits, `/metrics`) |
+| `server_smoke.py` | a running `flashrt-server` | 21 end-to-end checks of the OpenAI and Anthropic APIs (tools, reasoning, streaming, stops, prefix reuse, disconnects, request limits, special-token text, error shapes, `/metrics`; 20 without `--key`) |
 | `kcmp2.py` | two nsys kernel summaries | Kernel time per token against per verify round |
 | `flashrt_depthbench.py` | `flashrt-engine` over its JSON-lines protocol | Window 9's protocol for flashrt: the same token ids and summary as `strata_depthbench.py` (sw87, sw91) |
 | `depthsum.py` | the `SUMMARY` lines of `flashrt_depthbench.py` | Mean ± sd per arm and depth of decode tok/s, prompt seconds, prefill tok/s of the new tokens, reused tokens, hit rate and draft acceptance; GPU clock and temperature ranges |

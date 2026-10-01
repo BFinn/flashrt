@@ -91,7 +91,7 @@ seed is masked to 53 bits.
 
 ## Tests
 
-Unit tests live in `#[cfg(test)]` modules beside the code (28 as of sw129). The pattern for
+Unit tests live in `#[cfg(test)]` modules beside the code (49 as of sw132). The pattern for
 anything that involves the engine is a **fake engine**: a `sh -c` script that prints a `ready`
 line and then speaks the protocol (see `engine.rs` and `chat.rs` tests, `fake_state` in
 `chat.rs`, which pairs it with `tokenizer::test_tokenizer()` and a one-line template). Use it
@@ -118,7 +118,7 @@ toolchain there, and the box rules, are in `CLAUDE.local.md`). Do not build duri
    as temporary `systemd-run` units, never a service left running. Templates:
    `bench/results/2026-09-28-sw86-server/sw86.sh` (the 11 original checks) and
    `2026-09-29-sw93-server/sw93.sh` (14 checks, plus killing the engine under the server and a
-   SIGTERM to the server alone). `server_smoke.py` has 16 checks now (`metrics` since sw129). Add
+   SIGTERM to the server alone). `server_smoke.py` has 21 checks now (20 without `--key`; sw132). Add
    a check for new API behaviour.
 4. **If the engine or VRAM budgeting changed** as well: `bench/engine_smoke.py`, with `--faults`
    after changes to `Session` or the forward's state. `fr_bench` allocates differently and
