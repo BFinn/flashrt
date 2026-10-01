@@ -230,6 +230,13 @@ In expected-value order. Each needs its KLD check and a `bench/results` folder.
 
 ## Phase 6: reproducible by someone else
 
+**Status: done 2026-10-01 (sw129), except the tag.**
+- X-1 is `bench/reference/`.
+- X-2 is `bench/run.sh`, the `Dockerfile` and its workflow, and the README's "Will it run on my
+  machine". run.sh passes end to end on the development box.
+- The server serves `/metrics`.
+- X-3, the `v0.1.0` tag, is the owner's call.
+
 - **X-1:** commit the window 9 token ids and the drafter vocabulary ranking, a script that
   rebuilds the KLD base, and the llama.cpp patch as a `.diff` with its base commit. Pin the
   Strata commit.

@@ -475,6 +475,13 @@ The scripts run with `set -u`, so they stop if one is unset.
   out-of-memory that `fr_bench` cannot see. If the engine exits, the server answers 503 and exits
   3 s later, for a supervisor to restart; a service unit for it should set `KillMode=mixed`, so
   that a stop reaches the server, which then asks the engine to quit (sw93).
+- **Another machine:** `MODELS=... bench/run.sh [preflight|build|test|decode|window9|kld|server|all]`,
+  in plain bash, on the committed inputs in `bench/reference/` (sw129). The `Dockerfile` builds the
+  same binaries.
+- **Server metrics:** `GET /metrics` (behind `--api-key` like the APIs) in Prometheus's text
+  format, summed over the engine's `done` events: requests by finish, tokens, prompt and decode
+  time, drafts, expert-cache hits and misses, the CPU miss time and the slot count, then the last
+  request's rates.
 - **Kernel profile:**
   `/usr/local/cuda-12.9/bin/nsys profile --capture-range=cudaProfilerApi --cuda-graph-trace=node --trace=cuda build/fr_bench ... --gen 64`.
   Without `--cuda-graph-trace=node`, graphs appear as single launches.
