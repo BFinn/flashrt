@@ -1,0 +1,14 @@
+build: 0 warnings
+FINGERPRINT-IDENTICAL
+state plain: swaps 5864, expert cache hit rate 90.87% (111665 hits, 11215 misses: 112 (sw126: swaps 5864, 111665 hits)
+state spec2: swaps 5071, expert cache hit rate 88.78% (182814 hits, 23106 misses: 231 (sw126: swaps 5071, 182814 hits)
+default rc=1 4 pass, 1 fail
+default-mtp rc=1 4 pass, 1 fail
+reuse-mtp rc=0 5 pass, 0 fail
+faults-plain rc=0 18 pass, 0 fail
+faults-mtp rc=0 18 pass, 0 fail
+Running as unit: fr-server-sw131.service; invocation ID: 37f8c3f8be724fd8abc8d05c61a4f984
+server ready=1
+without the key: HTTP 401 (want 401)
+smoke rc=0
+ALLDONE

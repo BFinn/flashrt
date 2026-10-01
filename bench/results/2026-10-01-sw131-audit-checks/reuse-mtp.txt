@@ -1,0 +1,26 @@
+ready after 31.3 s: {'ev': 'ready', 'version': '0.1.0', 'arch': 'qwen4exp', 'max_context': 32768, 'features': ['stop', 'sampling', 'prefix_reuse', 'mtp']}
+  pattern-X: prompt 8217, reused 0, 3.76 s, finish length
+  pattern-A: prompt 8217, reused 8192, 0.33 s, finish length
+  tail-flush: prompt 300, reused 0, 1.27 s, finish length
+  tail-cold: prompt 10271, reused 0, 4.40 s, finish length
+  middle-flush: prompt 300, reused 0, 1.24 s, finish length
+  middle-cold: prompt 8217, reused 0, 3.51 s, finish length
+  cancelled-flush: prompt 300, reused 0, 1.24 s, finish length
+  cancelled-cold: prompt 8737, reused 0, 4.25 s, finish length
+  tail-flush: prompt 300, reused 0, 1.25 s, finish length
+  tail-A: prompt 8217, reused 0, 3.53 s, finish length
+  tail: prompt 10271, reused 8192, 1.37 s, finish length
+PASS tail: reused 8192 (want 8192..8198), KL(top 8) 0.00000, relative logits within 0.0000 (shift +0.000)
+  middle-flush: prompt 300, reused 0, 1.24 s, finish length
+  middle-A: prompt 8217, reused 0, 3.53 s, finish length
+  middle: prompt 8217, reused 4096, 2.09 s, finish length
+PASS middle: reused 4096 (want 1..4108), KL(top 8) 0.00000, relative logits within 0.0000 (shift +0.000)
+  cancelled-flush: prompt 300, reused 0, 1.25 s, finish length
+  cancelled-A: prompt 8217, reused 0, 3.56 s, finish length
+  cancelled-stop: prompt 12325, reused 0, 4.73 s, finish cancelled
+PASS cancelled stopped: cancelled
+  cancelled: prompt 8737, reused 8192, 1.24 s, finish length
+PASS cancelled: reused 8192 (want its own checkpoint, not A's at 8216), KL(top 8) 0.00000, relative logits within 0.0000 (shift +0.000)
+  control: prompt 8217, reused 0, 3.55 s, finish length
+PASS negative control detected: top token 220 against 1324
+engine exited with 0; 0 check(s) failed
