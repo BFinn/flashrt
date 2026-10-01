@@ -88,7 +88,7 @@ def main():
         p.stdin.write(json.dumps({"op": "generate", "id": rid, "prompt": prompt, "max_new": a.gen, "sampling": sampling,
                                   "stop_ids": [248046]}) + "\n")
         p.stdin.flush()
-        toks, t_first, t_start = [], None, time.time()
+        toks, t_first = [], None
         while True:
             ev = read()
             if ev.get("ev") == "token":

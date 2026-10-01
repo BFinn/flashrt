@@ -38,7 +38,7 @@ def main():
     path = sys.argv[1]
     if len(sys.argv) == 2:
         seen = OrderedDict()
-        for name, step, typ, ne, _ in records(path):
+        for name, step, _typ, ne, _ in records(path):
             key = name
             s = seen.setdefault(key, {"steps": [], "ne": ne, "n": 0})
             s["n"] += 1
@@ -48,7 +48,7 @@ def main():
             print(f"{k:32s} x{v['n']:<3d} steps {v['steps'][:6]}{'...' if len(v['steps']) > 6 else ''} ne {v['ne']}")
         return
     want, step = sys.argv[2], (int(sys.argv[3]) if len(sys.argv) > 3 else None)
-    for name, st, typ, ne, arr in records(path):
+    for name, st, _typ, ne, arr in records(path):
         if name == want and (step is None or st == step):
             a = arr.astype(np.float64)
             print(f"{name} step {st} ne {ne}: mean {a.mean():.6g} std {a.std():.6g} min {a.min():.6g} max {a.max():.6g}")

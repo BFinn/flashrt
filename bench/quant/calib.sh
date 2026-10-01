@@ -43,6 +43,7 @@ if systemctl --user is-active -q dl-bf16; then systemctl --user stop dl-bf16; DL
 
 NEED_RAM_GB=40 take_gpu
 prev_trap=$(trap -p EXIT | sed -E "s/^trap -- '(.*)' EXIT$/\1/")
+# shellcheck disable=SC2064   # chain the trap lib.sh set, as it is now
 trap "resume_dl; $prev_trap" EXIT
 
 LOAD=(-ngl 99 -ot "ffn_.*_exps=CPU" -fa on -t 12)

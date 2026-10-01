@@ -168,7 +168,7 @@ def main():
     resp = post("/v1/chat/completions", {"messages": [{"role": "user", "content": "Write a long essay about the sea."}],
                                          "max_tokens": 4000, "stream": True}, stream=True)
     n = 0
-    for _, d in sse(resp):
+    for _ in sse(resp):
         n += 1
         if n > 20:
             break

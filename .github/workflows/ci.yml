@@ -1,6 +1,7 @@
 # CI on GitHub's hosted runners (no GPU): the CPU build and its tests; the whole tree with CUDA
-# for sm_120, compiled in NVIDIA's CUDA 12.9 container, with the CPU tests of that build; and the
-# server's unit tests and lints. The GPU tests (ctest -L gpu) run on the target box (README: Tests).
+# for sm_120, compiled in NVIDIA's CUDA 12.9 container, with the CPU tests of that build; the
+# server's unit tests and lints; and the Python and shell tools' lints. The GPU tests (ctest -L gpu)
+# run on the target box (README: Tests).
 name: ci
 on:
   push:
@@ -31,6 +32,18 @@ jobs:
       - run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=120 -DFLASHRT_NATIVE=OFF
       - run: cmake --build build
       - run: ctest --test-dir build --output-on-failure -L cpu
+
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ruff==0.16.9 shellcheck-py==0.11.0.1
+      # the Python and shell tools outside bench/results (those are records of what ran)
+      - run: git ls-files '*.py' | grep -v '^bench/results\|^third_party' | xargs ruff check --select F,E9,B,PLE --ignore B905
+      - run: git ls-files '*.sh' | grep -v '^bench/results' | xargs shellcheck -S warning
 
   server:
     runs-on: ubuntu-24.04

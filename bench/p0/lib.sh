@@ -1,5 +1,7 @@
+# shellcheck shell=bash disable=SC2034
 # Shared by the measurement-window scripts: take the GPU and RAM, and give the live server
-# back on exit if it was running. Source it, then call `take_gpu`.
+# back on exit if it was running. Source it, then call `take_gpu`. (Its variables are for the
+# scripts that source it.)
 LIVE_UNITS="strata-server flashnext-262k-server"   # none should run since 2026-09-27
 FR=$FLASHRT/build
 LLAMA=$LLAMA_CPP/build/bin
@@ -40,6 +42,7 @@ take_gpu() {
         exit 1
     fi
     if [ -n "$active" ]; then
+        # shellcheck disable=SC2064   # the units to restart are fixed now
         trap "systemctl --user start $active; echo \"RESTARTED_LIVE $active \$(date +%T)\"" EXIT
         systemctl --user stop "$active"
     fi

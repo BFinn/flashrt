@@ -17,7 +17,7 @@
 # `all` is preflight, build, test, decode, window9 and server (about an hour, most of it window
 # 9's prefills). Each step prints what it measured and the published value to compare against.
 set -u
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 1
 FR=$PWD
 : "${MODELS:?set MODELS to the directory with the model GGUF shards and the MTP head}"
 BENCH=${BENCH:-$FR/bench-out}
@@ -50,7 +50,8 @@ preflight() {
     if awk -v c="$cap" 'BEGIN { exit !(c + 0 < 9.0) }'; then echo "  needs compute capability 9.0 or newer (clusters, PDL)"; ok=0; fi
     [ "${mem// /}" -lt 15000 ] && { echo "  needs 16 GB of VRAM"; ok=0; }
     awk -v c="$cap" 'BEGIN { exit !(c + 0 != 12.0) }' && warn "built and tuned for 12.0; set CMAKE_CUDA_ARCHITECTURES for this GPU (untested)"
-    local ram_gb=$(awk '/MemTotal/ { printf "%d", $2 / 1048576 }' /proc/meminfo)
+    local ram_gb dev rota
+    ram_gb=$(awk '/MemTotal/ { printf "%d", $2 / 1048576 }' /proc/meminfo)
     echo "RAM: ${ram_gb} GB (measured: 64 GB; the experts take ~55 GB of host RAM)"
     [ "$ram_gb" -lt 60 ] && { echo "  needs 64 GB"; ok=0; }
     if grep -q avx512_vnni /proc/cpuinfo; then echo "CPU: AVX-512 VNNI (the CPU expert kernels' path)"
@@ -58,8 +59,8 @@ preflight() {
     echo "CPU threads: $(nproc) (measured: 12 cores / 24 threads; the miss pool uses 8 workers)"
     for f in "$M" "${M/00001-of/00002-of}" "$D"; do [ -f "$f" ] || { echo "missing: $f"; ok=0; }; done
     if [ -f "$M" ]; then
-        local dev=$(findmnt -no SOURCE --target "$MODELS" 2>/dev/null)
-        local rota=$(lsblk -no ROTA "$dev" 2>/dev/null | head -1)
+        dev=$(findmnt -no SOURCE --target "$MODELS" 2>/dev/null)
+        rota=$(lsblk -no ROTA "$dev" 2>/dev/null | head -1 | tr -d ' ')
         echo "model storage: $dev (rotational: ${rota:-unknown}); the n-gram (PLE) rows are read per token with O_DIRECT, so use an NVMe drive"
         [ "${rota:-0}" = 1 ] && warn "a rotational disk will stall every decode step"
     fi
@@ -96,7 +97,8 @@ import json, sys
 item = next(i for i in json.load(open(sys.argv[1])) if 30000 < len(i["ids"]) < 40000)
 open(sys.argv[2], "w").write(" ".join(map(str, item["ids"])))
 EOF
-    local n=$(wc -w < "$BENCH/w9-32k.ids")
+    local n
+    n=$(wc -w < "$BENCH/w9-32k.ids")
     local C=(--ids "$BENCH/w9-32k.ids" --n-prompt "$n" --gen 256 --prefill-chunk auto --kv q8 --kv-hot 4096)
     wait_vram
     build/fr_bench "$M" "${C[@]}" > "$BENCH/decode-plain.txt" 2>&1
