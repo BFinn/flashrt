@@ -26,6 +26,7 @@ mod tokenizer;
 use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Context, Result};
+use axum::extract::rejection::JsonRejection;
 use axum::extract::{DefaultBodyLimit, Request, State};
 use axum::http::StatusCode;
 use axum::middleware::{self, Next};
@@ -74,6 +75,13 @@ struct Args {
     /// inputs.
     #[arg(long)]
     tokenize: Option<String>,
+    /// Tokenize special-token strings typed in the text of user, system and tool messages and of
+    /// tool definitions (<|im_start|>, <think>, <tool_call>, ...) as the special tokens themselves,
+    /// as llama.cpp's server does. By default they are plain text, so a message cannot forge the
+    /// conversation's structure; the template's own special tokens and those in assistant messages
+    /// are special either way.
+    #[arg(long)]
+    special_in_text: bool,
 }
 
 pub struct Sampling {
@@ -102,14 +110,57 @@ pub struct AppState {
     pub ids: SpecialIds,
     pub api_key: Option<String>,
     pub metrics: metrics::Metrics,
+    /// --special-in-text: special-token strings in message text are special tokens (chat::prompt_of).
+    pub special_in_text: bool,
 }
 
-/// The HTTP status of a request that could not start: 503 when the engine is down, else 400.
+/// A request that failed for the server's reasons, not the request's (a chat template that cannot
+/// render a well-formed request, a panic while preparing the prompt): HTTP 500.
+#[derive(Debug)]
+pub struct ServerFault(pub String);
+
+impl std::fmt::Display for ServerFault {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for ServerFault {}
+
+/// The HTTP status of a request that could not start: 503 when the engine is down, 500 for a
+/// `ServerFault`, else 400.
 pub fn start_error_status(e: &anyhow::Error) -> u16 {
     if e.is::<engine::EngineDown>() {
         503
+    } else if e.is::<ServerFault>() {
+        500
     } else {
         400
+    }
+}
+
+/// Which API's error shape a response takes.
+#[derive(Clone, Copy)]
+enum Api {
+    OpenAi,
+    Anthropic,
+}
+
+/// A request body: a JSON object, or the status and message of its error. A body that is not
+/// JSON, not an object, too large or sent without a JSON content type gets the API's error shape
+/// (`body_error`) with axum's status (400, 413, 415) instead of axum's plain-text rejection.
+fn json_body(body: Result<Json<Value>, JsonRejection>) -> Result<Value, (u16, String)> {
+    match body {
+        Ok(Json(v)) if v.is_object() => Ok(v),
+        Ok(_) => Err((400, "the request body must be a JSON object".to_string())),
+        Err(r) => Err((r.status().as_u16(), r.body_text())),
+    }
+}
+
+fn body_error(api: Api, (status, msg): (u16, String)) -> Response {
+    match api {
+        Api::OpenAi => api_error(status, "invalid_request_error", &msg),
+        Api::Anthropic => anthropic::error(status, if status == 413 { "request_too_large" } else { "invalid_request_error" }, &msg),
     }
 }
 
@@ -188,8 +239,7 @@ async fn main() -> Result<()> {
         if let Some(Value::Object(kw)) = req.get("chat_template_kwargs") {
             r.template_vars = kw.clone();
         }
-        let text = template.render(&r.messages, r.tools.as_ref(), &r.template_vars)?;
-        let toks = tok.encode(&text, true)?;
+        let (text, toks) = chat::render_prompt(&template, &tok, &r, args.special_in_text)?;
         println!("{text}");
         println!("--- {} tokens; first ids {:?}", toks.len(), &toks[..toks.len().min(12)]);
         return Ok(());
@@ -209,13 +259,34 @@ async fn main() -> Result<()> {
         ids,
         api_key: args.api_key.clone(),
         metrics: metrics::Metrics::default(),
+        special_in_text: args.special_in_text,
     });
     let app = Router::new()
         .route("/v1/models", get(models))
-        .route("/v1/chat/completions", post(|State(s): State<Arc<AppState>>, Json(v): Json<Value>| openai::chat_completions(s, v)))
-        .route("/v1/completions", post(|State(s): State<Arc<AppState>>, Json(v): Json<Value>| openai::completions(s, v)))
-        .route("/v1/messages", post(|State(s): State<Arc<AppState>>, Json(v): Json<Value>| anthropic::messages(s, v)))
-        .route("/v1/messages/count_tokens", post(|State(s): State<Arc<AppState>>, Json(v): Json<Value>| anthropic::count_tokens(s, v)))
+        .route("/v1/chat/completions", post(|State(s): State<Arc<AppState>>, b: Result<Json<Value>, JsonRejection>| async move {
+            match json_body(b) {
+                Ok(v) => openai::chat_completions(s, v).await,
+                Err(e) => body_error(Api::OpenAi, e),
+            }
+        }))
+        .route("/v1/completions", post(|State(s): State<Arc<AppState>>, b: Result<Json<Value>, JsonRejection>| async move {
+            match json_body(b) {
+                Ok(v) => openai::completions(s, v).await,
+                Err(e) => body_error(Api::OpenAi, e),
+            }
+        }))
+        .route("/v1/messages", post(|State(s): State<Arc<AppState>>, b: Result<Json<Value>, JsonRejection>| async move {
+            match json_body(b) {
+                Ok(v) => anthropic::messages(s, v).await,
+                Err(e) => body_error(Api::Anthropic, e),
+            }
+        }))
+        .route("/v1/messages/count_tokens", post(|State(s): State<Arc<AppState>>, b: Result<Json<Value>, JsonRejection>| async move {
+            match json_body(b) {
+                Ok(v) => anthropic::count_tokens(s, v).await,
+                Err(e) => body_error(Api::Anthropic, e),
+            }
+        }))
         .route("/metrics", get(metrics_text))
         .layer(middleware::from_fn_with_state(state.clone(), auth))
         // axum's default of 2 MiB is too little for a full context: 262K tokens of text with
@@ -278,7 +349,12 @@ async fn auth(State(s): State<Arc<AppState>>, req: Request, next: Next) -> Respo
         let bearer = h.get("authorization").and_then(|v| v.to_str().ok()).and_then(|v| v.strip_prefix("Bearer "));
         let x = h.get("x-api-key").and_then(|v| v.to_str().ok());
         if bearer != Some(key.as_str()) && x != Some(key.as_str()) {
-            return api_error(401, "authentication_error", "invalid API key");
+            // in the shape of the API that was called
+            return if req.uri().path().starts_with("/v1/messages") {
+                anthropic::error(401, "authentication_error", "invalid API key")
+            } else {
+                api_error(401, "authentication_error", "invalid API key")
+            };
         }
     }
     next.run(req).await
@@ -289,4 +365,51 @@ async fn models(State(s): State<Arc<AppState>>) -> impl IntoResponse {
         "object": "list",
         "data": [{"id": s.model_name, "object": "model", "owned_by": "flashrt", "context_length": s.max_context}]
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::extract::FromRequest;
+
+    async fn reject(body: &'static str, content_type: Option<&str>, api: Api) -> (u16, Value) {
+        let mut req = axum::http::Request::builder().method("POST").uri("/x");
+        if let Some(ct) = content_type {
+            req = req.header("content-type", ct);
+        }
+        let b = Json::<Value>::from_request(req.body(Body::from(body)).unwrap(), &()).await;
+        let r = body_error(api, json_body(b).expect_err("rejected"));
+        let status = r.status().as_u16();
+        let bytes = axum::body::to_bytes(r.into_body(), 1 << 16).await.unwrap();
+        (status, serde_json::from_slice(&bytes).expect("a JSON error body"))
+    }
+
+    #[tokio::test]
+    async fn bad_bodies_get_the_apis_json_error() {
+        let json = Some("application/json");
+        // not JSON: a 400 in the OpenAI shape for the OpenAI routes, Anthropic's for the others
+        let (st, v) = reject("{not json", json, Api::OpenAi).await;
+        assert_eq!(st, 400);
+        assert_eq!(v["error"]["type"], "invalid_request_error");
+        assert!(v["error"]["message"].as_str().is_some_and(|m| !m.is_empty()), "{v}");
+        let (st, v) = reject("{not json", json, Api::Anthropic).await;
+        assert_eq!((st, v["type"].as_str(), v["error"]["type"].as_str()), (400, Some("error"), Some("invalid_request_error")));
+        // JSON, but not an object
+        for body in ["[1, 2]", "\"text\"", "null"] {
+            let (st, v) = reject(body, json, Api::OpenAi).await;
+            assert_eq!(st, 400);
+            assert_eq!(v["error"]["message"], "the request body must be a JSON object");
+        }
+        // no JSON content type: axum's 415, in the API's shape
+        let (st, v) = reject("{}", None, Api::Anthropic).await;
+        assert_eq!((st, v["error"]["type"].as_str()), (415, Some("invalid_request_error")));
+        // an object passes
+        let b = Json::<Value>::from_request(
+            axum::http::Request::builder().method("POST").header("content-type", "application/json").body(Body::from("{\"a\": 1}")).unwrap(),
+            &(),
+        )
+        .await;
+        assert_eq!(json_body(b).ok(), Some(json!({"a": 1})));
+    }
 }

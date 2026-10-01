@@ -3,6 +3,10 @@
 //! Python string methods (startswith, split, ...) come from minijinja-contrib's pycompat;
 //! `tojson` matches Python's json.dumps(ensure_ascii=False) as Hugging Face templates expect
 //! (", " and ": " separators, keys in insertion order), since that is the text the model saw.
+//!
+//! A request the template rejects with raise_exception (a system message after the first, an
+//! unknown role) is the request's error (HTTP 400); any other failure to render is the server's
+//! (`crate::ServerFault`, HTTP 500).
 
 use anyhow::{anyhow, Result};
 use minijinja::{Environment, Error, ErrorKind, Value as JValue};
@@ -51,8 +55,21 @@ fn tojson(v: JValue) -> Result<JValue, Error> {
     Ok(JValue::from_safe_string(s))
 }
 
+/// The source of raise_exception's errors: how `render` tells the template rejecting the request
+/// from the template failing.
+#[derive(Debug)]
+struct Raised;
+
+impl std::fmt::Display for Raised {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("raised by the template")
+    }
+}
+
+impl std::error::Error for Raised {}
+
 fn raise_exception(msg: String) -> Result<JValue, Error> {
-    Err(Error::new(ErrorKind::InvalidOperation, msg))
+    Err(Error::new(ErrorKind::InvalidOperation, msg).with_source(Raised))
 }
 
 impl ChatTemplate {
@@ -68,7 +85,8 @@ impl ChatTemplate {
     }
 
     /// Renders the conversation. `messages` and `tools` are OpenAI-style JSON (tool-call
-    /// arguments as objects); `extra` holds template variables such as enable_thinking.
+    /// arguments as objects); `extra` holds template variables such as enable_thinking. An error
+    /// is the request's when the template raised it, else a `crate::ServerFault`.
     pub fn render(&self, messages: &Value, tools: Option<&Value>, extra: &serde_json::Map<String, Value>) -> Result<String> {
         // the extras first, so they cannot replace the conversation itself
         let mut ctx = extra.clone();
@@ -78,15 +96,24 @@ impl ChatTemplate {
             None => ctx.remove("tools"),
         };
         ctx.insert("add_generation_prompt".into(), Value::Bool(true));
-        let t = self.env.get_template("chat")?;
+        let t = self.env.get_template("chat").map_err(|e| anyhow::Error::new(crate::ServerFault(format!("chat template: {e}"))))?;
         t.render(JValue::from_serialize(Value::Object(ctx))).map_err(|e| {
             let mut msg = e.to_string();
+            let mut raised = false;
             let mut src = std::error::Error::source(&e);
             while let Some(s) = src {
-                msg.push_str(&format!(": {s}"));
+                if s.is::<Raised>() {
+                    raised = true;
+                } else {
+                    msg.push_str(&format!(": {s}"));
+                }
                 src = s.source();
             }
-            anyhow!("chat template: {msg}")
+            if raised {
+                anyhow!("chat template: {msg}")
+            } else {
+                anyhow::Error::new(crate::ServerFault(format!("the chat template failed to render: {msg}")))
+            }
         })
     }
 }
@@ -130,9 +157,25 @@ mod tests {
     }
 
     #[test]
-    fn raise_exception_is_an_error() {
+    fn raise_exception_is_the_requests_error_and_other_failures_the_servers() {
+        let none = serde_json::Map::new();
         let t = ChatTemplate::new("{{ raise_exception('bad role') }}").unwrap();
-        let e = t.render(&json!([]), None, &serde_json::Map::new()).unwrap_err().to_string();
-        assert!(e.contains("bad role"), "{e}");
+        let e = t.render(&json!([]), None, &none).unwrap_err();
+        assert!(e.to_string().contains("bad role") && !e.to_string().contains("raised by"), "{e}");
+        assert!(!e.is::<crate::ServerFault>());
+        // raised inside a macro whose output is filtered, as the model's template does
+        let t = ChatTemplate::new(
+            "{% macro rc(c) %}{% if c is string %}{{ c }}{% else %}{{ raise_exception('Unexpected content type.') }}{% endif %}{% endmacro %}\
+             {% for m in messages %}{% set x = rc(m.content)|trim %}{{ x }}{% endfor %}",
+        )
+        .unwrap();
+        assert_eq!(t.render(&json!([{"content": " a "}]), None, &none).unwrap(), "a");
+        let e = t.render(&json!([{"content": 3}]), None, &none).unwrap_err();
+        assert!(!e.is::<crate::ServerFault>() && e.to_string().contains("Unexpected content type"), "{e}");
+        // a template that fails on its own (an operator on a type it does not take): the server's
+        let t = ChatTemplate::new("{{ messages[0].content + 1 }}").unwrap();
+        let e = t.render(&json!([{"content": "x"}]), None, &none).unwrap_err();
+        assert!(e.is::<crate::ServerFault>(), "{e}");
+        assert_eq!(crate::start_error_status(&e), 500);
     }
 }

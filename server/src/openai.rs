@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 //! OpenAI-compatible endpoints: /v1/chat/completions (with reasoning_content, tool calls and
 //! streaming) and /v1/completions (raw text).
+//!
+//! Parameters this server does not implement are a 400 when set to a value that would change the
+//! output (`unsupported`), never silently ignored. An error during a stream is an `error` object
+//! (`{"error": {"message", "type"}}`) followed by [DONE], on both endpoints.
 
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -18,9 +22,90 @@ use crate::{api_error, AppState};
 
 fn start_error(e: &anyhow::Error) -> Response {
     match crate::start_error_status(e) {
-        503 => api_error(503, "server_error", &e.to_string()),
-        st => api_error(st, "invalid_request_error", &e.to_string()),
+        400 => api_error(400, "invalid_request_error", &e.to_string()),
+        st => api_error(st, "server_error", &e.to_string()),
     }
+}
+
+/// An error in a stream: OpenAI's error object, as its own event (the stream then ends with
+/// [DONE]).
+fn stream_error(msg: &str) -> Event {
+    Event::default().data(json!({"error": {"message": msg, "type": "server_error"}}).to_string())
+}
+
+/// Whether a JSON value is set to something: not null, false, 0, "" or empty.
+fn truthy(v: &Value) -> bool {
+    match v {
+        Value::Null => false,
+        Value::Bool(b) => *b,
+        Value::Number(n) => n.as_f64() != Some(0.0),
+        Value::String(s) => !s.is_empty(),
+        Value::Array(a) => !a.is_empty(),
+        Value::Object(o) => !o.is_empty(),
+    }
+}
+
+/// Parameters the server does not implement, rejected when set to a value that would change the
+/// output: several choices, log probabilities, constrained decoding, penalties and biases, and
+/// for /v1/completions echo, best_of and suffix. Absent, null and the neutral values (n 1,
+/// logprobs false, penalties 0, repetition penalties 1, response_format text) are accepted.
+/// Fields that do not change the output (`model`, `user`, `metadata`, `store`, `service_tier`,
+/// ...) are ignored, and `parallel_tool_calls`, like `tool_choice`, is accepted but not enforced
+/// (docs/engine.md, "Known issues").
+fn unsupported(req: &Value, completions: bool) -> Result<(), String> {
+    let get = |k: &str| req.get(k).filter(|v| !v.is_null());
+    if let Some(n) = get("n") {
+        match n.as_u64() {
+            Some(1) => {}
+            Some(k) if k > 1 => return Err("n > 1 is not supported (one choice per request)".into()),
+            _ => return Err(format!("n must be 1, not {n}")),
+        }
+    }
+    for k in ["logprobs", "top_logprobs"] {
+        if get(k).is_some_and(truthy) {
+            return Err(format!("{k} is not supported"));
+        }
+    }
+    if let Some(f) = get("response_format") {
+        let kind = f.get("type").and_then(Value::as_str);
+        if kind != Some("text") {
+            return Err(format!("response_format {} is not supported (no constrained decoding); only {{\"type\": \"text\"}}",
+                               kind.map_or_else(|| f.to_string(), |k| format!("'{k}'"))));
+        }
+    }
+    for k in ["grammar", "json_schema", "functions", "logit_bias"] {
+        if get(k).is_some_and(truthy) {
+            return Err(format!("{k} is not supported"));
+        }
+    }
+    for k in ["presence_penalty", "frequency_penalty"] {
+        if let Some(v) = get(k) {
+            if v.as_f64() != Some(0.0) {
+                return Err(format!("{k} is not supported (only 0)"));
+            }
+        }
+    }
+    for k in ["repetition_penalty", "repeat_penalty"] {
+        if let Some(v) = get(k) {
+            if v.as_f64() != Some(1.0) {
+                return Err(format!("{k} is not supported (only 1)"));
+            }
+        }
+    }
+    if completions {
+        if get("echo").is_some_and(truthy) {
+            return Err("echo is not supported".into());
+        }
+        if get("suffix").is_some_and(truthy) {
+            return Err("suffix is not supported".into());
+        }
+        if let Some(b) = get("best_of") {
+            if b.as_u64() != Some(1) {
+                return Err("best_of is not supported (only 1)".into());
+            }
+        }
+    }
+    Ok(())
 }
 
 fn now() -> u64 {
@@ -43,6 +128,9 @@ fn normalize_messages(msgs: &Value) -> Result<Value, String> {
     let mut out = Vec::new();
     for (i, m) in arr.iter().enumerate() {
         let mut m = m.as_object().ok_or("each message must be an object")?.clone();
+        if !m.get("role").is_some_and(Value::is_string) {
+            return Err(format!("messages[{i}]: role must be a string"));
+        }
         if let Some(Value::Array(parts)) = m.get("content") {
             let mut text = String::new();
             for p in parts {
@@ -61,6 +149,9 @@ fn normalize_messages(msgs: &Value) -> Result<Value, String> {
         }
         if let Some(Value::Array(calls)) = m.get_mut("tool_calls") {
             for c in calls.iter_mut() {
+                if !c.pointer("/function/name").is_some_and(Value::is_string) {
+                    return Err(format!("messages[{i}]: a tool call without a function name"));
+                }
                 if let Some(f) = c.get_mut("function") {
                     if let Some(Value::String(a)) = f.get("arguments") {
                         // the template renders the arguments' keys: a string that is not a JSON
@@ -79,8 +170,10 @@ fn normalize_messages(msgs: &Value) -> Result<Value, String> {
     Ok(Value::Array(out))
 }
 
-/// The settings both endpoints share; a field of the wrong type or out of range is an error.
-fn common(req: &Value, r: &mut ChatRequest) -> Result<(), String> {
+/// The settings both endpoints share; a field of the wrong type or out of range is an error, as
+/// is a parameter the server does not implement (`unsupported`).
+fn common(req: &Value, r: &mut ChatRequest, completions: bool) -> Result<(), String> {
+    unsupported(req, completions)?;
     r.max_tokens = match chat::field_u32(req, "max_completion_tokens")? {
         Some(n) => Some(n),
         None => chat::field_u32(req, "max_tokens")?,
@@ -117,7 +210,7 @@ pub async fn chat_completions(st: Arc<AppState>, req: Value) -> Response {
     };
     let mut r = empty_request();
     r.messages = messages;
-    if let Err(e) = common(&req, &mut r) {
+    if let Err(e) = common(&req, &mut r, false) {
         return api_error(400, "invalid_request_error", &e);
     }
     let tool_choice_none = req.get("tool_choice").and_then(Value::as_str) == Some("none");
@@ -218,7 +311,12 @@ pub(crate) fn stream_chat(
                         Value::Null,
                     ))
                 }
-                ChatEvent::Error(e) => send(json!({"error": {"message": e, "type": "server_error"}})),
+                ChatEvent::Error(e) => {
+                    if tx.send(stream_error(&e)).await.is_ok() {
+                        let _ = tx.send(Event::default().data("[DONE]")).await;
+                    }
+                    return;
+                }
                 ChatEvent::Done { finish, prompt_tokens, completion_tokens, reused, timings, .. } => {
                     let mut last = chunk(json!({}), json!(finish_str(finish)));
                     last["timings"] = timings;   // as llama.cpp's server, on the final chunk
@@ -249,7 +347,7 @@ pub async fn completions(st: Arc<AppState>, req: Value) -> Response {
         _ => return api_error(400, "invalid_request_error", "prompt must be a string"),
     };
     let mut r = empty_request();
-    if let Err(e) = common(&req, &mut r) {
+    if let Err(e) = common(&req, &mut r, true) {
         return api_error(400, "invalid_request_error", &e);
     }
     r.raw_prompt = Some(prompt);
@@ -261,7 +359,8 @@ pub async fn completions(st: Arc<AppState>, req: Value) -> Response {
     let id = chat::new_id("cmpl-");
     let created = now();
     if req.get("stream").and_then(Value::as_bool).unwrap_or(false) {
-        return stream_completion(rx, id, created, model).into_response();
+        let include_usage = req.pointer("/stream_options/include_usage").and_then(Value::as_bool).unwrap_or(false);
+        return stream_completion(rx, id, created, model, include_usage).into_response();
     }
     let mut text = String::new();
     while let Some(ev) = rx.recv().await {
@@ -289,24 +388,48 @@ pub(crate) fn stream_completion(
     id: String,
     created: u64,
     model: String,
+    include_usage: bool,
 ) -> Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>> {
     let (tx, out) = mpsc::channel::<Event>(256);
     tokio::spawn(async move {
+        let chunk = |text: String, finish: Value| {
+            Event::default().data(
+                json!({"id": id, "object": "text_completion", "created": created, "model": model,
+                       "choices": [{"index": 0, "text": text, "finish_reason": finish}]})
+                .to_string(),
+            )
+        };
         while let Some(ev) = chat::next_event(&mut rx, &tx).await {
-            let (text, finish, last) = match ev {
-                ChatEvent::Content(s) => (s, Value::Null, false),
-                ChatEvent::Done { finish, .. } => (String::new(), json!(finish_str(finish)), true),
-                ChatEvent::Error(e) => (String::new(), json!(format!("error: {e}")), true),
+            let e = match ev {
+                ChatEvent::Content(s) => chunk(s, Value::Null),
+                ChatEvent::Done { finish, prompt_tokens, completion_tokens, timings, .. } => {
+                    let mut last = json!({"id": id, "object": "text_completion", "created": created, "model": model,
+                                          "choices": [{"index": 0, "text": "", "finish_reason": finish_str(finish)}]});
+                    last["timings"] = timings;   // as the chat stream, on the final chunk
+                    let _ = tx.send(Event::default().data(last.to_string())).await;
+                    if include_usage {
+                        let _ = tx
+                            .send(Event::default().data(
+                                json!({"id": id, "object": "text_completion", "created": created, "model": model, "choices": [],
+                                       "usage": {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens,
+                                                 "total_tokens": prompt_tokens + completion_tokens}})
+                                .to_string(),
+                            ))
+                            .await;
+                    }
+                    let _ = tx.send(Event::default().data("[DONE]")).await;
+                    return;
+                }
+                ChatEvent::Error(e) => {
+                    if tx.send(stream_error(&e)).await.is_ok() {
+                        let _ = tx.send(Event::default().data("[DONE]")).await;
+                    }
+                    return;
+                }
                 _ => continue,
             };
-            let v = json!({"id": id, "object": "text_completion", "created": created, "model": model,
-                           "choices": [{"index": 0, "text": text, "finish_reason": finish}]});
-            if tx.send(Event::default().data(v.to_string())).await.is_err() {
+            if tx.send(e).await.is_err() {
                 return;   // the client left; dropping rx makes the generation task stop the engine
-            }
-            if last {
-                let _ = tx.send(Event::default().data("[DONE]")).await;
-                return;
             }
         }
     });
@@ -380,15 +503,15 @@ mod tests {
         // 2^32 would have become 0 and 2^32 + 1 a top_k of 1 (under the 64 limit)
         for (k, v) in [("max_tokens", json!(4294967296u64)), ("top_k", json!(4294967297u64)), ("max_completion_tokens", json!(-1)),
                        ("temperature", json!("0.7")), ("top_p", json!(true)), ("seed", json!(1.5)), ("stop", json!(7))] {
-            let e = common(&json!({k: v}), &mut r).unwrap_err();
+            let e = common(&json!({k: v}), &mut r, false).unwrap_err();
             assert!(e.starts_with(k), "{k}: {e}");
         }
         // absent and null take the defaults; max_completion_tokens wins over max_tokens
-        common(&json!({"max_tokens": null, "top_k": null}), &mut r).unwrap();
+        common(&json!({"max_tokens": null, "top_k": null}), &mut r, false).unwrap();
         assert_eq!((r.max_tokens, r.top_k), (None, None));
-        common(&json!({"max_completion_tokens": null, "max_tokens": 9, "top_k": 64, "seed": 5, "stop": ["a", "b"]}), &mut r).unwrap();
+        common(&json!({"max_completion_tokens": null, "max_tokens": 9, "top_k": 64, "seed": 5, "stop": ["a", "b"]}), &mut r, false).unwrap();
         assert_eq!((r.max_tokens, r.top_k, r.seed, r.stop.len()), (Some(9), Some(64), Some(5), 2));
-        common(&json!({"max_completion_tokens": 3, "max_tokens": 9}), &mut r).unwrap();
+        common(&json!({"max_completion_tokens": 3, "max_tokens": 9}), &mut r, false).unwrap();
         assert_eq!(r.max_tokens, Some(3));
     }
 
@@ -401,5 +524,97 @@ mod tests {
         }
         assert!(normalize_messages(&json!([{"role": "user", "content": [{"type": "image_url", "image_url": {}}]}])).is_err());
         assert!(normalize_messages(&json!([{"role": "user", "content": [{"type": "text"}]}])).is_err());
+    }
+
+    #[test]
+    fn unimplemented_parameters_are_rejected_not_ignored() {
+        for (req, completions, msg) in [
+            (json!({"n": 2}), false, "n > 1 is not supported"),
+            (json!({"n": 0}), false, "n must be 1"),
+            (json!({"n": "2"}), true, "n must be 1"),
+            (json!({"logprobs": true}), false, "logprobs is not supported"),
+            (json!({"logprobs": 3}), true, "logprobs is not supported"),
+            (json!({"top_logprobs": 2}), false, "top_logprobs is not supported"),
+            (json!({"response_format": {"type": "json_object"}}), false, "response_format 'json_object' is not supported"),
+            (json!({"response_format": {"type": "json_schema", "json_schema": {}}}), false, "'json_schema'"),
+            (json!({"response_format": "json"}), false, "response_format \"json\" is not supported"),
+            (json!({"presence_penalty": 1.5}), false, "presence_penalty is not supported"),
+            (json!({"frequency_penalty": -0.5}), true, "frequency_penalty is not supported"),
+            (json!({"repetition_penalty": 1.1}), false, "repetition_penalty is not supported"),
+            (json!({"repeat_penalty": 1.1}), true, "repeat_penalty"),
+            (json!({"logit_bias": {"1": 5}}), false, "logit_bias is not supported"),
+            (json!({"json_schema": {"type": "object"}}), false, "json_schema is not supported"),
+            (json!({"grammar": "root ::= \"a\""}), true, "grammar is not supported"),
+            (json!({"functions": [{"name": "f"}]}), false, "functions is not supported"),
+            (json!({"echo": true}), true, "echo is not supported"),
+            (json!({"suffix": "x"}), true, "suffix is not supported"),
+            (json!({"best_of": 3}), true, "best_of is not supported"),
+        ] {
+            let e = common(&req, &mut empty_request(), completions).err().unwrap_or_else(|| panic!("accepted: {req}"));
+            assert!(e.contains(msg), "{req}: {e}");
+        }
+        // the neutral values, and fields that do not change the output, are accepted
+        let ok = json!({"n": 1, "logprobs": false, "top_logprobs": null, "response_format": {"type": "text"}, "presence_penalty": 0,
+                        "frequency_penalty": 0.0, "repetition_penalty": 1, "logit_bias": {}, "echo": false, "suffix": "", "best_of": 1,
+                        "user": "u", "metadata": {"a": "b"}, "store": false, "parallel_tool_calls": false, "model": "any",
+                        "stream_options": {"include_usage": true}});
+        common(&ok, &mut empty_request(), true).unwrap();
+        // completions-only checks do not apply to chat
+        common(&json!({"echo": true}), &mut empty_request(), false).unwrap();
+        assert!(normalize_messages(&json!([{"content": "x"}])).unwrap_err().contains("role must be a string"));
+        let e = normalize_messages(&json!([{"role": "assistant", "tool_calls": [{"function": {"arguments": {}}}]}])).unwrap_err();
+        assert!(e.contains("without a function name"), "{e}");
+    }
+
+    async fn frames(resp: Response) -> Vec<String> {
+        let body = tokio::time::timeout(std::time::Duration::from_secs(5), axum::body::to_bytes(resp.into_body(), 1 << 20))
+            .await
+            .expect("the stream ends")
+            .unwrap();
+        let text = String::from_utf8(body.to_vec()).unwrap();
+        text.lines().filter_map(|l| l.strip_prefix("data: ")).map(String::from).collect()
+    }
+
+    /// An engine error mid-stream: both endpoints send the error object and then [DONE], and no
+    /// chunk carries a finish_reason that is not one of OpenAI's.
+    #[tokio::test]
+    async fn stream_errors_are_error_objects_on_both_endpoints() {
+        for api in ["chat", "completions"] {
+            let (tx, rx) = mpsc::channel(8);
+            tx.send(ChatEvent::Content("partial".into())).await.unwrap();
+            tx.send(ChatEvent::Error("the engine failed".into())).await.unwrap();
+            drop(tx);
+            let resp = match api {
+                "chat" => stream_chat(rx, "id1".into(), 7, "m".into(), false).into_response(),
+                _ => stream_completion(rx, "id1".into(), 7, "m".into(), false).into_response(),
+            };
+            let data = frames(resp).await;
+            assert_eq!(data.last().map(String::as_str), Some("[DONE]"), "{api}: {data:?}");
+            let v: Vec<Value> = data[..data.len() - 1].iter().map(|d| serde_json::from_str(d).unwrap()).collect();
+            let err = v.last().unwrap();
+            assert_eq!(err["error"], json!({"message": "the engine failed", "type": "server_error"}), "{api}");
+            for c in &v {
+                for ch in c.get("choices").and_then(Value::as_array).into_iter().flatten() {
+                    let f = &ch["finish_reason"];
+                    assert!(f.is_null() || ["stop", "length", "tool_calls"].contains(&f.as_str().unwrap()), "{api}: {c}");
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn completion_stream_usage_and_timings() {
+        let (tx, rx) = mpsc::channel(8);
+        tx.send(ChatEvent::Content("Paris".into())).await.unwrap();
+        tx.send(ChatEvent::Done { finish: Finish::Length, stop_sequence: None, prompt_tokens: 5, completion_tokens: 1, reused: 0,
+                                  timings: json!({"prompt_n": 5}) }).await.unwrap();
+        drop(tx);
+        let data = frames(stream_completion(rx, "c1".into(), 7, "m".into(), true).into_response()).await;
+        assert_eq!(data.last().map(String::as_str), Some("[DONE]"));
+        let v: Vec<Value> = data[..data.len() - 1].iter().map(|d| serde_json::from_str(d).unwrap()).collect();
+        assert_eq!(v.len(), 3, "{data:?}");
+        assert_eq!(v[0]["choices"][0]["text"], "Paris");
+        assert_eq!((v[1]["choices"][0]["finish_reason"].as_str(), v[1]["timings"]["prompt_n"].as_u64()), (Some("length"), Some(5)));
+        assert_eq!(v[2]["usage"], json!({"prompt_tokens": 5, "completion_tokens": 1, "total_tokens": 6}));
     }
 }

@@ -4,7 +4,13 @@
 //! QWEN35 pre-type (src/llama-vocab.cpp, MIT). Special tokens (control and user-defined) are
 //! matched as whole strings before pre-tokenization. `flashrt-server --check-tokenizer` compares
 //! it with a llama.cpp tokenization.
+//!
+//! Text from a client that must not carry special tokens goes through `escape` before it is
+//! placed in a prompt, and the prompt through `encode_escaped`: the special strings in that text
+//! become private-use markers that no special token matches, and turn back into the literal
+//! strings inside the plain-text segments, so they tokenize as the text they are.
 
+use std::borrow::Cow;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 use std::sync::Mutex;
@@ -16,6 +22,14 @@ use crate::gguf::Value;
 
 // llama.cpp src/llama-vocab.cpp, LLAMA_VOCAB_PRE_TYPE_QWEN35 (MIT)
 const QWEN35_PATTERN: &str = r"(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\r\n\p{L}\p{N}]?[\p{L}\p{M}]+|\p{N}| ?[^\s\p{L}\p{M}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+";
+
+/// The escape character of `escape`'s markers (the last private-use code point). A marker is ESC
+/// and then MARK + the special token's index in `specials`; ESC in the text itself is doubled.
+const ESC: char = '\u{10FFFD}';
+const ESC_BYTES: &[u8] = "\u{10FFFD}".as_bytes();
+const MARK: u32 = 0xF0000;
+/// Marker characters available: U+F0000..=U+FFFFD (Supplementary Private Use Area-A).
+const MARKS: usize = 0xFFFE;
 
 pub struct Tokenizer {
     pub eos: u32,
@@ -95,6 +109,9 @@ impl Tokenizer {
             }
         }
         specials.sort_by_key(|a| std::cmp::Reverse(a.0.len()));
+        if specials.len() > MARKS {
+            bail!("{} special tokens; escaping text supports at most {MARKS}", specials.len());
+        }
         let mut byte_token = [0u32; 256];
         for b in 0..256 {
             byte_token[b] = *id_of
@@ -150,17 +167,34 @@ impl Tokenizer {
     /// Tokenizes text; with `specials`, the special tokens' strings become their ids. Fails when
     /// the pre-tokenizer's regex cannot run over the text (see `encode_plain`).
     pub fn encode(&self, text: &str, specials: bool) -> Result<Vec<u32>> {
+        self.encode_with(text, specials, false)
+    }
+
+    /// Tokenizes a prompt whose untrusted parts went through `escape`: the special strings left
+    /// in it (the template's own) become their ids, and the markers become the literal strings
+    /// again inside the plain-text segments, so they tokenize as text. A prompt without markers
+    /// tokenizes as `encode(text, true)` does.
+    pub fn encode_escaped(&self, text: &str) -> Result<Vec<u32>> {
+        self.encode_with(text, true, true)
+    }
+
+    fn encode_with(&self, text: &str, specials: bool, unescape: bool) -> Result<Vec<u32>> {
         let mut out = Vec::new();
         let mut start = 0;
+        let plain = |from: usize, to: usize, out: &mut Vec<u32>| {
+            let seg = &text[from..to];
+            let seg = if unescape { self.unescape(seg) } else { Cow::Borrowed(seg) };
+            self.encode_plain(&seg, from, out)
+        };
         if specials {
             let bytes = text.as_bytes();
             let mut i = 0;
             while i < bytes.len() {
                 if bytes[i] == b'<' {
-                    if let Some((s, id)) = self.specials.iter().find(|(s, _)| text[i..].starts_with(s.as_str())) {
-                        self.encode_plain(&text[start..i], start, &mut out)?;
-                        out.push(*id);
-                        i += s.len();
+                    if let Some(k) = self.special_at(text, i) {
+                        plain(start, i, &mut out)?;
+                        out.push(self.specials[k].1);
+                        i += self.specials[k].0.len();
                         start = i;
                         continue;
                     }
@@ -168,8 +202,84 @@ impl Tokenizer {
                 i += 1;
             }
         }
-        self.encode_plain(&text[start..], start, &mut out)?;
+        plain(start, text.len(), &mut out)?;
         Ok(out)
+    }
+
+    /// The index in `specials` of the special token whose string starts at byte `i` (a '<'),
+    /// the longest when several do.
+    fn special_at(&self, text: &str, i: usize) -> Option<usize> {
+        self.specials.iter().position(|(s, _)| text[i..].starts_with(s.as_str()))
+    }
+
+    /// Escapes untrusted text for `encode_escaped`. With `specials`, each special token's string
+    /// (found as `encode` finds it) becomes a marker; ESC is always doubled, so the text cannot
+    /// forge a marker. Text with neither comes back unchanged. Use `specials` false for text that
+    /// keeps its special tokens but shares a prompt with escaped text.
+    pub fn escape<'a>(&self, text: &'a str, specials: bool) -> Cow<'a, str> {
+        let bytes = text.as_bytes();
+        let mut out: Option<String> = None;
+        let (mut start, mut i) = (0, 0);
+        while i < bytes.len() {
+            let (k, len) = if specials && bytes[i] == b'<' {
+                match self.special_at(text, i) {
+                    Some(k) => (Some(k), self.specials[k].0.len()),
+                    None => (None, 0),
+                }
+            } else if bytes[i..].starts_with(ESC_BYTES) {
+                (None, ESC_BYTES.len())
+            } else {
+                (None, 0)
+            };
+            if len == 0 {
+                i += 1;
+                continue;
+            }
+            let o = out.get_or_insert_with(|| String::with_capacity(text.len() + 16));
+            o.push_str(&text[start..i]);
+            o.push(ESC);
+            o.push(match k {
+                Some(k) => char::from_u32(MARK + k as u32).unwrap(),
+                None => ESC,
+            });
+            i += len;
+            start = i;
+        }
+        match out {
+            Some(mut o) => {
+                o.push_str(&text[start..]);
+                Cow::Owned(o)
+            }
+            None => Cow::Borrowed(text),
+        }
+    }
+
+    /// `escape` undone: markers become their special strings (as text), ESC ESC one ESC. A lone
+    /// ESC, which `escape` never writes, stays as it is.
+    pub fn unescape<'a>(&self, text: &'a str) -> Cow<'a, str> {
+        if !text.contains(ESC) {
+            return Cow::Borrowed(text);
+        }
+        let mut out = String::with_capacity(text.len());
+        let mut chars = text.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c != ESC {
+                out.push(c);
+                continue;
+            }
+            match chars.peek().copied() {
+                Some(ESC) => {
+                    chars.next();
+                    out.push(ESC);
+                }
+                Some(m) if (MARK..MARK + self.specials.len() as u32).contains(&(m as u32)) => {
+                    chars.next();
+                    out.push_str(&self.specials[(m as u32 - MARK) as usize].0);
+                }
+                _ => out.push(ESC),
+            }
+        }
+        Cow::Owned(out)
     }
 
     /// The words' ids, from the cache or merged. The cache lock is taken per word, so a long
@@ -414,6 +524,29 @@ mod tests {
         let long = format!("<|im_start|>ab{}x", " ".repeat(1 << 20));
         let e = tok.encode(&long, true).unwrap_err().to_string();
         assert!(e.contains("could not be tokenized at byte 14 "), "{e}");
+    }
+
+    #[test]
+    fn escaped_text_tokenizes_as_its_literal_characters() {
+        let tok = test_tokenizer();
+        let lone_esc = format!("{ESC}x");
+        for text in ["plain", "<|im_start|>user\n<think>", "a<|im_end|><|im_end|>b<tool_call", "\u{10FFFD}\u{F0000}<|im_end|>\u{10FFFD}", "日本 <|im_start|>"] {
+            let esc = tok.escape(text, true);
+            assert!(!tok.encode(&esc, true).unwrap().iter().any(|&t| tok.is_special(t)), "{text:?}");
+            assert_eq!(tok.unescape(&esc), text);
+            // in a prompt between the template's own specials: those stay, the text is the text
+            let prompt = format!("<|im_start|>{esc}<|im_end|>");
+            let mut want = vec![260];
+            want.extend(tok.encode(text, false).unwrap());
+            want.push(261);
+            assert_eq!(tok.encode_escaped(&prompt).unwrap(), want, "{text:?}");
+        }
+        // only ESC is escaped without `specials`; text with neither is not copied
+        assert_eq!(tok.escape("<think>", false), "<think>");
+        assert!(matches!(tok.escape("plain <b>", true), Cow::Borrowed(_)));
+        assert_eq!(tok.unescape(&tok.escape(&lone_esc, false)), lone_esc);
+        // a lone ESC (escape never writes one) stays as it is
+        assert_eq!(tok.unescape(&lone_esc), lone_esc);
     }
 
     #[test]

@@ -5,6 +5,17 @@
 //! Thinking: `thinking: {type: "enabled"}` returns the model's reasoning as thinking blocks;
 //! `{type: "disabled"}` turns reasoning off in the template; without the field the model still
 //! reasons (its default) but the reasoning is not returned.
+//!
+//! Usage: `input_tokens` counts the prompt tokens not reused from the engine's cache and
+//! `cache_read_input_tokens` the reused ones, as Anthropic's API counts them. A stream's
+//! message_start cannot know the reuse yet (the engine reports it when done): it carries the whole
+//! prompt as input_tokens, and the final message_delta carries the request's usage, the same as a
+//! non-streaming response's.
+//!
+//! Not implemented, and a 400: image, document and other non-text content blocks, and tools
+//! without an input_schema (server tools). Accepted and ignored: metadata, service_tier,
+//! thinking.budget_tokens, tool_choice "any" or a named tool and disable_parallel_tool_use (the
+//! model decides), cache_control, and redacted_thinking blocks in the history.
 
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -20,7 +31,7 @@ use tokio_stream::StreamExt;
 use crate::chat::{self, ChatEvent, ChatRequest, Finish};
 use crate::AppState;
 
-fn anth_error(status: u16, kind: &str, msg: &str) -> Response {
+pub(crate) fn error(status: u16, kind: &str, msg: &str) -> Response {
     let mut r = Json(json!({"type": "error", "error": {"type": kind, "message": msg}})).into_response();
     *r.status_mut() = axum::http::StatusCode::from_u16(status).unwrap_or(axum::http::StatusCode::BAD_REQUEST);
     r
@@ -33,6 +44,11 @@ fn stop_reason(f: Finish) -> &'static str {
         Finish::Length => "max_tokens",
         Finish::ToolCalls => "tool_use",
     }
+}
+
+/// A finished request's usage: the prompt tokens prefilled, those reused, and those generated.
+fn usage(prompt_tokens: u32, reused: u32, completion_tokens: u32) -> Value {
+    json!({"input_tokens": prompt_tokens - reused.min(prompt_tokens), "cache_read_input_tokens": reused, "output_tokens": completion_tokens})
 }
 
 fn text_of(v: &Value) -> String {
@@ -48,9 +64,17 @@ fn text_of(v: &Value) -> String {
     }
 }
 
+/// The error response of a request that could not start (chat::start).
+fn start_error(e: &anyhow::Error) -> Response {
+    match crate::start_error_status(e) {
+        400 => error(400, "invalid_request_error", &e.to_string()),
+        st => error(st, "api_error", &e.to_string()),
+    }
+}
+
 /// Anthropic request -> the template's OpenAI-style messages and tools, plus whether reasoning is
 /// returned.
-fn to_chat(req: &Value) -> Result<(ChatRequest, bool), String> {
+pub(crate) fn to_chat(req: &Value) -> Result<(ChatRequest, bool), String> {
     let mut msgs = Vec::new();
     if let Some(sys) = req.get("system") {
         let t = text_of(sys);
@@ -73,7 +97,15 @@ fn to_chat(req: &Value) -> Result<(ChatRequest, bool), String> {
                     match b.get("type").and_then(Value::as_str).unwrap_or("") {
                         "text" => texts.push(b.get("text").and_then(Value::as_str).unwrap_or("").to_string()),
                         "tool_result" => {
-                            let mut c = text_of(b.get("content").unwrap_or(&Value::Null));
+                            let inner = b.get("content").unwrap_or(&Value::Null);
+                            for ib in inner.as_array().into_iter().flatten() {
+                                match ib.get("type").and_then(Value::as_str).unwrap_or("") {
+                                    "text" => {}
+                                    "image" | "document" => return Err("image and document blocks are not supported".into()),
+                                    t => return Err(format!("tool_result content block type '{t}' is not supported")),
+                                }
+                            }
+                            let mut c = text_of(inner);
                             if b.get("is_error").and_then(Value::as_bool).unwrap_or(false) {
                                 c = format!("Error: {c}");
                             }
@@ -81,7 +113,7 @@ fn to_chat(req: &Value) -> Result<(ChatRequest, bool), String> {
                                              "content": c}));
                         }
                         "image" | "document" => return Err("image and document blocks are not supported".into()),
-                        _ => {}
+                        t => return Err(format!("content block type '{t}' is not supported in a user message")),
                     }
                 }
                 if !texts.is_empty() {
@@ -94,9 +126,14 @@ fn to_chat(req: &Value) -> Result<(ChatRequest, bool), String> {
                     match b.get("type").and_then(Value::as_str).unwrap_or("") {
                         "text" => text.push(b.get("text").and_then(Value::as_str).unwrap_or("").to_string()),
                         "thinking" => thinking.push(b.get("thinking").and_then(Value::as_str).unwrap_or("").to_string()),
-                        "tool_use" => calls.push(json!({"id": b.get("id"), "type": "function",
-                            "function": {"name": b.get("name"), "arguments": b.get("input").cloned().unwrap_or(json!({}))}})),
-                        _ => {}
+                        "tool_use" => {
+                            let name = b.get("name").and_then(Value::as_str).ok_or("a tool_use block without a name")?;
+                            calls.push(json!({"id": b.get("id"), "type": "function",
+                                "function": {"name": name, "arguments": b.get("input").cloned().unwrap_or(json!({}))}}))
+                        }
+                        // Anthropic's encrypted reasoning: nothing this model can read
+                        "redacted_thinking" => {}
+                        t => return Err(format!("content block type '{t}' is not supported in an assistant message")),
                     }
                 }
                 let mut am = json!({"role": "assistant", "content": text.join("\n")});
@@ -115,14 +152,16 @@ fn to_chat(req: &Value) -> Result<(ChatRequest, bool), String> {
     r.messages = Value::Array(msgs);
     let choice_none = req.pointer("/tool_choice/type").and_then(Value::as_str) == Some("none");
     if let Some(tools) = req.get("tools").and_then(Value::as_array) {
-        let fns: Vec<Value> = tools
-            .iter()
-            .filter(|t| t.get("input_schema").is_some())
-            .map(|t| {
-                json!({"type": "function", "function": {"name": t.get("name"), "description": t.get("description").cloned().unwrap_or(json!("")),
-                        "parameters": t.get("input_schema")}})
-            })
-            .collect();
+        let mut fns = Vec::new();
+        for t in tools {
+            // a server tool (web search, code execution, ...) has a type and no schema
+            let (Some(name), Some(schema)) = (t.get("name").and_then(Value::as_str), t.get("input_schema")) else {
+                let kind = t.get("type").and_then(Value::as_str).unwrap_or("?");
+                return Err(format!("tools: only client tools (a name and an input_schema) are supported, not type '{kind}'"));
+            };
+            fns.push(json!({"type": "function", "function": {"name": name, "description": t.get("description").cloned().unwrap_or(json!("")),
+                            "parameters": schema}}));
+        }
         if !fns.is_empty() && !choice_none {
             r.tools = Some(Value::Array(fns));
         }
@@ -147,26 +186,25 @@ fn to_chat(req: &Value) -> Result<(ChatRequest, bool), String> {
 pub async fn count_tokens(st: Arc<AppState>, req: Value) -> Response {
     let (r, _) = match to_chat(&req) {
         Ok(x) => x,
-        Err(e) => return anth_error(400, "invalid_request_error", &e),
+        Err(e) => return error(400, "invalid_request_error", &e),
     };
     match tokio::task::spawn_blocking(move || chat::prompt_of(&st, &r)).await {
         Ok(Ok((_, toks))) => Json(json!({"input_tokens": toks.len()})).into_response(),
-        Ok(Err(e)) => anth_error(400, "invalid_request_error", &e.to_string()),
-        Err(e) => anth_error(500, "api_error", &e.to_string()),
+        Ok(Err(e)) => start_error(&e),
+        Err(e) => error(500, "api_error", &format!("preparing the prompt failed: {e}")),
     }
 }
 
 pub async fn messages(st: Arc<AppState>, req: Value) -> Response {
     let (r, show_thinking) = match to_chat(&req) {
         Ok(x) => x,
-        Err(e) => return anth_error(400, "invalid_request_error", &e),
+        Err(e) => return error(400, "invalid_request_error", &e),
     };
     let model = req.get("model").and_then(Value::as_str).unwrap_or(&st.model_name).to_string();
     let stream = req.get("stream").and_then(Value::as_bool).unwrap_or(false);
     let (mut rx, n_prompt) = match chat::start(st, r).await {
         Ok(x) => x,
-        Err(e) if crate::start_error_status(&e) == 503 => return anth_error(503, "api_error", &e.to_string()),
-        Err(e) => return anth_error(400, "invalid_request_error", &e.to_string()),
+        Err(e) => return start_error(&e),
     };
     let id = chat::new_id("msg_");
     if stream {
@@ -178,7 +216,7 @@ pub async fn messages(st: Arc<AppState>, req: Value) -> Response {
             ChatEvent::Reasoning(s) => thinking.push_str(&s),
             ChatEvent::Content(s) => text.push_str(&s),
             ChatEvent::ToolCall { id, name, arguments } => tools.push(json!({"type": "tool_use", "id": id, "name": name, "input": arguments})),
-            ChatEvent::Error(e) => return anth_error(500, "api_error", &e),
+            ChatEvent::Error(e) => return error(500, "api_error", &e),
             ChatEvent::Done { finish, stop_sequence, prompt_tokens, completion_tokens, reused, timings } => {
                 let mut content = Vec::new();
                 if show_thinking && !thinking.is_empty() {
@@ -191,15 +229,14 @@ pub async fn messages(st: Arc<AppState>, req: Value) -> Response {
                 return Json(json!({
                     "id": id, "type": "message", "role": "assistant", "model": model, "content": content,
                     "stop_reason": stop_reason(finish), "stop_sequence": stop_sequence,
-                    "usage": {"input_tokens": prompt_tokens - reused.min(prompt_tokens), "cache_read_input_tokens": reused,
-                              "output_tokens": completion_tokens},
+                    "usage": usage(prompt_tokens, reused, completion_tokens),
                     "timings": timings,
                 }))
                 .into_response();
             }
         }
     }
-    anth_error(500, "api_error", "generation ended without a result")
+    error(500, "api_error", "generation ended without a result")
 }
 
 pub(crate) fn stream_messages(
@@ -238,6 +275,7 @@ pub(crate) fn stream_messages(
                 }
             };
         }
+        // the reuse is not known yet: the whole prompt, corrected by message_delta
         send!(ev("message_start", json!({"type": "message_start", "message": {
             "id": id, "type": "message", "role": "assistant", "model": model, "content": [],
             "stop_reason": null, "stop_sequence": null, "usage": {"input_tokens": n_prompt, "output_tokens": 0}}})));
@@ -276,14 +314,16 @@ pub(crate) fn stream_messages(
                     send!(ev("error", json!({"type": "error", "error": {"type": "api_error", "message": e}})));
                     return;
                 }
-                ChatEvent::Done { finish, stop_sequence, completion_tokens, .. } => {
+                ChatEvent::Done { finish, stop_sequence, prompt_tokens, completion_tokens, reused, .. } => {
                     if index < 0 {
                         open_block!("text", json!({"type": "text", "text": ""}));
                     }
                     close!();
+                    // the request's usage, as a non-streaming response reports it (Anthropic's
+                    // message_delta usage is cumulative and carries the input counts too)
                     send!(ev("message_delta", json!({"type": "message_delta",
                         "delta": {"stop_reason": stop_reason(finish), "stop_sequence": stop_sequence},
-                        "usage": {"output_tokens": completion_tokens}})));
+                        "usage": usage(prompt_tokens, reused, completion_tokens)})));
                     send!(ev("message_stop", json!({"type": "message_stop"})));
                     return;
                 }
@@ -310,5 +350,53 @@ mod tests {
         assert_eq!((r.max_tokens, r.top_k), (Some(100), None));
         let (r, _) = to_chat(&base("stop_sequences", json!(["a", "b"]))).unwrap();
         assert_eq!(r.stop, ["a", "b"]);
+    }
+
+    async fn body_of(resp: Response) -> String {
+        let b = tokio::time::timeout(std::time::Duration::from_secs(5), axum::body::to_bytes(resp.into_body(), 1 << 20))
+            .await
+            .expect("the response ends")
+            .unwrap();
+        String::from_utf8(b.to_vec()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn stream_reports_the_same_usage_as_a_response() {
+        let (tx, rx) = mpsc::channel(8);
+        tx.send(ChatEvent::Content("hi".into())).await.unwrap();
+        tx.send(ChatEvent::Done { finish: Finish::Stop, stop_sequence: None, prompt_tokens: 100, completion_tokens: 3, reused: 60,
+                                  timings: json!({}) }).await.unwrap();
+        drop(tx);
+        let text = body_of(stream_messages(rx, "m1".into(), "x".into(), 100, false).into_response()).await;
+        let data: Vec<Value> = text.lines().filter_map(|l| l.strip_prefix("data: ")).map(|d| serde_json::from_str(d).unwrap()).collect();
+        let start = data.iter().find(|d| d["type"] == "message_start").unwrap();
+        assert_eq!(start["message"]["usage"]["input_tokens"], 100);   // the reuse is not known yet
+        let delta = data.iter().find(|d| d["type"] == "message_delta").unwrap();
+        // what the non-streaming response reports
+        assert_eq!(delta["usage"], usage(100, 60, 3));
+        assert_eq!(usage(100, 60, 3), json!({"input_tokens": 40, "cache_read_input_tokens": 60, "output_tokens": 3}));
+    }
+
+    #[test]
+    fn unsupported_blocks_and_server_tools_are_rejected() {
+        let user = |content: Value| json!({"messages": [{"role": "user", "content": content}]});
+        for (req, msg) in [
+            (user(json!([{"type": "image", "source": {}}])), "image and document"),
+            (user(json!([{"type": "search_result", "content": []}])), "'search_result'"),
+            (user(json!([{"type": "tool_result", "tool_use_id": "1", "content": [{"type": "image", "source": {}}]}])), "image and document"),
+            (json!({"messages": [{"role": "assistant", "content": [{"type": "server_tool_use", "id": "1"}]}]}), "'server_tool_use'"),
+            (json!({"messages": [{"role": "assistant", "content": [{"type": "tool_use", "id": "1", "input": {}}]}]}), "without a name"),
+            (json!({"messages": [], "tools": [{"type": "web_search_20250305", "name": "web_search"}]}), "'web_search_20250305'"),
+        ] {
+            let e = to_chat(&req).err().unwrap_or_else(|| panic!("accepted: {req}"));
+            assert!(e.contains(msg), "{e}");
+        }
+        // what is accepted: text, tool results with text, redacted reasoning, client tools
+        let ok = json!({"messages": [{"role": "user", "content": [{"type": "text", "text": "a", "cache_control": {"type": "ephemeral"}},
+                                                                   {"type": "tool_result", "tool_use_id": "1", "content": [{"type": "text", "text": "r"}]}]},
+                                     {"role": "assistant", "content": [{"type": "redacted_thinking", "data": "x"}, {"type": "text", "text": "b"}]}],
+                        "tools": [{"name": "f", "input_schema": {"type": "object"}}], "metadata": {"user_id": "u"}});
+        let (r, _) = to_chat(&ok).unwrap();
+        assert_eq!(r.tools.unwrap()[0]["function"]["name"], "f");
     }
 }

@@ -511,13 +511,36 @@ The scripts run with `set -u`, so they stop if one is unset.
   at bandwidth (sw126).
 - **Failed requests** reset the session to an empty sequence, so the next request starts cold
   (sw92). A doorbell timeout or a sticky CUDA error ends the process (status 3).
-- **Server limits:** text only (no images); tool_choice "required" or a named tool is not
-  enforced (the model decides); Anthropic thinking blocks carry an empty signature; without a
-  `thinking` field the model still reasons, and the reasoning is not returned.
-- **Special-token strings in message text are control tokens.** The rendered prompt is tokenized
-  with its special tokens matched anywhere, so `<|im_start|>`, `<think>` or `<tool_call>` typed in a
-  user, system or tool message become the model's structure tokens, as in llama.cpp's server. A
-  deployment that takes untrusted text should filter them before the request.
+- **Server limits:** text only (no images); tool_choice "required" or a named tool (Anthropic:
+  "any", a named tool, disable_parallel_tool_use) and `parallel_tool_calls` are not enforced (the
+  model decides); Anthropic thinking blocks carry an empty signature and `budget_tokens` is not
+  enforced; without a `thinking` field the model still reasons, and the reasoning is not returned.
+- **Special-token strings in message text are text.** `<|im_start|>`, `<think>` or `<tool_call>`
+  typed in a user, system or tool message (tool results included) or in a tool definition are
+  tokenized as their literal characters, so a message cannot forge the conversation's structure;
+  the template's own special tokens stay special. They are escaped to private-use markers before
+  rendering and restored as text inside the tokenizer's plain segments (`chat::render_prompt`); a
+  prompt without such strings tokenizes as before. Assistant messages from the client keep their
+  special tokens (the template reads their reasoning), and a raw `/v1/completions` prompt is the
+  caller's whole prompt. `--special-in-text` restores llama.cpp's behaviour (special strings
+  matched anywhere in the rendered prompt). count_tokens counts what generation queues.
+- **Unimplemented parameters are 400s, not ignored:** OpenAI `n` other than 1, `logprobs` and
+  `top_logprobs`, a `response_format` other than `{"type": "text"}` (no constrained decoding),
+  `json_schema`, `grammar`, `functions`, `logit_bias`, non-zero `presence_penalty` and
+  `frequency_penalty`, `repetition_penalty` or `repeat_penalty` other than 1, and for
+  /v1/completions `echo`, `suffix` and `best_of` above 1; Anthropic image, document and other
+  non-text content blocks, and server tools (no `input_schema`). Ignored, as they do not change
+  the output: `model`, `user`, `metadata`, `store`, `service_tier`, `stream_options` fields other
+  than `include_usage` (honoured by both OpenAI streams), `cache_control`, and redacted_thinking
+  blocks in the history.
+- **Errors:** a body that is not a JSON object gets the endpoint's JSON error (OpenAI's shape on
+  /v1/chat/completions and /v1/completions, Anthropic's on /v1/messages and count_tokens) with
+  axum's status (400; 413 too large, 415 not JSON). A template's `raise_exception` (a request
+  the template rejects) is a 400; any other template failure is a 500. An error during an OpenAI
+  stream is an `{"error": {...}}` event followed by `[DONE]`, on both endpoints. Anthropic usage
+  counts `input_tokens` without the reused prefix (`cache_read_input_tokens`); a stream's
+  message_start cannot know the reuse yet and carries the whole prompt, and its final
+  message_delta carries the same usage as a non-streaming response.
 - **Request checks (sw131):** numeric fields out of range or of the wrong type, more than 16 stop
   strings or one over 256 bytes, and text the pre-tokenizer cannot split (about a million
   whitespace characters in one run) are HTTP 400s. A `seed` of -1 means a random seed. A stream

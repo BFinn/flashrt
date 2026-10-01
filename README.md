@@ -211,6 +211,12 @@ server/target/release/flashrt-server --model $M --port 8090 --engine build/flash
   of an OpenAI stream): `prompt_n` prefilled and `cache_n` reused prompt tokens, `prompt_ms`,
   `predicted_n`, `predicted_ms`, the rates, `draft_n` / `draft_n_accepted` with the MTP head, and
   `expert_cache` (the decode's routed experts found in VRAM, `hits`, and not, `misses`).
+- **Special tokens in messages:** `<|im_start|>`, `<think>`, `<tool_call>` and the like typed in a
+  user, system or tool message (or a tool definition) are tokenized as plain text, so a message
+  cannot forge the conversation's structure. `--special-in-text` restores llama.cpp's behaviour.
+- **Unsupported parameters are 400s:** `n` > 1, `logprobs`, a `response_format` other than text,
+  penalties and `logit_bias`, among others; the list, and what is ignored, is in
+  [docs/engine.md](docs/engine.md) ("Known issues").
 - **More:** [docs/engine.md](docs/engine.md) has the full runbook: benchmarks, the KLD
   harness, the engine protocol and profiling.
 
