@@ -1,0 +1,10 @@
+FINGERPRINT-IDENTICAL
+fr_bench plain 256: decode: 256 tokens at depth 32793 in 2.71 s: 94.43 tok/s (fast path, d | expert cache hit rate 85.29% (104805 hit
+engine   plain 256: depth   32793 | prefill  5567.9 t/s (32793 new, 5.89 s) | decode  90.06 t/s wall,   90.4 engine | gen 256 length | hits 85.0% | vram_max 15343
+fr_bench spec2 256: decode: 257 tokens at depth 32793 in 2.62 s: 98.20 tok/s (speculative, | expert cache hit rate 75.36% (123708 hit
+engine   spec2 256: depth   32793 | prefill  5231.8 t/s (32793 new, 6.27 s) | decode  94.13 t/s wall,  94.48 engine | gen 256 length | drafts 137/238 | hits 74.7% | vram_max 15369
+fr_bench plain 384: decode: 384 tokens at depth 32793 in 3.86 s: 99.53 tok/s (fast path, d | expert cache hit rate 88.85% (163763 hit
+engine   plain 384: depth   32793 | prefill  5567.3 t/s (32793 new, 5.89 s) | decode  96.18 t/s wall,  96.42 engine | gen 384 length | hits 88.1% | vram_max 15343
+fr_bench spec2 384: decode: 384 tokens at depth 32793 in 3.65 s: 105.26 tok/s (speculative | expert cache hit rate 82.07% (211544 hit
+engine   spec2 384: depth   32793 | prefill  5259.6 t/s (32793 new, 6.23 s) | decode 106.04 t/s wall,  106.3 engine | gen 384 length | drafts 201/368 | hits 81.0% | vram_max 15369
+ALLDONE
