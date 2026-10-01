@@ -8,7 +8,7 @@ against the best existing engines on that box.
   a 512-expert top-10 MoE, hyper-connections, a multi-token-prediction head). The weights are
   the ISTA-DASLab GSQ-RCO Q2_0 GGUF, about 62 GB.
 - **Box:** RTX 5080 16 GB (sm_120), Ryzen 9 7900X (AVX-512), 64 GB DDR5-3600, PCIe Gen5.
-- **Status (2026-09-29):** decode, speculative decoding with the model's MTP head, chunked
+- **Status (2026-10-01):** decode, speculative decoding with the model's MTP head, chunked
   prefill, an engine process and an OpenAI/Anthropic-compatible server work end to end.
   - The phase gates P1-P3 in [docs/design.md](docs/design.md) are met; P4 is done in part.
   - This is research code: one architecture and one quantization, built and tested on one
@@ -137,6 +137,26 @@ Batch-1 decode of an offloaded MoE is a memory-traffic problem. flashrt is built
 - **An engine process** (JSON lines) with prefix reuse and recurrent-state checkpoints, behind
   a Rust server with OpenAI and Anthropic APIs. The server has its own tokenizer, byte-exact
   with llama.cpp's, and its own chat-template renderer.
+
+## Will it run on my machine
+
+flashrt was built and measured on one box. What it needs, and what is only tested there:
+
+| Part | Needs | Measured on | Without it |
+|---|---|---|---|
+| GPU | NVIDIA, compute capability 9.0+ (thread-block clusters, programmatic dependent launch, int8 `mma`), 16 GB | RTX 5080 (12.0) | The build refuses below sm_90. Other 9.0+ GPUs build with `-DCMAKE_CUDA_ARCHITECTURES=...` and are untested. |
+| VRAM | 16 GB | 16 GB | Everything left after the dense weights, KV and buffers becomes expert-cache slots (~8,800 at 250K). More VRAM means more slots: roughly +0.3% decode per +1% of slots, up to the full 24,576. |
+| Host RAM | 64 GB (the experts take ~55 GB, pinned) | 64 GB DDR5-3600 | It does not load. Decode at depth scales with RAM bandwidth (each miss reads its expert from RAM). |
+| CPU | x86-64; AVX-512 VNNI for the miss kernels | Ryzen 9 7900X, 12 cores | Without VNNI the misses take a scalar path, which is much slower. `FLASHRT_NATIVE=ON` tunes for the build machine. |
+| Storage | an NVMe drive for the model | PCIe NVMe | The n-gram (PLE) rows are read per token with `O_DIRECT`; a slow disk stalls every step. |
+| Software | Linux, CUDA 12.8+, driver for it, GCC 12+, CMake 3.28+, Ninja, Rust 1.82+ | Ubuntu 24.04, CUDA 12.9, driver 575 | |
+
+`bench/run.sh preflight` checks these on a machine. `MODELS=... bench/run.sh` (plain bash, about an
+hour) builds, runs the tests, a decode check, window 9's protocol and the server smoke test, and
+prints the published numbers beside its own. `bench/reference/` holds the inputs that are not
+model files: window 9's token ids, the drafter's vocabulary, the llama.cpp reference patch and
+how to rebuild the KLD base. A `Dockerfile` builds the same binaries in NVIDIA's CUDA image (the
+measurements ran outside containers).
 
 ## Build
 
