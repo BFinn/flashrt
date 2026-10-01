@@ -96,7 +96,7 @@ int main() {
     // time: decode (T = 1, 3 at 245K) and a prefill sub-batch (T = 128 at 32K and 245K), each with
     // 8 CTAs per token and with 1
     struct Timing { int pos0, T; };
-    for (const Timing tm : {Timing{245760, 1}, Timing{245760, 3}, Timing{32768, 128}, Timing{245760, 128}})
+    for (const Timing tm : {Timing{245760, 1}, Timing{245760, 3}, Timing{32768, 128}, Timing{65536, 128}, Timing{131072, 128}, Timing{196608, 128}, Timing{245760, 128}})
     for (int cl : {8, 4, 2, 1}) {
         const int T = tm.T, p0 = tm.pos0;
         std::vector<float> sc(size_t(T) * ld);
