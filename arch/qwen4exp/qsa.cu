@@ -627,7 +627,7 @@ __global__ void __launch_bounds__(32 * W) k_attn_tc(const float* q, const void* 
 // Pool every block completed by a token of this call: mean of the block's raw keys (from this
 // call's keys, or the ring for earlier positions), RMS norm, NEOX rope at the block's first
 // position. One CUDA block per token; tokens that complete no block exit.
-__global__ void k_idx_pool(const float* kraw, const float* ring, const float* w, float* pooled, int pos0, int r, int dim,
+__global__ void k_idx_pool(const float* kraw, const float* ring, const float* w, __half* pooled, int pos0, int r, int dim,
                            int n_rot, float theta_scale, float eps, const int32_t* dp) {
     if (dp) pos0 = dp[1];
     const int t = blockIdx.x, p = pos0 + t;
@@ -649,16 +649,16 @@ __global__ void k_idx_pool(const float* kraw, const float* ring, const float* w,
     const float inv = rsqrtf(ss / dim + eps);
     __syncthreads();
     const int half = n_rot / 2;
-    float* y = pooled + size_t(b) * dim;
+    __half* y = pooled + size_t(b) * dim;
     for (int i = threadIdx.x; i < dim; i += blockDim.x) {
         if (i < half) {
             float sn, cs;
             sincosf(float(b * r) * powf(theta_scale, float(i)), &sn, &cs);
             const float x0 = m[i] * inv * w[i], x1 = m[i + half] * inv * w[i + half];
-            y[i] = x0 * cs - x1 * sn;
-            y[i + half] = x0 * sn + x1 * cs;
+            y[i] = __float2half_rn(x0 * cs - x1 * sn);
+            y[i + half] = __float2half_rn(x0 * sn + x1 * cs);
         } else if (i >= n_rot) {
-            y[i] = m[i] * inv * w[i];
+            y[i] = __float2half_rn(m[i] * inv * w[i]);
         }
     }
 }
@@ -672,27 +672,29 @@ __global__ void k_idx_ring(const float* kraw, float* ring, int pos0, int T, int 
 }
 
 // score[t][b] = sum over heads of relu(q[t][h] . pooled[b]), for the blocks complete at token t
-__global__ void k_idx_scores(const float* qi, const float* pooled, float* scores, int ld, int pos0, int r, int heads,
+__global__ void k_idx_scores(const float* qi, const __half* pooled, float* scores, int ld, int pos0, int r, int heads,
                              int dim) {
     const int t = blockIdx.y;
     const int b = blockIdx.x * blockDim.x + threadIdx.x;
     const int nb = (pos0 + t + 1) / r;
     if (b >= nb) return;
-    const float* kb = pooled + size_t(b) * dim;
+    const __half* kb = pooled + size_t(b) * dim;
     float sum = 0.0f;
     for (int h = 0; h < heads; ++h) {
         const float* qh = qi + (size_t(t) * heads + h) * dim;
         float d = 0.0f;
-        for (int i = 0; i < dim; ++i) d += qh[i] * kb[i];
+        for (int i = 0; i < dim; ++i) d += qh[i] * __half2float(kb[i]);
         sum += fmaxf(d, 0.0f);
     }
     scores[size_t(t) * ld + b] = sum;
 }
 
-// As k_idx_scores for dim == 128: one warp per pooled key (a coalesced 512-byte read), the
-// token's queries in shared memory; each block covers 8 warps x kIdxKeysPerWarp keys.
+// As k_idx_scores for dim == 128: one warp per pooled key (a coalesced 256-byte read of fp16, the
+// warp's keys loaded before the dot products), the token's queries in shared memory; each block
+// covers 8 warps x kIdxKeysPerWarp keys. Bound by the keys' bytes: fp32 keys took 37 us per call at
+// 245K (sw122), fp16 halves them.
 constexpr int kIdxKeysPerWarp = 4;
-__global__ void k_idx_scores128(const float* qi, const float* pooled, float* scores, int ld, int pos0, int r, int heads,
+__global__ void k_idx_scores128(const float* qi, const __half* pooled, float* scores, int ld, int pos0, int r, int heads,
                                 const int32_t* dp) {
     if (dp) pos0 = dp[1];
     extern __shared__ __align__(16) float qs[];   // [heads][128]
@@ -703,10 +705,19 @@ __global__ void k_idx_scores128(const float* qi, const float* pooled, float* sco
     for (int i = threadIdx.x; i < heads * 128; i += blockDim.x) qs[i] = qi[size_t(t) * heads * 128 + i];
     __syncthreads();
     const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+    uint2 kr[kIdxKeysPerWarp] = {};
+#pragma unroll
+    for (int j = 0; j < kIdxKeysPerWarp; ++j) {
+        const int b = b0 + warp * kIdxKeysPerWarp + j;
+        if (b < nb) kr[j] = reinterpret_cast<const uint2*>(pooled + size_t(b) * 128)[lane];
+    }
+#pragma unroll
     for (int j = 0; j < kIdxKeysPerWarp; ++j) {
         const int b = b0 + warp * kIdxKeysPerWarp + j;
         if (b >= nb) break;
-        const float4 kv = reinterpret_cast<const float4*>(pooled + size_t(b) * 128)[lane];
+        const float2 k01 = __half22float2(*reinterpret_cast<const __half2*>(&kr[j].x));
+        const float2 k23 = __half22float2(*reinterpret_cast<const __half2*>(&kr[j].y));
+        const float4 kv = make_float4(k01.x, k01.y, k23.x, k23.y);
         float sum = 0.0f;
         for (int h = 0; h < heads; ++h) {
             const float4 q = reinterpret_cast<const float4*>(qs + h * 128)[lane];
@@ -721,11 +732,11 @@ __global__ void k_idx_scores128(const float* qi, const float* pooled, float* sco
 // Indexer scores for prefill sub-batches (4 heads, dim 128) on tensor cores: a CTA takes 32
 // tokens, whose 128 (token, head) query rows are the M side of mma.m16n8k16 (fp16 in, fp32
 // accumulate; each warp holds 8 tokens' fragments in registers). It walks tiles of 64 pooled
-// keys (converted to fp16 in shared memory), and fuses relu and the sum over the heads (two
+// keys (fp16, as stored), and fuses relu and the sum over the heads (two
 // shuffles) into the epilogue. Tiles past the tile's last token are skipped. Scores of blocks a
 // token can not see yet are written too, as k_idx_select reads only (pos + 1) / r of each row.
 constexpr int kIdxTcTokens = 32, kIdxTcKeys = 64;
-__global__ void __launch_bounds__(128) k_idx_scores_tc(const float* qi, const float* pooled, float* scores, int ld, int pos0, int r, int Ts) {
+__global__ void __launch_bounds__(128) k_idx_scores_tc(const float* qi, const __half* pooled, float* scores, int ld, int pos0, int r, int Ts) {
     constexpr int D = 128, KP = D + 8;   // key row stride in shared (halves): conflict-free fragment loads
     __shared__ __align__(16) __half ks[kIdxTcKeys][KP];
     const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, g = lane >> 2, c = lane & 3;
@@ -757,9 +768,8 @@ __global__ void __launch_bounds__(128) k_idx_scores_tc(const float* qi, const fl
         __syncthreads();   // the previous tile's keys are no longer read
         for (int i = threadIdx.x; i < kIdxTcKeys * D / 4; i += blockDim.x) {
             const int kb = i / (D / 4), d = (i % (D / 4)) * 4;
-            float4 v = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
-            if (b0 + kb < nb_last) v = *reinterpret_cast<const float4*>(pooled + size_t(b0 + kb) * D + d);
-            const uint2 u = make_uint2(h2u(__floats2half2_rn(v.x, v.y)), h2u(__floats2half2_rn(v.z, v.w)));
+            uint2 u = make_uint2(0u, 0u);
+            if (b0 + kb < nb_last) u = *reinterpret_cast<const uint2*>(pooled + size_t(b0 + kb) * D + d);
             *reinterpret_cast<uint2*>(&ks[kb][d]) = u;
         }
         __syncthreads();
@@ -1067,7 +1077,23 @@ void qsa_state_io(FILE* f, const Spec& s, QsaCache& kv, int pos, bool save, bool
         }
         cudaFree(tmp);
     }
-    state_bytes(f, kv.idx_pooled, size_t(pos / s.qsa_block + 1) * s.idx_dim * 4, save, bounce);
+    {   // the file keeps the pooled keys in fp32 (its format before they were stored in fp16)
+        const size_t np = size_t(pos / s.qsa_block + 1) * s.idx_dim;
+        std::vector<__half> h(np);
+        if (save) {
+            ck(cudaMemcpy(h.data(), kv.idx_pooled, np * 2, cudaMemcpyDeviceToHost), "pooled keys to host");
+            bounce.resize(np * 4);
+            float* fl = reinterpret_cast<float*>(bounce.data());
+            for (size_t i = 0; i < np; ++i) fl[i] = __half2float(h[i]);
+            if (std::fwrite(bounce.data(), 1, np * 4, f) != np * 4) throw std::runtime_error("state file write failed");
+        } else {
+            bounce.resize(np * 4);
+            if (std::fread(bounce.data(), 1, np * 4, f) != np * 4) throw std::runtime_error("state file truncated");
+            const float* fl = reinterpret_cast<const float*>(bounce.data());
+            for (size_t i = 0; i < np; ++i) h[i] = __float2half_rn(fl[i]);
+            ck(cudaMemcpy(kv.idx_pooled, h.data(), np * 2, cudaMemcpyHostToDevice), "pooled keys to device");
+        }
+    }
     // the file keeps the ring of the last `block` positions at slot position % block (its format
     // before the ring grew to qsa_ring_slots); positions before 0 stay zero
     const int r = s.qsa_block, R = qsa_ring_slots(s);
@@ -1158,7 +1184,7 @@ QsaCache alloc_qsa_cache(const Spec& s, int capacity, bool q8, int hot_blocks) {
         ck(cudaMalloc(&kv.Ks, n / 32 * 2), "cudaMalloc K scales");
         ck(cudaMalloc(&kv.Vs, n / 32 * 2), "cudaMalloc V scales");
     }
-    ck(cudaMalloc(&kv.idx_pooled, size_t(capacity / s.qsa_block + 1) * s.idx_dim * 4), "cudaMalloc pooled keys");
+    ck(cudaMalloc(&kv.idx_pooled, size_t(capacity / s.qsa_block + 1) * s.idx_dim * 2), "cudaMalloc pooled keys");
     ck(cudaMalloc(&kv.idx_ring, size_t(qsa_ring_slots(s)) * s.idx_dim * 4), "cudaMalloc key ring");
     ck(cudaMemset(kv.idx_ring, 0, size_t(qsa_ring_slots(s)) * s.idx_dim * 4), "memset key ring");
     return kv;
@@ -1265,7 +1291,7 @@ void qsa_mixer(const BlockCtx& c, int il, const float* x, int T, int pos0, QsaCa
     k_norm_rope<float><<<T * IH, 128, 0, c.stream>>>(qi, IH * ID, ID, static_cast<const float*>(c.w.layer(il, "indexer.q_norm.weight").dev),
                                                     qi, IH, ID, s.rope_dims, pos0, theta_scale, eps, 0, c.dparams);
     k_idx_pool<<<T, 128, 0, c.stream>>>(ki, kv.idx_ring, static_cast<const float*>(c.w.layer(il, "indexer.k_norm.weight").dev),
-                                       kv.idx_pooled, pos0, r, ID, s.rope_dims, theta_scale, eps, c.dparams);
+                                       reinterpret_cast<__half*>(kv.idx_pooled), pos0, r, ID, s.rope_dims, theta_scale, eps, c.dparams);
     k_idx_ring<<<std::min(T, qsa_ring_slots(s)), 128, 0, c.stream>>>(ki, kv.idx_ring, pos0, T, r, ID, c.dparams);
 
     const int ldc = nsel * r;
@@ -1296,13 +1322,13 @@ void qsa_mixer(const BlockCtx& c, int il, const float* x, int T, int pos0, QsaCa
                 const int ty = (Ts + kIdxTcTokens - 1) / kIdxTcTokens;
                 const int tiles = (max_nb + kIdxTcKeys - 1) / kIdxTcKeys;
                 const int tx = std::max(1, std::min((tiles + 3) / 4, 2048 / ty));   // about 4 key tiles per CTA
-                k_idx_scores_tc<<<dim3(tx, ty), 128, 0, c.stream>>>(qi_s, kv.idx_pooled, bs.idx_scores, max_nb, p0, r, Ts);
+                k_idx_scores_tc<<<dim3(tx, ty), 128, 0, c.stream>>>(qi_s, reinterpret_cast<const __half*>(kv.idx_pooled), bs.idx_scores, max_nb, p0, r, Ts);
             } else if (ID == 128) {
                 const int per_block = 8 * kIdxKeysPerWarp;
                 k_idx_scores128<<<dim3((max_nb + per_block - 1) / per_block, Ts), 256, size_t(IH) * 128 * 4, c.stream>>>(
-                    qi_s, kv.idx_pooled, bs.idx_scores, max_nb, p0, r, IH, c.dparams);
+                    qi_s, reinterpret_cast<const __half*>(kv.idx_pooled), bs.idx_scores, max_nb, p0, r, IH, c.dparams);
             } else {
-                k_idx_scores<<<dim3((max_nb + 127) / 128, Ts), 128, 0, c.stream>>>(qi_s, kv.idx_pooled, bs.idx_scores, max_nb, p0, r, IH, ID);
+                k_idx_scores<<<dim3((max_nb + 127) / 128, Ts), 128, 0, c.stream>>>(qi_s, reinterpret_cast<const __half*>(kv.idx_pooled), bs.idx_scores, max_nb, p0, r, IH, ID);
             }
             k_idx_select<<<dim3(kSelCluster, Ts), 1024, 0, c.stream>>>(bs.idx_scores, max_nb, bs.idx_cells, bs.idx_counts, ldc, p0, r,
                                                                      nsel, width, c.dparams);

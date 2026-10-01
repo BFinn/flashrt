@@ -222,7 +222,7 @@ struct QsaCache {
     void *mK = nullptr, *mV = nullptr;
     uint16_t *mKs = nullptr, *mVs = nullptr;
     int mcap = 0;   // cells the mirror holds
-    float* idx_pooled = nullptr;   // [capacity / block][idx_dim]
+    uint16_t* idx_pooled = nullptr;   // [capacity / block][idx_dim], fp16 (as the prefill scores rounded them; P-5)
     float* idx_ring = nullptr;     // [qsa_ring_slots][idx_dim], slot = position % qsa_ring_slots
 };
 inline int qsa_ring_slots(const Spec& s) { return 2 * s.qsa_block; }
