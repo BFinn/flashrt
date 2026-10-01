@@ -239,7 +239,11 @@ int main(int argc, char** argv) {
                      .set("decode_ms", res.decode_ms)
                      .set("finish", res.finish)
                      .set("drafts", drafts)
-                     .set("cache", Json::object().set("hits", double(res.cache_hits)).set("misses", double(res.cache_misses))));
+                     .set("cache", Json::object()
+                                       .set("hits", double(res.cache_hits))
+                                       .set("misses", double(res.cache_misses))
+                                       .set("miss_ms", res.miss_ms)
+                                       .set("slots", res.cache_slots)));
         } catch (const std::exception& e) {
             if (!session->healthy()) {
                 error(id, std::string(e.what()) + " (fatal: the engine exits)");

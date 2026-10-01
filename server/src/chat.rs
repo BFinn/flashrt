@@ -428,6 +428,7 @@ pub async fn start(st: Arc<AppState>, req: ChatRequest) -> Result<(mpsc::Receive
                         ev.get("decode_ms").and_then(|x| x.as_f64()).unwrap_or(0.0),
                         finish
                     );
+                    st.metrics.record_done(&ev);
                     send!(ChatEvent::Done {
                         finish,
                         stop_sequence: stopped.clone(),
@@ -441,6 +442,7 @@ pub async fn start(st: Arc<AppState>, req: ChatRequest) -> Result<(mpsc::Receive
                 Some("error") => {
                     let msg = ev.get("msg").and_then(Value::as_str).unwrap_or("engine error").to_string();
                     tracing::error!("{id}: engine error: {msg}");
+                    st.metrics.record_error();
                     send!(ChatEvent::Error(msg));
                     break;
                 }
@@ -503,6 +505,7 @@ mod tests {
             stop_ids: vec![261],
             ids: crate::SpecialIds { think: 256, think_end: 257, tool_call: 258, tool_call_end: 259 },
             api_key: None,
+            metrics: Default::default(),
         })
     }
 

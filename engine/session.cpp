@@ -523,6 +523,7 @@ GenerateResult Session::run(const GenerateRequest& r, const std::function<void(i
     // 3. decode
     const auto td = Clock::now();
     const long hits0 = m.host.hits, misses0 = m.host.misses + m.host.gpu_misses;
+    const double cpu0 = m.host.cpu_s;
     auto is_stop = [&](int32_t t) { return std::find(r.stop_ids.begin(), r.stop_ids.end(), t) != r.stop_ids.end(); };
     int32_t y = m.pick(m.logits, 1, n, r)[0];   // the pending token: sampled, not yet run
     bool done = false;
@@ -603,6 +604,8 @@ GenerateResult Session::run(const GenerateRequest& r, const std::function<void(i
     res.decode_ms = ms_since(td);
     res.cache_hits = m.host.hits - hits0;
     res.cache_misses = m.host.misses + m.host.gpu_misses - misses0;
+    res.miss_ms = (m.host.cpu_s - cpu0) * 1e3;
+    res.cache_slots = m.cache.n_slots;
     if (m.o.cache_check) {
         const CacheCheck c = cache_check(m.cache, m.mgr);
         std::fprintf(stderr,

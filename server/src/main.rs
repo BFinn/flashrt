@@ -18,6 +18,7 @@ mod anthropic;
 mod chat;
 mod engine;
 mod gguf;
+mod metrics;
 mod openai;
 mod template;
 mod tokenizer;
@@ -100,6 +101,7 @@ pub struct AppState {
     pub stop_ids: Vec<u32>,
     pub ids: SpecialIds,
     pub api_key: Option<String>,
+    pub metrics: metrics::Metrics,
 }
 
 /// The HTTP status of a request that could not start: 503 when the engine is down, else 400.
@@ -207,6 +209,7 @@ async fn main() -> Result<()> {
         stop_ids,
         ids,
         api_key: args.api_key.clone(),
+        metrics: metrics::Metrics::default(),
     });
     let app = Router::new()
         .route("/v1/models", get(models))
@@ -214,6 +217,7 @@ async fn main() -> Result<()> {
         .route("/v1/completions", post(|State(s): State<Arc<AppState>>, Json(v): Json<Value>| openai::completions(s, v)))
         .route("/v1/messages", post(|State(s): State<Arc<AppState>>, Json(v): Json<Value>| anthropic::messages(s, v)))
         .route("/v1/messages/count_tokens", post(|State(s): State<Arc<AppState>>, Json(v): Json<Value>| anthropic::count_tokens(s, v)))
+        .route("/metrics", get(metrics_text))
         .layer(middleware::from_fn_with_state(state.clone(), auth))
         // axum's default of 2 MiB is too little for a full context: 262K tokens of text with
         // tool definitions and JSON escaping come to several MiB
@@ -262,6 +266,11 @@ async fn health(State(s): State<Arc<AppState>>) -> Response {
     } else {
         (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"status": "engine down"}))).into_response()
     }
+}
+
+/// The running totals over finished generations, in Prometheus's text format (metrics.rs).
+async fn metrics_text(State(s): State<Arc<AppState>>) -> Response {
+    ([(axum::http::header::CONTENT_TYPE, "text/plain; version=0.0.4")], s.metrics.render(s.engine.alive())).into_response()
 }
 
 async fn auth(State(s): State<Arc<AppState>>, req: Request, next: Next) -> Response {

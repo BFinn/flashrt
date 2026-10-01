@@ -77,7 +77,7 @@ Engine to server, while generating:
 {"ev":"progress","id":"r1","prompt_done":8192,"prompt_total":65536}
 {"ev":"done","id":"r1","generated":384,"prompt_tokens":65536,"reused":32768,
  "prompt_ms":61234.5,"decode_ms":4890.1,"finish":"length","drafts":{"proposed":330,"accepted":218},
- "cache":{"hits":141200,"misses":6340}}
+ "cache":{"hits":141200,"misses":6340,"miss_ms":2810.4,"slots":8809}}
 {"ev":"error","id":"r1","msg":"..."}
 ```
 
@@ -86,7 +86,9 @@ prefix. `reused` reports how many tokens were reused: the whole previous sequenc
 extends it, else the latest recurrent-state checkpoint inside the shared prefix (one at the end of
 the previous prompt, and up to `--ckpts` taken during earlier prefills at chunk ends and before
 the prompt's last `--ckpt-tail` tokens). `cache` counts the decode's routed experts found in the
-VRAM expert cache and those that missed it.
+VRAM expert cache and those that missed it, the host's time computing the misses (`miss_ms`),
+and the cache's slot count after the request (`slots`; both since 2026-10-01, optional to a
+reader). The server sums these events at `/metrics`.
 
 Requests are checked before anything runs; a bad one gets an `error` event and changes no state.
 The limits: token ids within the vocabulary; `max_new` ≥ 1; `temperature` ≥ 0 (0 is greedy);

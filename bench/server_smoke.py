@@ -191,6 +191,20 @@ def main():
     text = r["choices"][0]["message"]["content"] or ""
     check("top_k 0 accepted", "<|im" not in text, repr(text))
 
+    # 12. /metrics: the totals over the generations above, in Prometheus's text format
+    req = urllib.request.Request(A.url + "/metrics", headers={"Authorization": f"Bearer {A.key}"} if A.key else {})
+    mt = {}
+    for line in urllib.request.urlopen(req, timeout=60).read().decode().splitlines():
+        if line and not line.startswith("#"):
+            k, v = line.rsplit(" ", 1)
+            mt[k] = float(v)
+    done = sum(v for k, v in mt.items() if k.startswith("flashrt_requests_total{"))
+    check("metrics", mt.get("flashrt_engine_up") == 1 and done >= 10 and mt.get("flashrt_generated_tokens_total", 0) > 0
+          and mt.get("flashrt_expert_cache_hits_total", 0) > 0 and mt.get("flashrt_expert_cache_slots", 0) > 0,
+          f"{done:.0f} requests, {mt.get('flashrt_generated_tokens_total', 0):.0f} tokens, "
+          f"slots {mt.get('flashrt_expert_cache_slots', 0):.0f}, last hit ratio {mt.get('flashrt_last_expert_cache_hit_ratio', 0):.3f}, "
+          f"CPU miss time {mt.get('flashrt_cpu_miss_seconds_total', 0):.2f} s")
+
     print("FAILED: " + ", ".join(FAILED) if FAILED else "all checks passed")
     sys.exit(1 if FAILED else 0)
 
