@@ -9,10 +9,12 @@
 #include "kernels/cuda/ggml_gemv.h"
 #include "kernels/cuda/q3r.h"
 
+#include <cooperative_groups.h>
 #include <cuda_fp16.h>
 
 #include <algorithm>
 #include <atomic>
+#include <cstdlib>
 #include <stdexcept>
 
 namespace flashrt::qwen4exp {
@@ -323,10 +325,66 @@ __global__ void k_argmax(const float* x, int n, int32_t* out) {
         out[0] = idx;
     }
 }
+
+// The same argmax on a cluster of kArgmaxCluster CTAs (P-5): one CTA read the 1 MB of logits at
+// about 13 GB/s (79 us per call at 262K, sw122). Each thread takes every (8 * 1024)-th value, four
+// loads in flight, in rising index order; each CTA reduces as above, and CTA 0 takes the CTAs' results
+// in rank order through distributed shared memory. Same result as k_argmax, ties included.
+constexpr int kArgmaxCluster = 8;
+__global__ void __cluster_dims__(kArgmaxCluster, 1, 1) __launch_bounds__(1024) k_argmax_cl(const float* x, int n, int32_t* out) {
+    namespace cg = cooperative_groups;
+    cg::cluster_group cl = cg::this_cluster();
+    __shared__ float bv[32];
+    __shared__ int bi[32];
+    constexpr int S = kArgmaxCluster * 1024;
+    float v = -INFINITY;
+    int idx = 0x7fffffff;
+    int i = int(cl.block_rank()) * 1024 + threadIdx.x;
+    for (; i + 3 * S < n; i += 4 * S) {
+        float xi[4];
+#pragma unroll
+        for (int k = 0; k < 4; ++k) xi[k] = x[i + k * S];
+#pragma unroll
+        for (int k = 0; k < 4; ++k)
+            if (xi[k] > v) { v = xi[k]; idx = i + k * S; }
+    }
+    for (; i < n; i += S) {
+        const float xi = x[i];
+        if (xi > v) { v = xi; idx = i; }
+    }
+    for (int o = 16; o > 0; o >>= 1) {
+        const float v2 = __shfl_xor_sync(0xffffffff, v, o);
+        const int i2 = __shfl_xor_sync(0xffffffff, idx, o);
+        if (v2 > v || (v2 == v && i2 < idx)) { v = v2; idx = i2; }
+    }
+    if ((threadIdx.x & 31) == 0) { bv[threadIdx.x >> 5] = v; bi[threadIdx.x >> 5] = idx; }
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        for (int w = 1; w < 32; ++w)
+            if (bv[w] > v || (bv[w] == v && bi[w] < idx)) { v = bv[w]; idx = bi[w]; }
+        bv[0] = v;
+        bi[0] = idx;
+    }
+    cl.sync();   // every CTA's result is in its bv[0] / bi[0]
+    if (cl.block_rank() == 0 && threadIdx.x == 0) {
+        for (int k = 1; k < kArgmaxCluster; ++k) {
+            const float v2 = *cl.map_shared_rank(&bv[0], k);
+            const int i2 = *cl.map_shared_rank(&bi[0], k);
+            if (v2 > v || (v2 == v && i2 < idx)) { v = v2; idx = i2; }
+        }
+        out[0] = idx;
+    }
+    cl.sync();   // no CTA exits while CTA 0 still reads its result
+}
 }  // namespace
 
 void argmax_dev(cudaStream_t stream, const float* x, int n, int32_t* out_dev) {
-    k_argmax<<<1, 1024, 0, stream>>>(x, n, out_dev);
+    static const bool cluster = [] {   // FLASHRT_ARGMAX_CLUSTER=0: the one-CTA kernel
+        const char* e = std::getenv("FLASHRT_ARGMAX_CLUSTER");
+        return !(e && e[0] == '0');
+    }();
+    if (cluster) k_argmax_cl<<<kArgmaxCluster, 1024, 0, stream>>>(x, n, out_dev);
+    else k_argmax<<<1, 1024, 0, stream>>>(x, n, out_dev);
     ck(cudaGetLastError(), "argmax");
 }
 
