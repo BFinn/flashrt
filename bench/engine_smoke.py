@@ -8,7 +8,8 @@ what each must show (exits 1 when a check fails):
   2. that prompt plus the tokens request 1 generated plus a few more prompt tokens (the engine
      should reuse the whole previous sequence: "reused" close to the old length);
   3. request 2's prompt plus different tokens than request 2 generated (the engine should restore
-     the checkpoint taken at the end of request 2's prompt: "reused" = that prompt's length);
+     the checkpoint taken at the end of request 2's prompt: "reused" = that prompt's length minus
+     one, since a prompt's last token always runs, for its logits);
   4. request 1's prompt with a "stop" sent after a few tokens (finish "cancelled"; it reuses a
      host checkpoint from request 1's prefill, a chunk end);
 then "quit", after which the engine must exit with status 0.
@@ -130,7 +131,8 @@ def main():
     want2 = len(prompt1) + len(t1) - 1
     check("r2 reuses the previous sequence", e2.get("reused") == want2, f"reused {e2.get('reused')}, want {want2}")
     _, e3 = run("r3", prompt2 + ids[a.n + 32:a.n + 48])
-    check("r3 reuses r2's prompt", e3.get("reused") == len(prompt2), f"reused {e3.get('reused')}, want {len(prompt2)}")
+    # r2's end-of-prompt checkpoint holds the state before its last prompt token (that token runs for its logits)
+    check("r3 reuses r2's prompt", e3.get("reused") == len(prompt2) - 1, f"reused {e3.get('reused')}, want {len(prompt2) - 1}")
     _, e4 = run("r4", prompt1, stop_after=5)
     check("r4 is cancelled", e4.get("finish") == "cancelled", f"finish {e4.get('finish')}")
     p.stdin.write(json.dumps({"op": "quit"}) + "\n")
