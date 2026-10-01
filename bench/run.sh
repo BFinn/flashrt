@@ -27,6 +27,7 @@ D=$MODELS/mtp-Flash-Next-Q8_0-noembd.gguf
 V=$FR/bench/reference/mtp-vocab-ranks.txt
 IDS=$FR/bench/reference/w9-ids.json
 mkdir -p "$BENCH"
+[ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"   # rustup's default install
 
 say() { printf '\n== %s\n' "$*"; }
 warn() { printf 'WARNING: %s\n' "$*"; }
@@ -62,6 +63,9 @@ preflight() {
         echo "model storage: $dev (rotational: ${rota:-unknown}); the n-gram (PLE) rows are read per token with O_DIRECT, so use an NVMe drive"
         [ "${rota:-0}" = 1 ] && warn "a rotational disk will stall every decode step"
     fi
+    local missing=""
+    for t in cmake ninja g++ cargo python3 curl "${CUDACXX:-/usr/local/cuda/bin/nvcc}"; do command -v "$t" > /dev/null || missing="$missing $t"; done
+    [ -n "$missing" ] && { echo "missing tools:$missing (CUDA 12.8+, CMake 3.28+, Ninja, GCC 12+, Rust 1.82+)"; ok=0; }
     [ $ok = 1 ] && echo "preflight: ok" || { echo "preflight: FAILED"; return 1; }
 }
 
