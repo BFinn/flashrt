@@ -1,6 +1,6 @@
 # flashrt engine as built
 
-Last updated 2026-09-30 (through sw112).
+Last updated 2026-10-01 (through sw128).
 
 This describes what the code does today, why each piece is shaped the way it is, what was tried
 and rejected, and how to measure it. `design.md` holds the plan and the phase gates. The
@@ -51,6 +51,14 @@ per-experiment evidence is in `bench/results/2026-09-2*`, each folder with a REA
     - `blocks.cu` split by block;
     - `ForwardRef` renamed `Forward`, its `forward()` split, and graphs invalidated by a
       scratch version.
+- **P-5 is done (2026-10-01, sw120-sw128):**
+  - the selection on a cluster for decode, and by depth for prefill;
+  - the parallel CLOCK;
+  - the argmax on a cluster;
+  - fp16 pooled indexer keys.
+
+  Window 9 at 250K: no MTP 82.3 → 91.9 tok/s, MTP greedy 92.3 → 104.9 (against sw119). Prefill is
+  back at sw119's level after sw127. The hc mix track is closed (sw123, sw125).
 - **Next:** see "Next steps".
 
 ## One decode token (fast path)
@@ -365,9 +373,11 @@ cache after, from the prefill's routing counts and the startup prior.
 | **Engine: 32K prompt, MTP head, cache rebuild** | 7.9 s | `2026-09-28-sw61-milestone` |
 | Prefill KLD (logits from chunks; fp16, q8; fast path after chunks) | 0.0082-0.0087 | sw47, sw49, sw50 |
 | Prefill, reference path (CPU experts, 64-token batches) | 109-123 tok/s | |
-| **Window 9's protocol** (the reference engines' prompts, 384 tokens, 5 runs, prefixes reused), 1K / 32K / 134K / 250K: greedy `--spec 2` | 125.8 / 107.8 / 104.2 / 99.1 | `2026-09-30-sw124-depthbench` (sw119, before P-5's kernels: 125.7 / 106.0 / 99.5 / 92.3; sw110, before the cache fix: 131.9 / 107.1 / 99.1 / 87.0; sw91: 106.6 / 83.7 / 81.0 / 74.8) |
-| same, temperature 1.0 `--spec 2` (sampled drafts) | 124.6 / 106.7 / 102.3 / 102.3 | same (sw119: 118.3 / 106.1 / 99.5 / 96.8) |
-| same, no MTP, greedy | 101.3 / 94.9 / 93.5 / 90.3 | same (sw110: 102.2 / 94.8 / 87.5 / 82.8) |
+| **Window 9's protocol** (the reference engines' prompts, 384 tokens, 5 runs, prefixes reused), 1K / 32K / 134K / 250K: greedy `--spec 2` | 127.9 / 111.3 / 103.7 / 104.9 | `2026-10-01-sw128-p5-window9`, after P-5 (sw124, its first round: 125.8 / 107.8 / 104.2 / 99.1; sw119, before P-5's kernels: 125.7 / 106.0 / 99.5 / 92.3; sw110, before the cache fix: 131.9 / 107.1 / 99.1 / 87.0; sw91: 106.6 / 83.7 / 81.0 / 74.8) |
+| same, temperature 1.0 `--spec 2` (sampled drafts) | 118.8 / 95.5 / 106.7 / 106.4 (1K and 32K: ± 16-17, the sampled answers' acceptance) | same (sw124: 124.6 / 106.7 / 102.3 / 102.3; sw119: 118.3 / 106.1 / 99.5 / 96.8) |
+| same, no MTP, greedy | 103.5 / 95.5 / 93.9 / 91.9 | same (sw124: 101.3 / 94.9 / 93.5 / 90.3; sw110: 102.2 / 94.8 / 87.5 / 82.8) |
+| same, prefill per new token, no MTP, 32K / 134K / 250K | 5,635 / 5,683 / 5,254 tok/s | same (sw124, before sw127's fix: 5,060 / 5,064 / 4,734) |
+| **Prefill, `fr_bench`, q8 host KV + hot set 4096, 32K / 128K / 245K** | 5,981 / 5,935 / 5,710 tok/s | `2026-10-01-sw127-prefill-select` |
 | **Many short requests through the server** (GSM8K, 200 in a row, `--spec 2`), decode at steady state | 143-148 tok/s, 82-84% hits | `2026-09-30-sw118-cache-leak` (before the fix: falling to 61 tok/s, 12% hits) |
 | **GSM8K**, the first 500 test items, greedy, thinking off: flashrt / llama.cpp on the same GGUF | 96.0% / 96.6% (McNemar p = 0.51) | `2026-09-30-sw116-gsm8k` |
 | same, Strata greedy / temperature 1.0 (its build warns that its cache path changes outputs); llama.cpp | 87.0 / 96.0 / 85.0 / 80.4; 80.5 / 79.1 / 73.9 / 69.9; 37.4 / 37.2 / 32.8 / 30.7 | `2026-09-27-w9-validation` |

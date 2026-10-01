@@ -16,7 +16,7 @@ against the best existing engines on that box.
 
 ## Results
 
-**Same prompts as the reference engines** (`bench/results/2026-09-30-sw124-depthbench`, against
+**Same prompts as the reference engines** (`bench/results/2026-10-01-sw128-p5-window9`, against
 `bench/results/2026-09-27-w9-validation`):
 - the same token ids (a synthetic prompt followed by an instruction, at 1K / 32K / 134K / 250K
   tokens);
@@ -29,11 +29,11 @@ against the best existing engines on that box.
 | llama.cpp (expert cache, sparse attention; no MTP), greedy | 4 | 37.4 ± 0.6 | 37.2 ± 1.1 | 32.8 ± 1.6 | 30.7 ± 1.1 |
 | **greedy** | | | | | |
 | Strata 0.1.6, MTP (see the caveat below) | 4 | 87.0 ± 0.7 | 96.0 ± 2.2 | 85.0 ± 2.7 | 80.4 ± 3.6 |
-| flashrt, MTP (2 drafts per round) | 5 | 125.8 ± 3.4 | 107.8 ± 0.7 | 104.2 ± 2.0 | 99.1 ± 1.8 |
-| flashrt, no MTP | 5 | 101.3 ± 0.7 | 94.9 ± 1.4 | 93.5 ± 1.3 | 90.3 ± 1.5 |
+| flashrt, MTP (2 drafts per round) | 5 | 127.9 ± 4.4 | 111.3 ± 4.1 | 103.7 ± 2.3 | 104.9 ± 2.7 |
+| flashrt, no MTP | 5 | 103.5 ± 2.1 | 95.5 ± 0.8 | 93.9 ± 0.9 | 91.9 ± 1.7 |
 | **temperature 1.0** (top-p 0.95, top-k 20) | | | | | |
 | Strata 0.1.6, MTP (n=3 at 250K) | 4 | 80.5 ± 4.1 | 79.1 ± 1.3 | 73.9 ± 1.8 | 69.9 ± 7.2 |
-| flashrt, MTP, sampled drafts | 5 | 124.6 ± 9.8 | 106.7 ± 3.9 | 102.3 ± 3.1 | 102.3 ± 3.5 |
+| flashrt, MTP, sampled drafts | 5 | 118.8 ± 16.5 | 95.5 ± 17.0 | 106.7 ± 2.1 | 106.4 ± 2.9 |
 
 - **Prefix reuse.** Every prompt ends with the same instruction, so a deeper prompt shares only its
   context with the previous one. flashrt reuses 32,768 tokens at 134K and 134,004 at 250K, from
@@ -47,13 +47,19 @@ against the best existing engines on that box.
   the model's.
 
 What the table shows:
-- **Against llama.cpp:** 2.6-2.9x with neither engine drafting, 2.9-3.4x with flashrt's MTP head.
-- **Against Strata, greedy:** ahead at every depth, by 45%, 12%, 23% and 23%. Without its draft
-  head flashrt is ahead at 1K, 134K and 250K (by 10-16%), and level at 32K (94.9 against 96.0).
-- **Against Strata, temperature 1.0:** ahead by 35-55% at every depth.
-- **At depth, the last gain came from two kernels** (sw121, sw122): the indexer's block selection
-  on a thread-block cluster and the hot set's CLOCK in parallel, both output-identical. 134K and
-  250K rose 5-10% (sw124 against sw119).
+- **Against llama.cpp:** 2.6-3.0x with neither engine drafting, 3.0-3.4x with flashrt's MTP head.
+- **Against Strata, greedy:** ahead at every depth, by 47%, 16%, 22% and 30%. Without its draft
+  head flashrt is ahead at 1K, 134K and 250K (by 10-19%), and level at 32K (95.5 against 96.0).
+- **Against Strata, temperature 1.0:** ahead by 21-52% at every depth. The sampled row's spread at
+  1K and 32K is its text: each run samples its own answer. At 32K, two of five answers kept 35-37%
+  of their drafts, against 55-62% in the others.
+- **At depth, the last gains came from P-5's kernels** (sw121-sw127), measured teacher-forced on
+  the same tokens. They are the indexer's block selection on a thread-block cluster, the hot set's
+  CLOCK in parallel, an argmax on a cluster, and the indexer's pooled keys in fp16 (245K plain
+  +4.4%, KLD within the band). 250K rose 12% without MTP and 14% with it, against sw119. The fp16
+  keys changed the greedy text a little, and the MTP arm's acceptance with it (54.6 → 58.2% at
+  32K). sw127 also restored prefill: sw121's selection had cost it 9.5-12%, unmeasured until
+  sw124.
 - **What moved it: the expert cache's warm-up.** The cache is filled from the prompt's routing, and
   this answer routes elsewhere. The policy now starts from scaled-down prompt counts, admits
   sooner, and starts up to 64 uploads per step, committed deterministically (sw99-sw109). Hit rates
@@ -66,11 +72,11 @@ What the table shows:
   had fallen to 61 tok/s and now holds 143-148 (sw117, sw118).
 - **Tuned on this protocol:** the cache's settings were found here (sw89, sw100, sw104), and
   checked teacher-forced on wikitext too, where they gain 4-5% (sw104, sw109).
-- **Time to the first token at 250K:** 24.0 s with the draft head (sw102) and 22.3 s without it,
+- **Time to the first token at 250K:** 24.0 s with the draft head and 22.2 s without it (sw128),
   for the 116,708 new tokens. Strata takes 123 s for its 119,640 new tokens.
 - **Prefill per new token,** from each engine's own log, at 32K / 134K / 250K:
-  - flashrt without the draft head: 5,665 / 5,753 / 5,233 tok/s;
-  - flashrt with the head: 5,397 / 5,421 / 4,852 (its prompt pass in chunk calls with grouped
+  - flashrt without the draft head: 5,635 / 5,683 / 5,254 tok/s (sw128);
+  - flashrt with the head: 5,385 / 5,352 / 4,871 (its prompt pass in chunk calls with grouped
     expert GEMMs, sw102);
   - Strata: 1,173 / 1,090 / 969;
   - llama.cpp: 1,108 / 724 / 443.
