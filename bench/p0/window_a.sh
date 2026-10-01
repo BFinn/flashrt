@@ -20,8 +20,9 @@ mkdir -p "$OUT" && cd "$OUT" || exit 1
 step() { echo; echo "== $* ($(date +%T))"; }
 
 # ---- the live server: refuse if it is busy, stop it, restart it on any exit
-key=$(cat ~/.config/llama/api-key)
-if curl -s -m 5 -H "Authorization: Bearer $key" http://$TAILNET_HOST:8082/slots | grep -q '"is_processing":true'; then
+# LIVE_URL: the live llama-server's address; LIVE_KEY_FILE: a file holding its API key
+key=$(cat "$LIVE_KEY_FILE")
+if curl -s -m 5 -H "Authorization: Bearer $key" "$LIVE_URL/slots" | grep -q '"is_processing":true'; then
     echo "live server is processing a request; not starting"
     exit 1
 fi
