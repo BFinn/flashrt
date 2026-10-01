@@ -63,7 +63,7 @@ int main() {
     const Case cs[] = {{100, 1, 0.25f}, {2040, 3, 0.25f}, {2051, 1, 0.25f}, {2100, 3, 0.1f}, {4096, 1, 0.5f}, {32768, 1, 0.25f},
                        {32769, 3, 0.25f}, {131070, 3, 0.05f}, {245760, 1, 0.25f}, {245761, 3, 1.0f}, {249990, 3, 0.25f},
                        {60000, 16, 0.25f}, {245000, 1, 0.0f}};
-    for (int cl : {8, 1})   // CTAs per token: decode's cluster, prefill's single CTA (sw126)
+    for (int cl : {8, 4, 2, 1})   // CTAs per token: decode's cluster, prefill's single CTA (sw126)
     for (const Case& c : cs) {
         std::vector<float> sc(size_t(c.T) * ld);
         for (auto& v : sc) {
@@ -97,7 +97,7 @@ int main() {
     // 8 CTAs per token and with 1
     struct Timing { int pos0, T; };
     for (const Timing tm : {Timing{245760, 1}, Timing{245760, 3}, Timing{32768, 128}, Timing{245760, 128}})
-    for (int cl : {8, 1}) {
+    for (int cl : {8, 4, 2, 1}) {
         const int T = tm.T, p0 = tm.pos0;
         std::vector<float> sc(size_t(T) * ld);
         for (auto& v : sc) v = nd(rng);

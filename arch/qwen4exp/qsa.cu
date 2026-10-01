@@ -1027,8 +1027,12 @@ void select_launch(const float* scores, int ld, int32_t* cells, int32_t* counts,
         return !(e && e[0] == '0');
     }();
     if (cluster == 0) cluster = cl1 && !dp && T >= kSelSingleMin ? 1 : kSelCluster;
-    if (cluster == 1) k_idx_select<1><<<dim3(1, T), 1024, 0, stream>>>(scores, ld, cells, counts, ldc, pos0, r, nsel, width, dp);
-    else k_idx_select<kSelCluster><<<dim3(kSelCluster, T), 1024, 0, stream>>>(scores, ld, cells, counts, ldc, pos0, r, nsel, width, dp);
+    switch (cluster) {
+        case 1: k_idx_select<1><<<dim3(1, T), 1024, 0, stream>>>(scores, ld, cells, counts, ldc, pos0, r, nsel, width, dp); break;
+        case 2: k_idx_select<2><<<dim3(2, T), 1024, 0, stream>>>(scores, ld, cells, counts, ldc, pos0, r, nsel, width, dp); break;
+        case 4: k_idx_select<4><<<dim3(4, T), 1024, 0, stream>>>(scores, ld, cells, counts, ldc, pos0, r, nsel, width, dp); break;
+        default: k_idx_select<8><<<dim3(8, T), 1024, 0, stream>>>(scores, ld, cells, counts, ldc, pos0, r, nsel, width, dp); break;
+    }
     ck(cudaGetLastError(), "qsa_select");
 }
 
