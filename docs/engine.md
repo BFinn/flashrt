@@ -1,10 +1,10 @@
 # flashrt engine as built
 
-Last updated 2026-10-01 (through sw128).
+Last updated 2026-10-01 (through sw130).
 
 This describes what the code does today, why each piece is shaped the way it is, what was tried
 and rejected, and how to measure it. `design.md` holds the plan and the phase gates. The
-per-experiment evidence is in `bench/results/2026-09-2*`, each folder with a README.
+per-experiment evidence is in `bench/results/<date>-swNN-*`, each folder with a README.
 
 **Status:**
 - **P1 is complete.** The gates are met: 32K 94.9 / 96.2 / 99.2 tok/s, 250K 61-64 tok/s with
@@ -30,8 +30,10 @@ per-experiment evidence is in `bench/results/2026-09-2*`, each folder with a REA
     (`kernels/cuda/moe_q2.cu`);
   - less hyper-connection traffic, and BF16 expert outputs and hc gate.
 
-  Prefill runs **5,580 tok/s at 32K, 5,629 at 64K and 5,170-5,309 at 245K** (sw61); KLD
-  0.0084-0.0087. Through the engine, a 32K prompt takes 7.9 s.
+  Prefill ran 5,580 tok/s at 32K, 5,629 at 64K and 5,170-5,309 at 245K at sw61 (KLD
+  0.0084-0.0087), when a 32K prompt took 7.9 s through the engine. **Now:** 5,981 / 5,935 /
+  5,710 tok/s at 32K / 128K / 245K in `fr_bench` (sw127); through the engine, window 9's 32K
+  prompt takes 5.8 s without the head and 6.1 s with it (sw128).
 - **Decode round (2026-09-28, sw63-sw68):**
   - A verify window's second token costs about 3.6 ms of kernels, mostly its own experts (sw63).
   - Forecasting routing to prefetch misses does not pay: uploads compete with the CPU misses for
@@ -156,9 +158,11 @@ A round, in `fr_bench --spec K` and `flashrt-engine --spec K`:
 **The head** is the NextN block of the draft GGUF (`-noembd`: the target's embedding and LM head
 are borrowed). Its input at position p is the target's final hyper-connection streams at p - 1
 and the token at p (llama.cpp's graph_mtp semantics); its attention is a QSA layer with its own
-KV cache and indexer. Its 512 experts live in VRAM, requantized Q8_0 → Q4_0 at load (1,449 MiB
-in all). Its head is a gathered copy of the target's LM-head rows for the top 32,768 tokens of a
-frequency ranking (`bench/mtp_vocab.py`) plus the prompt's distinct tokens.
+KV cache and indexer. Its 512 experts live in VRAM, requantized Q8_0 → Q2_0 at load since sw65
+(`--mtp-bits 4` or `8` keeps the older formats). With Q4_0 experts the head took 1,449 MiB in all;
+Q2_0 frees about 500 more expert slots. Its head is a gathered copy of the target's LM-head rows
+for the top 32,768 tokens of a frequency ranking (`bench/mtp_vocab.py`) plus the prompt's distinct
+tokens.
 
 **Rewinding a window** (what `commit` needs):
 - **GDN:** the delta-rule kernel saves the state before the window (one 113 MB backup per
@@ -179,8 +183,10 @@ window's cost.
 
 A `forward()` of more tokens than the decode batch is a chunk. The engine picks the length
 (`Forward::pick_chunk`): the longest, up to 16,384, whose buffers fit the free VRAM, estimated
-from the allocation formulas (`chunk_bytes`). That is 16,384 at 32K and about 10-11K beside 245K
-of KV. `fr_bench --prefill-chunk auto` does the same.
+from the allocation formulas (`chunk_bytes`). That is 16,384 at 32K, and at 245K too in
+`fr_bench` (q8 KV in VRAM, sw61; host KV with the hot set, sw127). The engine keeps its reserve
+and checkpoints, and picks 14,592 for window 9's 250K prompt without the head and 9,728 with it
+(sw128). `fr_bench --prefill-chunk auto` uses the same rule.
 - **Dense layers** run as matrix-matrix products (`kernels/cuda/ggml_gemm.h`): ggml's MMQ int8
   tensor-core kernels for the quantized types, launched by flashrt (`mmq_launch.cuh`, one file per
   weight type), cuBLAS for BF16. Q3R matrices are unpacked back to Q3_K for it.
@@ -263,10 +269,10 @@ cache after, from the prefill's routing counts and the startup prior.
 | **Hot-set CLOCK in parallel** (a chunk of the ring per block scan) | One thread stepped the hand slot by slot. Same victims, pairing and hand as the serial sweep. | sw122: 22.4 → 4.4 µs per call; 245K plain +1.9%; fingerprint identical |
 | **fp16 KV storage** | The values were fp16-rounded already. Half the VRAM, same numerics. | sw12: parity identical line for line |
 | **q8_0 KV** (`--kv q8`) | llama.cpp's own q8_0 cache is the noise floor (KLD 0.0078). It frees about 2,000 expert slots at 245K. | sw18: KLD 0.0092; 245K 61-64 → 63-71 tok/s |
-| **Host KV + GPU hot set** (`--kv-hot 4096`) | QSA reads only 2,052 cells per layer per token. Promoting the selected blocks *before* attention keeps attention on GPU memory. | sw19-20 (v1 read misses zero-copy inside attention: slower), sw22 |
+| **Host KV + GPU hot set** (`--kv-hot 4096`) | QSA reads only 2,052 cells per layer per token. Promoting the selected blocks *before* attention keeps attention on GPU memory. | sw19 (in sw20's README; v1 read misses zero-copy inside attention: slower), sw20, sw22 |
 | **Token embedding in host memory** | Decode reads one 1.1 KB row per token, so its 260 MB of VRAM is better spent on the expert cache. | sw22 |
 | **Graph-mode QSA always runs the selection path** | It keeps the graph valid at every position; the select kernel falls back to dense below the width. | sw17 |
-| **MTP head experts at Q4_0, head over 32K ranked + prompt tokens** | Q4_0 halves the head's VRAM (more expert slots), the trimmed head halves the draft step, and neither costs measurable acceptance. | sw26 |
+| **MTP head experts at Q2_0 (sw65; Q4_0 in sw26), head over 32K ranked + prompt tokens** | A smaller head is more expert slots (Q4_0 halved the head's VRAM, Q2_0 frees about 500 slots more, +5%), the trimmed head halves the draft step, and neither costs measurable acceptance. | sw26, sw65 |
 | **GDN backup + replay for rewinds** | One state copy per window instead of one per token; a partial accept replays only the kept tokens. | sw25 (KLD with rewinds 0.0087) |
 | **Fused hc kernels for windows, each weight read once** | The generic path read the BF16 hc weights at 300 GB/s: 4.6 ms of a 3-token window. | sw28, sw29 |
 | **Window graphs, one pair per length** | Eager windows paid about 1.4 ms of launches per round. | sw27 |
@@ -318,10 +324,10 @@ cache after, from the prefill's routing counts and the startup prior.
 - **Float activations for sub-4-bit decode:** compute-bound (int-to-float conversion at quarter
   rate). Use dp4a. (sw10, sw14)
 - **Hot set v1** (zero-copy miss reads inside attention, one-CTA promotion afterwards): slower
-  than plain q8. (sw19)
+  than plain q8. (sw19, in sw20's README)
 - **Swap budget 32 as the default** was rejected in sw22 (churn at 32K) and adopted in sw89-sw90,
   once window 9's protocol showed the warm-up cost on prompts that predict the answer's routing
-  poorly. The churn cost measured 1% (sw90).
+  poorly. The churn cost measured 1% (sw90). The default has been 64 since sw104.
 - **A cache prior from routing statistics** (sw89): no gain over the prompt's own routing.
 - **Q4 KV with a Hadamard rotation** (planned for P4): not done. With the hot set, KV VRAM is
   about 0.2 GB, so it matters little now.
@@ -370,17 +376,17 @@ cache after, from the prefill's routing counts and the startup prior.
 | Verify window KLD (windows of 3 with rewinds, hot set 512) | 0.009232 | `2026-09-28-sw33-p2-temp1-rerun` |
 | **Prefill, automatic chunks, 32K / 64K (q8 KV)** | 6,216 / 6,239 tok/s | `2026-09-28-sw83-moeq2-pack` (sw71: 5,955 / 5,982) |
 | **Prefill, automatic chunks, 245K (q8 KV / host KV + mirror)** | 5,309 / 5,170 tok/s | `2026-09-28-sw61-milestone` |
-| **Engine: 32K prompt, MTP head, cache rebuild** | 7.9 s | `2026-09-28-sw61-milestone` |
+| **Engine: 32K prompt, MTP head, cache rebuild** | 7.9 s at sw61; 6.1 s at sw128 (window 9's 32K prompt; 5.8 s without the head) | `2026-09-28-sw61-milestone`, `2026-10-01-sw128-p5-window9` |
 | Prefill KLD (logits from chunks; fp16, q8; fast path after chunks) | 0.0082-0.0087 | sw47, sw49, sw50 |
 | Prefill, reference path (CPU experts, 64-token batches) | 109-123 tok/s | |
 | **Window 9's protocol** (the reference engines' prompts, 384 tokens, 5 runs, prefixes reused), 1K / 32K / 134K / 250K: greedy `--spec 2` | 127.9 / 111.3 / 103.7 / 104.9 | `2026-10-01-sw128-p5-window9`, after P-5 (sw124, its first round: 125.8 / 107.8 / 104.2 / 99.1; sw119, before P-5's kernels: 125.7 / 106.0 / 99.5 / 92.3; sw110, before the cache fix: 131.9 / 107.1 / 99.1 / 87.0; sw91: 106.6 / 83.7 / 81.0 / 74.8) |
 | same, temperature 1.0 `--spec 2` (sampled drafts) | 118.8 / 95.5 / 106.7 / 106.4 (1K and 32K: ± 16-17, the sampled answers' acceptance) | same (sw124: 124.6 / 106.7 / 102.3 / 102.3; sw119: 118.3 / 106.1 / 99.5 / 96.8) |
 | same, no MTP, greedy | 103.5 / 95.5 / 93.9 / 91.9 | same (sw124: 101.3 / 94.9 / 93.5 / 90.3; sw110: 102.2 / 94.8 / 87.5 / 82.8) |
 | same, prefill per new token, no MTP, 32K / 134K / 250K | 5,635 / 5,683 / 5,254 tok/s | same (sw124, before sw127's fix: 5,060 / 5,064 / 4,734) |
+| Window 9, reference engines: Strata greedy / temperature 1.0 (its build warns that its cache path changes outputs); llama.cpp greedy | 87.0 / 96.0 / 85.0 / 80.4; 80.5 / 79.1 / 73.9 / 69.9; 37.4 / 37.2 / 32.8 / 30.7 | `2026-09-27-w9-validation` |
 | **Prefill, `fr_bench`, q8 host KV + hot set 4096, 32K / 128K / 245K** | 5,981 / 5,935 / 5,710 tok/s | `2026-10-01-sw127-prefill-select` |
 | **Many short requests through the server** (GSM8K, 200 in a row, `--spec 2`), decode at steady state | 143-148 tok/s, 82-84% hits | `2026-09-30-sw118-cache-leak` (before the fix: falling to 61 tok/s, 12% hits) |
 | **GSM8K**, the first 500 test items, greedy, thinking off: flashrt / llama.cpp on the same GGUF | 96.0% / 96.6% (McNemar p = 0.51) | `2026-09-30-sw116-gsm8k` |
-| same, Strata greedy / temperature 1.0 (its build warns that its cache path changes outputs); llama.cpp | 87.0 / 96.0 / 85.0 / 80.4; 80.5 / 79.1 / 73.9 / 69.9; 37.4 / 37.2 / 32.8 / 30.7 | `2026-09-27-w9-validation` |
 | **The agent session** (`bench/agent_trace.py`, greedy, 2 runs) | 120.4 / 122.6 | `2026-09-30-sw109-commit-lag` |
 
 **Where the time goes at 245K with the hot set** (nsys `--cuda-graph-trace=node`, sw20):
@@ -402,12 +408,12 @@ cache after, from the prefill's routing counts and the startup prior.
 - **`fr_parity`:** block-level parity against llama.cpp eval-callback dumps
   (`$BENCH/parity/*.frd`). It loads weights with ggml Q3_K (no Q3R), so projections stay
   comparable.
-- **Unit tests:**
+- **Unit tests** (`tests/`, registered with ctest in `CMakeLists.txt`, labelled `cpu` or `gpu`;
+  each file's header says what it checks). Examples:
   - `test_gemv`: every dense type, plus Q3R at 1 and 4 tokens;
   - `test_moe_hits`: the GPU hit kernels against a double-precision reference, including the pad
     entry;
-  - `test_cpu_pool`: 20,000 runs with idle gaps (the Strata #29 race class);
-  - `test_q2_0`, `test_moe_cpu`.
+  - `test_cpu_pool`: 20,000 runs with idle gaps (the Strata #29 race class).
 - **Determinism:** fr_bench runs are bit-reproducible. A GPU hit and a CPU miss are not
   bit-identical (Q8_1 against Q8 arithmetic), so tokens can differ between cache configurations.
   Compare with KLD, not tokens. Expert-cache uploads commit at a fixed step, so that holds with
@@ -441,7 +447,7 @@ The scripts run with `set -u`, so they stop if one is unset.
 - **Prompt:** `I=$BENCH/p0c-20260927/wiki.prompt_ids.txt` (250K wikitext token ids, the P0
   prompt).
 - **Decode speed:**
-  `build/fr_bench $M --ids $I --n-prompt N --gen 128 --windows 3 [--kv q8] [--kv-hot 4096] [--swap-budget B] [--no-graphs] [--no-q3r] [--pcie-frac F] [--static-cache] [--count-half-life N] [--trace FILE]`
+  `build/fr_bench $M --ids $I --n-prompt N --prefill-chunk auto --gen 128 --windows 3 [--kv q8] [--kv-hot 4096] [--swap-budget B] [--no-graphs] [--no-q3r] [--pcie-frac F] [--static-cache] [--count-half-life N] [--trace FILE]`
 - **State snapshots** skip the prefill for depth tests (`--save-state` / `--load-state`, speed
   only). They live in `$BENCH/` on the box:
   - `state-245k.bin`: fp16 KV, 6.5 GB, full-prompt counts;
@@ -449,11 +455,11 @@ The scripts run with `set -u`, so they stop if one is unset.
   - `state-32k.bin`: fp16 KV.
 
   An fp16 state loads into a q8 cache. A state reflects the kernels that wrote it.
-- **KLD gate:** `cd $BENCH/kld && build/fr_kld $M kl8k-f16.bin --ctx 8192 --chunks 2 --batch 64 --fast [--kv q8 | --kv-hot 512] [--window W]`.
+- **KLD gate:** `cd $BENCH/kld && $FLASHRT/build/fr_kld $M kl8k-f16.bin --ctx 8192 --chunks 2 --batch 64 --fast [--kv q8 | --kv-hot 512] [--window W]`.
   It takes about 5 minutes. `--window W` scores verify windows with random rejected tails.
-- **Speculative decoding:** add `--mtp $D --spec K --draft-vocab $BENCH/mtp-vocab/ranks.txt`
-  (`D=$MODELS/mtp-Flash-Next-Q8_0-noembd.gguf`; the ranking comes from
-  `bench/mtp_vocab.py`). `[--mtp-bits 8|4|2]` sets the head's experts (default 4).
+- **Speculative decoding:** add `--mtp $D --spec K --draft-vocab bench/reference/mtp-vocab-ranks.txt`
+  (`D=$MODELS/mtp-Flash-Next-Q8_0-noembd.gguf`; the ranking is committed, and
+  `bench/mtp_vocab.py` built it). `[--mtp-bits 8|4|2]` sets the head's experts (default 2).
   Sampling: `--temp 1.0 --top-k 20 --top-p 0.95 [--seed S]`. `--dist-test N` runs the
   distribution test. States with the head: `$BENCH/state-32k-q8-mtp.bin` and
   `state-245k-q8-mtp.bin` (each with a `.mtp`), for `--kv-hot 4096`.
@@ -466,7 +472,7 @@ The scripts run with `set -u`, so they stop if one is unset.
   `Session` or the forward's state. Host checkpoints: `--ckpts N` (8; 0 turns them off),
   `--ckpt-interval T` (4,096), `--ckpt-tail T` (64).
 - **Server:** `cargo build --release --manifest-path server/Cargo.toml`, then
-  `server/target/release/flashrt-server --model $M --port 8090 --engine build/flashrt-engine --engine-arg $M --engine-arg --mtp --engine-arg $D --engine-arg --spec --engine-arg 1 --engine-arg --draft-vocab --engine-arg RANKS --engine-arg --cache-prior --engine-arg PRIOR`
+  `server/target/release/flashrt-server --model $M --port 8090 --engine build/flashrt-engine --engine-arg $M --engine-arg --mtp --engine-arg $D --engine-arg --spec --engine-arg 2 --engine-arg --draft-vocab --engine-arg bench/reference/mtp-vocab-ranks.txt --engine-arg --cache-prior --engine-arg PRIOR`
   (`--api-key KEY` to require one). Checks: `--check-tokenizer TEXT IDS`, `--render REQUEST.json`,
   and `bench/server_smoke.py --url ...` against a running server (`bench/results/2026-09-28-sw86-server/sw86.sh`
   runs the whole check as temporary units; `2026-09-29-sw93-server/sw93.sh` also kills the engine
@@ -493,13 +499,14 @@ The scripts run with `set -u`, so they stop if one is unset.
 
 - **Two unexplained aborts** ("unspecified launch failure", Xid 43, sw7 and sw11). They fit a
   false doorbell timeout from unsigned timer arithmetic, which is now fixed and reports instead
-  of trapping. There has been none in the 30+ runs since. The root cause is not proven.
+  of trapping. There has been none since sw11. The root cause is not proven.
 - **The chunk path holds about 0.45 MiB per token.** moe_q2 and the BF16 per-slot outputs
-  removed about 120 KB per token (sw53, sw59), so 245K now fits chunks of 15-16K. The block
-  scratch is still sized about 30% above the widest mixer's need.
-- **Hot set:** the copy costs about 31 µs per layer at 245K (`k_hot_copy`: the promoted blocks
-  over PCIe; about 180 per token). A larger hot set would promote fewer, at the expert cache's
-  expense.
+  removed about 120 KB per token (sw53, sw59), so 245K now fits chunks of 16,384 in `fr_bench`;
+  the engine, with its reserve and checkpoints, fits 14,592 at 250K, and 9,728 with the head
+  (sw128). The block scratch is still sized about 30% above the widest mixer's need.
+- **Hot set:** the copy (`k_hot_copy`: the promoted blocks over PCIe) costs about 31 µs per call
+  at 245K, one call per QSA layer (12 per token, about 0.37 ms; sw120, sw122). A larger hot set
+  would promote fewer, at the expert cache's expense.
 - **The indexer scores** (`k_idx_scores128`, 21 µs per layer at 245K) read the fp16 pooled keys
   at bandwidth (sw126).
 - **Failed requests** reset the session to an empty sequence, so the next request starts cold
@@ -507,6 +514,16 @@ The scripts run with `set -u`, so they stop if one is unset.
 - **Server limits:** text only (no images); tool_choice "required" or a named tool is not
   enforced (the model decides); Anthropic thinking blocks carry an empty signature; without a
   `thinking` field the model still reasons, and the reasoning is not returned.
+- **Special-token strings in message text are control tokens.** The rendered prompt is tokenized
+  with its special tokens matched anywhere, so `<|im_start|>`, `<think>` or `<tool_call>` typed in a
+  user, system or tool message become the model's structure tokens, as in llama.cpp's server. A
+  deployment that takes untrusted text should filter them before the request.
+- **Request checks (sw131):** numeric fields out of range or of the wrong type, more than 16 stop
+  strings or one over 256 bytes, and text the pre-tokenizer cannot split (about a million
+  whitespace characters in one run) are HTTP 400s. A `seed` of -1 means a random seed. A stream
+  whose client disconnects stops the engine, also during the prefill. `/metrics` counts
+  generations by the server's finish: `stop`, `stop_sequence`, `length`, `tool_calls`,
+  `cancelled`.
 - **Prefix reuse follows one sequence.** A prompt reuses the latest recurrent-state checkpoint
   inside the prefix it shares with the previous sequence: the one at the end of the previous
   prompt (on the GPU), or one of up to 8 taken during earlier prefills (host RAM, 113 MiB each):
@@ -532,7 +549,8 @@ list, are done (sw85: 32K `--spec 1` 119.0 → 143.1 tok/s, 245K 91.7 → 97.1).
 
 1. **Cheaper verify windows:** the misses dominate. They are host-DRAM bound (sw79), so the
    levers are fewer misses and a better drafter:
-   - a draft length chosen per round from the window's expected misses;
+   - a draft length chosen per round from the window's expected misses (tried in sw114, not
+     adopted: see "Tried and rejected");
    - more cache slots;
    - drafter acceptance: 45-54% for one draft.
    GPU work inside the miss window does not pay (sw78, sw79). The grouped window hit kernels

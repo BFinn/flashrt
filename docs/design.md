@@ -19,8 +19,8 @@ Batch-1 decode on an offloaded MoE is a memory-traffic problem:
 - **Round structure.** Round time ≈ mixer + max(CPU misses, GPU hits) + draft + overhead,
   and the halves wait for each other at every layer. The **hit rate** is the main lever;
   **speculation** amortises the dense reads and syncs.
-- **Prefill.** Every 2048-token chunk touches essentially every expert, so prefill is
-  bound by host-to-device transfer. Bigger chunks are the lever.
+- **Prefill.** A prefill chunk of thousands of tokens touches essentially every expert, so
+  prefill is bound by host-to-device transfer. Bigger chunks are the lever.
 
 Measured baselines on the target box are in `bench/README.md`.
 
@@ -57,7 +57,7 @@ time, and the server queues requests.
 Engine to server, at start:
 
 ```json
-{"ev":"ready","version":"0.1.0","arch":"qwen4exp","max_context":262144,"features":["stop","sampling"]}
+{"ev":"ready","version":"0.1.0","arch":"qwen4exp","max_context":262144,"features":["stop","sampling","prefix_reuse","mtp"]}
 ```
 
 Server to engine:
@@ -70,6 +70,9 @@ Server to engine:
 {"op":"quit"}
 ```
 
+`quit` (or the end of stdin) cancels the running request and every queued one, each answered
+with a `done` event whose `finish` is `cancelled`, and then the engine exits.
+
 Engine to server, while generating:
 
 ```json
@@ -80,6 +83,9 @@ Engine to server, while generating:
  "cache":{"hits":141200,"misses":6340,"miss_ms":2810.4,"slots":8809}}
 {"ev":"error","id":"r1","msg":"..."}
 ```
+
+`features` lists `stop`, `sampling` and `prefix_reuse`, and `mtp` when the engine runs
+speculatively. `finish` is `stop`, `length` or `cancelled`.
 
 The engine keeps the last conversation's state and reuses the longest matching prompt
 prefix. `reused` reports how many tokens were reused: the whole previous sequence when the prompt
@@ -110,6 +116,9 @@ depth, unless noted.
 | P2 | Trimmed-vocab MTP drafter, multi-token CPU kernel, exact speculative sampling | ≥80 / ≥72 at temperature 1.0, top_p 0.95, top_k 20, plus a distribution test |
 | P3 | Prefill with 8K chunks on borrowed slots, grouped int8 Q2_0 GEMM, tensor-core indexer, prefix cache | Prefill ≥2,000 at 32K and ≥1,700 at 250K |
 | P4 | Q4 KV with Hadamard rotation, dynamic CPU/PCIe split, huge pages; then KLD-gated cache-conditional routing and expert deferral | ≥95 / ≥85 exact; ≥110 with quality options at KLD ≤0.02 |
+
+These gates are P1-P4. The P-n items elsewhere (P-1 to P-6) are items of
+`docs/improvement-plan.md`, a separate list.
 
 **P1 status (2026-09-28): gates met, scope complete.**
 
@@ -145,9 +154,10 @@ with the MTP head's KV, 6 windows of 128 tokens each:
 | Distribution test | exact | | first token equal in 400/400 (2K) and 300/300 (245K), second in 82/82 and 59/59 | `--dist-test`; sw31, sw33 |
 | KLD with verify windows and rewinds | ≤ 0.03 | | 0.0087 (windows of 4), 0.0092 (windows of 3, hot set) | sw25, sw33 |
 
-- **Scope done:** the MTP head (Q4_0 experts, trimmed LM head), verify windows on the fast path
-  with rewinds, window graphs, exact speculative sampling on a GPU sampler, the multi-token CPU
-  miss kernel in use, and the engine process serving it all over the protocol.
+- **Scope done:** the MTP head (Q4_0 experts then, Q2_0 since sw65; trimmed LM head), verify
+  windows on the fast path with rewinds, window graphs, exact speculative sampling on a GPU
+  sampler, the multi-token CPU miss kernel in use, and the engine process serving it all over the
+  protocol.
 - **Since sw85, drafts at temperature > 0 are sampled** from the head's distribution and verified
   by speculative sampling: 32K `--spec 1` 143.1 tok/s, 245K 97.1.
   - The output is exact in distribution (`test_spec_sample`; the distribution test within
@@ -174,10 +184,20 @@ with the MTP head's KV, 6 windows of 128 tokens each:
 - **The tensor-core indexer** came with the prefill kernels, later on 2026-09-28. That work also
   added tensor-core attention, a GDN column kernel, BF16 hc activations and flashrt's own expert
   grouping, the chunk length chosen from free VRAM, and flashrt's own int8 expert kernels on the
-  planar layout (`moe_q2`). Prefill now runs at 5,580 tok/s at 32K and 5,170-5,309 at 245K. KLD
-  0.0084-0.0087. Evidence: `sw46`-`sw62`.
+  planar layout (`moe_q2`). Prefill ran at 5,580 tok/s at 32K and 5,170-5,309 at 245K at sw61
+  (KLD 0.0084-0.0087; evidence `sw46`-`sw62`). Now: 5,981 / 5,935 / 5,710 tok/s at 32K / 128K /
+  245K in `fr_bench` (sw127), and 5,635 / 5,683 / 5,254 per new token through the engine on
+  window 9 (sw128).
 - **The reference path took 38 minutes for 245K;** chunked prefill took about 2 minutes at the
-  gate and now takes 46-48 s.
+  gate, 46-48 s at sw61, and 43 s now (sw127).
+
+**P4 status (2026-10-01): the exact gate is met; the scope is done in part.** Without the MTP
+head, on window 9's protocol (n = 5, `bench/results/2026-10-01-sw128-p5-window9`), decode runs
+95.5 tok/s at 32K and 91.9 at 250K (gate ≥ 95 / ≥ 85).
+- **Done:** the KV work above (q8 KV, host KV with a GPU hot set).
+- **Not done:** Q4 KV with a Hadamard rotation; huge pages; KLD-gated cache-conditional routing
+  and expert deferral, and so the ≥ 110 gate with quality options. A dynamic CPU/PCIe split was
+  not built: PCIe zero-copy misses gained nothing at 2K or 245K (sw15), and the flag stays off.
 
 **How the KLD gate is measured** (set 2026-09-27, `bench/results/2026-09-27-p1-kld`):
 - **Protocol:** llama-perplexity's KL-divergence protocol on wikitext-2 test, 8,192-token chunks,

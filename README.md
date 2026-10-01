@@ -11,8 +11,19 @@ against the best existing engines on that box.
 - **Status (2026-10-01):** decode, speculative decoding with the model's MTP head, chunked
   prefill, an engine process and an OpenAI/Anthropic-compatible server work end to end.
   - The phase gates P1-P3 in [docs/design.md](docs/design.md) are met; P4 is done in part.
+  - `v0.1.0` is tagged; [docs/engine.md](docs/engine.md) records what changed since, run by run.
   - This is research code: one architecture and one quantization, built and tested on one
     machine.
+
+Terms used below:
+- **swNN** is a benchmark run; its evidence is in `bench/results/<date>-swNN-<topic>/`.
+- **P-n** are the items of [docs/improvement-plan.md](docs/improvement-plan.md) (P1-P4 without
+  the hyphen are the phase gates of `docs/design.md`).
+- **Window 9** is the reference engines' prompt set (`bench/reference/w9-ids.json`): 1K, 32K, 134K
+  and 250K tokens in one conversation, 384 generated tokens each.
+- **Teacher-forced A/B** is `fr_bench --teacher`: every arm routes the same tokens.
+- **Strata** ([github.com/Niko1221/Strata](https://github.com/Niko1221/Strata)) is another engine
+  for this model on this class of box.
 
 ## Results
 
@@ -28,19 +39,19 @@ against the best existing engines on that box.
 |---|---:|---:|---:|---:|---:|
 | llama.cpp (expert cache, sparse attention; no MTP), greedy | 4 | 37.4 ± 0.6 | 37.2 ± 1.1 | 32.8 ± 1.6 | 30.7 ± 1.1 |
 | **greedy** | | | | | |
-| Strata 0.1.6, MTP (see the caveat below) | 4 | 87.0 ± 0.7 | 96.0 ± 2.2 | 85.0 ± 2.7 | 80.4 ± 3.6 |
+| Strata 0.1.6 (+PRs #18/#19, see `bench/reference`), MTP (see the caveat below) | 4 | 87.0 ± 0.7 | 96.0 ± 2.2 | 85.0 ± 2.7 | 80.4 ± 3.6 |
 | flashrt, MTP (2 drafts per round) | 5 | 127.9 ± 4.4 | 111.3 ± 4.1 | 103.7 ± 2.3 | 104.9 ± 2.7 |
 | flashrt, no MTP | 5 | 103.5 ± 2.1 | 95.5 ± 0.8 | 93.9 ± 0.9 | 91.9 ± 1.7 |
 | **temperature 1.0** (top-p 0.95, top-k 20) | | | | | |
-| Strata 0.1.6, MTP (n=3 at 250K) | 4 | 80.5 ± 4.1 | 79.1 ± 1.3 | 73.9 ± 1.8 | 69.9 ± 7.2 |
+| Strata 0.1.6 (+PRs #18/#19), MTP (n=3 at 250K) | 4 | 80.5 ± 4.1 | 79.1 ± 1.3 | 73.9 ± 1.8 | 69.9 ± 7.2 |
 | flashrt, MTP, sampled drafts | 5 | 118.8 ± 16.5 | 95.5 ± 17.0 | 106.7 ± 2.1 | 106.4 ± 2.9 |
 
 - **Prefix reuse.** Every prompt ends with the same instruction, so a deeper prompt shares only its
   context with the previous one. flashrt reuses 32,768 tokens at 134K and 134,004 at 250K, from
   host checkpoints taken during the previous prefill. Strata reused 32,768 and 131,072, and
-  llama.cpp about 30,700 and 132,000. The step to 32K prefills cold in flashrt: the engine takes
-  the checkpoint before a prompt's tail only after it has seen a prompt keep the text and change
-  the tail.
+  llama.cpp about 30,700 and 132,000 (`2026-09-27-w9-validation`, the engines' logs). The step
+  to 32K prefills cold in flashrt: the engine takes the checkpoint before a prompt's tail only
+  after it has seen a prompt keep the text and change the tail.
 - **Strata's build warns that its cache path is not correct.** With `--expert-cache` on, its log
   says the GPU hit path "is NOT CORRECT" and that its tokens diverge from a cache-off run. Its
   timings are real. Its draft acceptance, and so its MTP speed, come from outputs that differ from
@@ -73,13 +84,14 @@ What the table shows:
 - **Tuned on this protocol:** the cache's settings were found here (sw89, sw100, sw104), and
   checked teacher-forced on wikitext too, where they gain 4-5% (sw104, sw109).
 - **Time to the first token at 250K:** 24.0 s with the draft head and 22.2 s without it (sw128),
-  for the 116,708 new tokens. Strata takes 123 s for its 119,640 new tokens.
+  for the 116,708 new tokens. Strata takes 123 s for its 119,640 new tokens
+  (`2026-09-27-w9-validation`).
 - **Prefill per new token,** from each engine's own log, at 32K / 134K / 250K:
   - flashrt without the draft head: 5,635 / 5,683 / 5,254 tok/s (sw128);
-  - flashrt with the head: 5,385 / 5,352 / 4,871 (its prompt pass in chunk calls with grouped
-    expert GEMMs, sw102);
-  - Strata: 1,173 / 1,090 / 969;
-  - llama.cpp: 1,108 / 724 / 443.
+  - flashrt with the head: 5,385 / 5,352 / 4,871 (sw128; its prompt pass in chunk calls with
+    grouped expert GEMMs, sw102);
+  - Strata: 1,173 / 1,090 / 969 (`2026-09-27-w9-validation`);
+  - llama.cpp: 1,108 / 724 / 443 (same folder).
 
 **An agentic coding session** (`bench/agent_trace.py`; `bench/results/2026-09-29-sw97-agent`,
 `2026-09-30-sw109-commit-lag`): 12 turns through the server, with the model reading this
@@ -89,15 +101,16 @@ about 121 tok/s at 82% expert-cache hits (sw109; 108 tok/s at 76% with the cache
 settings). Short turns written right after a tool result still hit least (57% on the first file).
 
 **Continuing natural text** (`tools/fr_bench`, wikitext prompts from saved states, 6 windows of
-128 tokens; `2026-09-28-sw85-sampled-drafts`, one run per arm):
-- at temperature 1.0 with sampled drafts, 143 tok/s at 32K and 97 at 245K;
-- plain greedy decode, about 107 at 32K.
+128 tokens, one run per arm):
+- at temperature 1.0 with sampled drafts, 143 tok/s at 32K and 97 at 245K
+  (`2026-09-28-sw85-sampled-drafts`);
+- plain decode without the head, teacher-forced, about 107 at 32K (`2026-09-28-sw78-hc-comb`).
 
 The prompt predicts the generation well there: the expert cache hits 93-95% at 32K and 83-89% at
 245K. For context only, Strata on wikitext measured 74.7 / 62.2 tok/s at temperature 1.0 and
 90.1 / 103.0 greedy at 32K / 245K (`2026-09-27-p0c`, 2 runs). That was a different harness (a
 growing conversation through its server, 384 tokens), so it is not a like-for-like comparison.
-A same-harness wikitext run is part of phase 2 of the plan.
+No same-harness wikitext run has been made.
 
 **Evidence** for every number is in `bench/results/`. [docs/sweet-spots.md](docs/sweet-spots.md)
 maps each result to its folder.
@@ -145,11 +158,11 @@ flashrt was built and measured on one box. What it needs, and what is only teste
 | Part | Needs | Measured on | Without it |
 |---|---|---|---|
 | GPU | NVIDIA, compute capability 9.0+ (thread-block clusters, programmatic dependent launch, int8 `mma`), 16 GB | RTX 5080 (12.0) | The build refuses below sm_90. Other 9.0+ GPUs build with `-DCMAKE_CUDA_ARCHITECTURES=...` and are untested. |
-| VRAM | 16 GB | 16 GB | Everything left after the dense weights, KV and buffers becomes expert-cache slots (~8,800 at 250K). More VRAM means more slots: roughly +0.3% decode per +1% of slots, up to the full 24,576. |
+| VRAM | 16 GB | 16 GB | Everything left after the dense weights, KV and buffers becomes expert-cache slots (~8,800 in `fr_bench` at 245K; 7,500-8,500 in the engine, which reserves room for checkpoints; sw129, sw130). More VRAM means more slots: roughly +0.3% decode per +1% of slots, up to the full 24,576. |
 | Host RAM | 64 GB (the experts take ~55 GB, pinned) | 64 GB DDR5-3600 | It does not load. Decode at depth scales with RAM bandwidth (each miss reads its expert from RAM). |
 | CPU | x86-64; AVX-512 VNNI for the miss kernels | Ryzen 9 7900X, 12 cores | Without VNNI the misses take a scalar path, which is much slower. `FLASHRT_NATIVE=ON` tunes for the build machine. |
 | Storage | an NVMe drive for the model | PCIe NVMe | The n-gram (PLE) rows are read per token with `O_DIRECT`; a slow disk stalls every step. |
-| Software | Linux, CUDA 12.8+, driver for it, GCC 12+, CMake 3.28+, Ninja, Rust 1.82+ | Ubuntu 24.04, CUDA 12.9, driver 575 | |
+| Software | Linux, CUDA 12.8+, driver for it, GCC 12+, CMake 3.24+, Ninja, Rust 1.82+ | Ubuntu 24.04, CUDA 12.9, driver 575 | |
 
 `bench/run.sh preflight` checks these on a machine. `MODELS=... bench/run.sh` (plain bash, about an
 hour) builds, runs the tests, a decode check, window 9's protocol and the server smoke test, and
@@ -160,7 +173,7 @@ measurements ran outside containers).
 
 ## Build
 
-Linux, CUDA 12.8+ (for sm_120), GCC 12+, CMake 3.28+, Ninja, Rust 1.82+.
+Linux, CUDA 12.8+ (for sm_120), GCC 12+, CMake 3.24+ (measured with 3.28), Ninja, Rust 1.82+.
 
 ```bash
 cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=120 -DFLASHRT_NATIVE=ON \
@@ -171,6 +184,7 @@ cargo build --release --manifest-path server/Cargo.toml
 
 `FLASHRT_NATIVE=ON` tunes the CPU code for the build machine (`-march=native`), as every
 measurement here was built. Leave it off for binaries that must run on other CPUs.
+`-DFLASHRT_CUDA=OFF` builds only the CPU parts and their tests, without CUDA (CI's `cpu` job).
 
 ## Run
 
@@ -180,17 +194,19 @@ D=mtp-Flash-Next-Q8_0-noembd.gguf           # the MTP draft head (embedding and 
 
 # decode speed at a depth, with speculation
 build/fr_bench $M --ids prompt_ids.txt --n-prompt 32768 --prefill-chunk auto --kv q8 \
-    --gen 128 --mtp $D --spec 1 --temp 1.0 --top-k 20 --top-p 0.95
+    --gen 128 --mtp $D --spec 2 --draft-vocab bench/reference/mtp-vocab-ranks.txt \
+    --temp 1.0 --top-k 20 --top-p 0.95
 
 # the server (it starts the engine)
 server/target/release/flashrt-server --model $M --port 8090 --engine build/flashrt-engine \
-    --engine-arg $M --engine-arg --mtp --engine-arg $D --engine-arg --spec --engine-arg 1
+    --engine-arg $M --engine-arg --mtp --engine-arg $D --engine-arg --spec --engine-arg 2 \
+    --engine-arg --draft-vocab --engine-arg bench/reference/mtp-vocab-ranks.txt
 ```
 
 - **Prompt ids:** `prompt_ids.txt` holds the prompt as token ids from the model's tokenizer,
   whitespace-separated (one per line works).
-- **Draft vocabulary:** `--draft-vocab RANKS` trims the draft head's vocabulary.
-  `bench/mtp_vocab.py` builds the ranking.
+- **Draft vocabulary:** `--draft-vocab RANKS` trims the draft head's vocabulary. The ranking
+  measured here is `bench/reference/mtp-vocab-ranks.txt`; `bench/mtp_vocab.py` builds one.
 - **Timings:** responses carry a `timings` object, as llama.cpp's server does (on the last chunk
   of an OpenAI stream): `prompt_n` prefilled and `cache_n` reused prompt tokens, `prompt_ms`,
   `predicted_n`, `predicted_ms`, the rates, `draft_n` / `draft_n_accepted` with the MTP head, and
@@ -201,7 +217,7 @@ server/target/release/flashrt-server --model $M --port 8090 --engine build/flash
 ## Tests
 
 ```bash
-(cd build && ctest --output-on-failure)                    # 14 tests; ~30 s on the target box
+(cd build && ctest --output-on-failure)                    # 20 tests (21 with -DFLASHRT_LLAMA_DIR); ~30 s on the target box
 FLASHRT_TEST_MODEL=$M ctest --test-dir build -R 'gemm|moe_q2'   # the two that need the model
 cargo test --release --manifest-path server/Cargo.toml     # server unit tests
 ```
@@ -221,10 +237,14 @@ End-to-end checks run against the model:
 | [docs/design.md](docs/design.md) | Architecture, engine protocol, phase gates and their status |
 | [docs/engine.md](docs/engine.md) | The engine as built: the decode, speculation and prefill flows, why each piece is shaped as it is (with evidence), what was rejected, the runbook |
 | [docs/sweet-spots.md](docs/sweet-spots.md) | The best configurations, where each tuning track stopped and why, untested paths ranked, every `FLASHRT_*` toggle |
+| [docs/improvement-plan.md](docs/improvement-plan.md) | The plan from the external reviews (items P-n, R-n, T-n, ...) and each phase's status |
 | [docs/background.md](docs/background.md) | The initial measurements on the target box |
 | [docs/interfaces.md](docs/interfaces.md) | How generic flashrt is, and the C++ seams |
 | [docs/clean-room.md](docs/clean-room.md) | What may and may not be copied into this repository |
+| [docs/research/dynamic-quant.md](docs/research/dynamic-quant.md) | Research notes on model-side quantization (not built) |
+| `docs/feedback/` | Three external AI reviews of 2026-09-29, the background for the plan |
 | [bench/README.md](bench/README.md) | Benchmark drivers and the baseline numbers |
+| [bench/reference/README.md](bench/reference/README.md) | The committed inputs for reproducing the comparisons: window 9's ids, the drafter's vocabulary, the llama.cpp patch, the Strata pin |
 | `bench/results/<date>-<topic>/` | Every measurement behind a claim, each with a README |
 
 ## Layout

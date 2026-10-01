@@ -20,7 +20,8 @@ description: >
   HTTP APIs. It never loads weights.
 - **The engine** (`build/flashrt-engine`, C++/CUDA, `engine/main.cpp`, `engine/session.cpp`)
   owns the model and speaks token ids only. It serves one sequence at a time and keeps the
-  last conversation's state for prefix reuse (one sequence and one checkpoint).
+  last conversation's state for prefix reuse (one sequence; the checkpoint at the end of the
+  prompt, and up to 8 host checkpoints taken during prefills since sw95).
 - The server spawns the engine as a child process and talks to it over stdin/stdout.
 
 | File | What it does |
@@ -33,6 +34,7 @@ description: >
 | `template.rs` | the GGUF's Jinja chat template on minijinja, with Python-compatible `tojson` |
 | `tokenizer.rs` | byte-level BPE from the GGUF vocabulary and merges, llama.cpp's QWEN35 pre-tokenizer |
 | `gguf.rs` | GGUF metadata only (no tensors) |
+| `metrics.rs` | `/metrics` in Prometheus's text format, summed over the engine's `done` events (sw129) |
 
 ## The protocol is a contract
 
@@ -89,21 +91,25 @@ seed is masked to 53 bits.
 
 ## Tests
 
-Unit tests live in `#[cfg(test)]` modules beside the code (19 as of sw93). The pattern for
+Unit tests live in `#[cfg(test)]` modules beside the code (28 as of sw129). The pattern for
 anything that involves the engine is a **fake engine**: a `sh -c` script that prints a `ready`
 line and then speaks the protocol (see `engine.rs` and `chat.rs` tests, `fake_state` in
 `chat.rs`, which pairs it with `tokenizer::test_tokenizer()` and a one-line template). Use it
 for timing and failure behaviour (dies after `ready`, dies mid-request, ignores `stop`), and
 bound every wait with `tokio::time::timeout` so a regression fails instead of hanging.
 
-The open test work is in `docs/improvement-plan.md`, phase 3 (T-7, S-7): a fake-engine protocol
-test, the real chat template against a checked-in expected render, SSE framing, and a tokenizer
-fixture (CJK, emoji, code, special tokens in user text).
+Phase 3's server items (`docs/improvement-plan.md`, T-7, S-7) are done in part: fake-engine
+protocol tests (`engine.rs`: `dead_engine_fails_fast`, a request in flight when the engine dies,
+`shutdown_sends_quit`; `chat.rs`: a client leaving while queued), SSE framing (`openai.rs`
+`stream_frames`), and the tokenizer's pre-tokenizer and eos checks (`model_round_trip` covers CJK
+and emoji when `FLASHRT_TEST_MODEL` is set). Still open: the real chat template against a
+checked-in expected render, and a tokenizer fixture that runs without the model (code, special
+tokens in user text).
 
 ## Checks before a server change counts
 
-Rust is not installed on the Mac: build and test on the GPU box (how to load the toolchain
-there, and the box rules, are in `CLAUDE.local.md`). Do not build during another session's benchmark window.
+Rust is not installed on the workstation: build and test on the GPU box (how to load the
+toolchain there, and the box rules, are in `CLAUDE.local.md`). Do not build during another session's benchmark window.
 
 1. `cargo test --release --manifest-path server/Cargo.toml`.
 2. `cargo clippy --release --all-targets --manifest-path server/Cargo.toml`: it is clean; keep
@@ -112,7 +118,8 @@ there, and the box rules, are in `CLAUDE.local.md`). Do not build during another
    as temporary `systemd-run` units, never a service left running. Templates:
    `bench/results/2026-09-28-sw86-server/sw86.sh` (the 11 original checks) and
    `2026-09-29-sw93-server/sw93.sh` (14 checks, plus killing the engine under the server and a
-   SIGTERM to the server alone). Add a `server_smoke.py` check for new API behaviour.
+   SIGTERM to the server alone). `server_smoke.py` has 16 checks now (`metrics` since sw129). Add
+   a check for new API behaviour.
 4. **If the engine or VRAM budgeting changed** as well: `bench/engine_smoke.py`, with `--faults`
    after changes to `Session` or the forward's state. `fr_bench` allocates differently and
    cannot catch a first-request out-of-memory (sw86).

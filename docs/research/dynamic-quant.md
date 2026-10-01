@@ -250,7 +250,7 @@ by the background estimate).
 - **Source weights.** Downward moves can come from the existing Q2_0, but that compounds
   error. Anything better needs BF16.
   - Qwen/Qwen3.8-Flash-Next: 360 GB, 131 safetensors shards [Q].
-  - Stream shard by shard. The box has about 149 GB free; this Mac has 403 GB free.
+  - Stream shard by shard rather than keep the whole checkpoint on one disk.
   - Weighted-MSE quantization of one expert is cheap on a CPU. Full GSQ is not: it is
     8+ H200-class GPUs for a day or more, and its public code has no GGUF or Q2_0 writer
     [Q/E].
@@ -351,9 +351,10 @@ combinations with three formats). It splits into three layers:
   - **A Hugging Face Job**, "CPU XL" (16 vCPU, 124 GB RAM, 1 TB disk, $1.00/h), next to
     the Hub. It uploads the database to a private repo. It needs a positive credit
     balance, and the default timeout is 30 min, so set a longer one.
-  - **This Mac:** 403 GB free, but an M1 with 16 GB. Stream-quantize, then scp the result.
-  - **the box**, which does reach the Hub. Stream the experts, or first copy the BF16
-    shards to the external drive. It must not run during benchmark windows, and it must
+  - **The workstation:** enough disk, but 16 GB of RAM. Stream-quantize, then copy the result
+    to the GPU box.
+  - **The GPU box**, which does reach the Hub. Stream the experts, or first copy the BF16
+    shards to an external drive. It must not run during benchmark windows, and it must
     stay inside the RAM rules.
 
 **What exists vs what must be written:**

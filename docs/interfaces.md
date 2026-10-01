@@ -1,9 +1,10 @@
 # Interfaces: how generic flashrt is, and where
 
-**Status: a design sketch, not implemented.** None of the types below (`ArchModule`,
-`ModelSpec`, `QuantPack`, `MoeBlock`, `StateSpec`, `Forward`) exists in the tree. The engine
-(`engine/session.cpp`) uses the qwen4exp classes directly, and the offload machinery this page
-calls generic lives in `arch/qwen4exp/`. `CLAUDE.md`'s rule stands: the API is designed when a
+**Status: a design sketch, not implemented.** None of the generic types below (`ArchModule`,
+`ModelSpec`, `QuantPack`, `MoeBlock`, `StateSpec`, the `Forward` interface) exists in the tree.
+`qwen4exp::Forward` (`arch/qwen4exp/forward.hpp`) is the one model's concrete forward pass, not
+this interface. The engine (`engine/session.cpp`) uses the qwen4exp classes directly, and the
+offload machinery this page calls generic lives in `arch/qwen4exp/`. `CLAUDE.md`'s rule stands: the API is designed when a
 second architecture arrives. The plan for getting there is in `docs/improvement-plan.md`
 (G-2, G-3).
 
@@ -46,7 +47,7 @@ What is deliberately **not** generic:
 
 ## The seams (C++ interfaces)
 
-Sketches only. Names will move as phase 1 lands.
+Sketches only, written before any code; the names would change when the API is designed.
 
 ### 1. Model description, parsed from the GGUF
 
@@ -146,4 +147,5 @@ A new MoE architecture needs:
 Everything else is reused: the expert store, cache, CPU pool, PCIe split, sampling,
 speculation plumbing, server and protocol. A new quant format needs one `QuantPack`.
 
-Supporting new model families is expected to take weeks per family, not months.
+Supporting a new model family is estimated at weeks per family, not months (an estimate: no
+second family has been built).

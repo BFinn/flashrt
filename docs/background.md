@@ -54,7 +54,8 @@ P0 windows A and B (`bench/results/2026-09-27-p0/`) replaced several estimates b
 ## Measured baselines [M]
 
 Decode tok/s at 1K / 32K / 134K / 250K depth. Identical prompts and token ids, one growing
-conversation, 384 generated tokens.
+conversation, 384 generated tokens. These runs (2026-09-26/27) predate `bench/results/`, so no
+results folder holds them; the later runs cited on this page each have one.
 
 | Engine | 1K | 32K | 134K | 250K | Prefill at 32K / 134K / 250K |
 |---|---:|---:|---:|---:|---|
@@ -64,8 +65,9 @@ conversation, 384 generated tokens.
 | Strata 0.1.4, tuned (`--vram-reserve-mib 1024 --pcie-frac 0.35 --pool-workers 8`), MTP | 79.1 | 83.3 | 76.8 | 74.9 | 1171 / 1098 / 989 |
 | Strata, no drafts | 55.3 | 56.8 | 50.1 | 46.4 | |
 
-Strata 0.1.6 (KV streaming) plus sampling (PR #19) was being validated in the background on
-2026-09-27; the final table is in `bench/results/` once it is copied in:
+Strata 0.1.6 (KV streaming) plus sampling (PR #19) was validated on 2026-09-27. The final table,
+4 runs per arm, is in `bench/results/2026-09-27-w9-validation` (greedy 80.4 ± 3.6 and temperature
+1.0 69.9 ± 7.2 tok/s at 250K). What this digest noted while it ran:
 - greedy: 77-84 tok/s at 250K;
 - temperature 1.0 (top_p 0.95, top_k 20): 65-66 tok/s at 250K and about 75-79 at shorter
   depths, with 56-61% draft acceptance against 62-65% greedy.

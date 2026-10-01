@@ -50,8 +50,8 @@ corrections; the numbers themselves are unchanged until phase 2 re-measures them
 2. **R-1 (docs part):** fix the sw87 README, and state in sw91 and in the `README.md` results
    section that flashrt re-prefilled every depth while Strata and llama.cpp reused prefixes.
    Say that the warm-up explanation (sw88) is not yet separated from this difference.
-3. **R-3:** quote prefill per new token for every engine (Strata: 1,173 / 1,089 / 969). Use one
-   flashrt measure (engine `prompt_ms`) and name it.
+3. **R-3:** quote prefill per new token for every engine (Strata: 1,173 / 1,090 / 969, from its
+   log). Use one flashrt measure (engine `prompt_ms`) and name it.
 4. **R-4:** give mean ± sd and n in the README table. Say that the 1K sampled lead and the
    "level at 32K" are within noise.
 5. **R-5, R-6:** say next to the table that the swap budget was chosen on window 9's protocol.
@@ -77,10 +77,10 @@ Found on the way: the fast-path KLD (window 3, hot set 512) moved from 0.008931 
 before phase 1, still inside the gate band. **Bisected (sw94):** the step is 2b074a9, the
 warp-per-token prefill routing, whose softmax sums in another order. A last-bit change in the
 routing probabilities changes the expert cache's first fill, and so which tokens hit on the GPU
-and which miss to the CPU. `FLASHRT_ROUTE_WARP=0` on the current build gives back 0.008931 and
-12,021 swaps exactly. Not a bug. The fast-path KLD moves by about 0.0002 under such perturbations
-while the chunk path does not, so phase 4's refactors, which should be bit-identical, are checked
-by exact equality of both.
+and which miss to the CPU. `FLASHRT_ROUTE_WARP=0` on the build of the time gave back 0.008931 and
+12,021 swaps exactly (the toggle was removed in sw112). Not a bug. The fast-path KLD moves by about
+0.0002 under such perturbations while the chunk path does not, so phase 4's refactors, which should
+be bit-identical, are checked by exact equality of both.
 
 | Item | Change | Test |
 |---|---|---|
@@ -140,6 +140,26 @@ parsed as numbers; a surrogate that was not half of a pair decoded to garbage; d
 into `bad_alloc`; shard 2 used shard 1's alignment. From S-7: the tokenizer accepts only the
 qwen35 pre-tokenizer and fails without a valid eos id.
 
+**Status by item (2026-10-01):**
+- **T-1:** done (above).
+- **T-2:** not done. There is no sanitizer job. `test_q2_0` skips its AVX-512 comparison on a CPU
+  without VNNI instead of returning 77.
+- **T-3:** done except the state-file round trip.
+- **T-4:** done in part. `test_gdn_decode` checks the decode delta rule against a double reference
+  for T = 1..8 and `gdn_rewind` bit for bit; `test_spec_sample` covers a window of three verify
+  rows over a remapped vocabulary; `test_linear_multi` checks the decode epilogues. Not done:
+  `ple_rewind`, and Q2_0 in `test_moe_q` (Q8_0 only).
+- **T-5:** not done: neither the cache policy against `tools/cache_sim.py` nor the doorbell
+  timeout path has a test.
+- **T-6:** done in part: every test carries `LABELS` (`cpu` or `gpu`); there are no `TIMEOUT`s,
+  and the kernel tests still time themselves beside the `bench_*` tools.
+- **T-7 and S-7:** done in part (server unit tests, 28 at sw129). Fake engines test the protocol's
+  failure paths (`engine.rs`: `dead_engine_fails_fast` and two more; `chat.rs`: a client leaving
+  while queued), `openai.rs` `stream_frames` checks SSE framing, and the tokenizer rejects another
+  pre-tokenizer and a missing eos; `model_round_trip` covers CJK and emoji when
+  `FLASHRT_TEST_MODEL` is set. Not done: the real chat template against a checked-in expected
+  render.
+
 - **T-1:** compile the CUDA tree in CI, in the `nvidia/cuda:12.9` devel container or with the
   toolkit from NVIDIA's apt repo, for sm_120, and run the CPU tests from that build.
 - **T-2:** ASan+UBSan on the CPU tests; TSan on `test_cpu_pool` and `test_moe_cpu`.
@@ -160,6 +180,9 @@ qwen35 pre-tokenizer and fails without a valid eos id.
 has a reference test.
 
 ## Phase 4: structure, behaviour-neutral (1 week)
+
+**Status: done 2026-09-30 (sw112, sw113).** The refactors' outputs were identical to the build
+before them (the output fingerprint).
 
 Each step is proven by `fr_parity`, the KLD gate and a teacher-forced A/B showing no change.
 
@@ -189,10 +212,9 @@ In expected-value order. Each needs its KLD check and a `bench/results` folder.
 1. **P-1: a chunk path for the MTP head's prompt pass** (all three reviews). **Done 2026-09-30:**
    the head's KV mirror (sw98) and its catch-up in calls of 1,024 rows with grouped expert GEMMs
    (sw102). 131K with the head 35.3 → 23.6 s; the head costs 5-7% of prefill at depth; 250K
-   time to the first token on window 9 24.0 s (a whole cold 250K prompt: about 50 s, an estimate). Prefill with the
-   head runs at 2,150-4,130 tok/s against 5,690-5,960 without it. The head's experts are
-   already in VRAM, so it needs the batched kernels, overlapped with the target's next chunk.
-   Expected: 250K TTFT from about 117 s toward 45 s (estimate).
+   time to the first token on window 9 24.0 s (a whole cold 250K prompt: about 50 s, an
+   estimate). On window 9, prefill per new token with the head runs 5,385 / 5,352 / 4,871 tok/s
+   at 32K / 134K / 250K, against 5,635 / 5,683 / 5,254 without it (sw128).
 2. **P-2** as decided in phase 2. **Done 2026-09-30** (sw99-sw109): the simulator found the loss in
    the warm-up; faster admission, seeded counts at 0.03x, 64 uploads per step, deterministic
    commits at the next step. Window 9 with the head +8-25% (ahead of Strata at every depth); the
@@ -218,7 +240,8 @@ In expected-value order. Each needs its KLD check and a `bench/results` folder.
    - **Rejected:** an L2 prefetch of the next hc mix (sw123), and the mix's weights loaded under
      the miss wait (sw125). The hc track is closed: its ceiling is ~3%.
    - **Closed without work:**
-     - The LM head runs at ~770 GB/s, at bandwidth (sw126 profile).
+     - The LM head is at DRAM bandwidth: the token's 16 Q5_K mat-vecs, 497 MiB with the 417 MiB head,
+       take 0.60 ms (sw126's profile), about 730-830 GB/s for the head.
      - Q3R runs at ~600 GB/s, and decode arithmetic is its limit (sw10, sw16). It would gain at
        most ~1.4%.
      - The hot-set copy is PCIe-bound. Its lever, a larger hot set, costs expert slots; it stays
@@ -226,7 +249,8 @@ In expected-value order. Each needs its KLD check and a `bench/results` folder.
    - Window 9 after P-5: sw128.
 5. **Quality beyond KLD** (Grok): a few hundred items of a reasoning eval (for example GSM8K)
    through flashrt and llama.cpp on the same GGUF, with a matching score expected. KLD is
-   necessary but not sufficient.
+   necessary but not sufficient. **Done (sw116):** GSM8K's first 500 test items, 96.0% against
+   llama.cpp's 96.6%, McNemar p = 0.51 (`bench/gsm8k_eval.py`).
 
 ## Phase 6: reproducible by someone else
 

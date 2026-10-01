@@ -83,9 +83,11 @@ If the current kernel is already near that ceiling, the gain is not in the kerne
 - **Rewinds.** Anything stateful in the forward (GDN state, conv history, PLE history) must be
   restorable by `Forward::commit` after a partial accept. KV writes need nothing, because
   rejected positions are rewritten before being read.
-- **Compile flags.** Only the vendored ggml target (`flashrt_gemv`) builds with
-  `--use_fast_math`. flashrt's own kernels are precise; changing that is an output change and
-  needs the KLD gate.
+- **Compile flags.** The `flashrt_gemv` library builds with `--use_fast_math`: the vendored
+  ggml kernels, and flashrt's own kernels in that library (`kernels/cuda/moe_q2.cu`, `q3r.cu`,
+  `ggml_gemm.cu` and the `mmq_*.cu` launchers), whose KLD was measured with it. The `arch/`
+  kernels build without it. Moving a kernel across that line is an output change and needs the
+  KLD gate (`CMakeLists.txt` says the same).
 
 ## Code idioms
 
@@ -125,7 +127,7 @@ Register it in `CMakeLists.txt` with `add_test`. `test_gemm` and `test_moe_q2` n
 
 ## From edit to a speed claim
 
-Edit and commit on the Mac; build and measure on the GPU box (paths and box rules:
+Edit and commit on the workstation; build and measure on the GPU box (paths and box rules:
 `CLAUDE.local.md`). In order:
 
 1. **Build and ctest** on the box, outside any benchmark window (a build skews CPU-bound

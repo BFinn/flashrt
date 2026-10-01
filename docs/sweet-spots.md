@@ -1,6 +1,6 @@
 # flashrt sweet spots
 
-Last updated 2026-09-30 (through sw112).
+Last updated 2026-10-01 (through sw130).
 
 Where tuning stopped and why, the configurations that came out best, and the paths not yet
 tested. Numbers come from `bench/results/<folder>` as cited. The rationale for each piece of the
@@ -24,7 +24,7 @@ RTX 5080 16 GB, Ryzen 9 7900X, DDR5-3600 (EXPO off), Qwen3.8-Flash-Next GSQ Q2_0
 | Expert-cache seed scale | the policy's counts start at 0.03x the prompt's routing counts; the fill still follows them | The warm-up: at 1x an answer's experts could not beat the residents for ~70 tokens (sw99, sw104) | sw104 |
 | Expert-cache tail fill | off (`--cache-tail-weight 0`) | Weight 2 on the prompt's last 16 tokens: window 9 with the head +10%, the agent's first short turns +11-33%, but wikitext -4% and the whole agent session flat (sw111) | sw111 |
 | Expert-cache commits | an upload commits at the next step (waiting there), so runs repeat | Query-based commits made the KLD vary 0.00876-0.00920 between runs (sw106); two steps cost 1-2 hit points on short agent turns (sw109) | sw106-sw109 |
-| Prefix reuse | 8 host checkpoints (113 MiB each), every 4,096 tokens, and before a fixed tail once one is seen | Window 9: reuse 32,768 / 134,004 as the reference engines; 250K first token 117 → 25.8 s with the head | sw95, sw96 |
+| Prefix reuse | 8 host checkpoints (113 MiB each), every 4,096 tokens, and before a fixed tail once one is seen | Window 9: reuse 32,768 / 134,004 as the reference engines; 250K first token 117 → 24.0 s with the head (22.2 s without, sw128) | sw95, sw96, sw128 |
 | VRAM reserve | 256 MiB in `fr_bench`, 512 MiB in the engine | Every MiB is expert-cache slots: about +0.3% speed per +1% of capacity. The engine keeps more for varied requests (a server at 256 failed its first request before the checkpoints were allocated up front; sw86). | sw64, sw86 |
 | CPU miss pool | 8 workers (6 is marginally better for plain decode, within noise) | | p1-moe-cpu, sw79 |
 | Kernels | all defaults on (see the toggles below) | | sw73-sw78 |
@@ -49,8 +49,22 @@ RTX 5080 16 GB, Ryzen 9 7900X, DDR5-3600 (EXPO off), Qwen3.8-Flash-Next GSQ Q2_0
 For comparison, at sw68 the same arms gave 99.6 / 106.4 / 82.9. The P2 gate (≥ 80 at 32K, ≥ 72 at
 250K, temperature 1.0) was already met by plain decoding (sw33).
 
-**On the reference engines' protocol** (window 9's prompts, 384 tokens per depth, 3 runs;
-`2026-09-29-sw91-depthbench`), decode at 1K / 32K / 134K / 250K:
+**On the reference engines' protocol** (window 9's prompts, 384 tokens per depth, prefixes
+reused, 5 runs per arm; `2026-10-01-sw128-p5-window9`), decode tok/s at 1K / 32K / 134K / 250K,
+mean ± sd:
+
+| Arm | 1K | 32K | 134K | 250K |
+|---|---|---|---|---|
+| greedy, `--spec 2` | 127.9 ± 4.4 | 111.3 ± 4.1 | 103.7 ± 2.3 | 104.9 ± 2.7 |
+| greedy, no head | 103.5 ± 2.1 | 95.5 ± 0.8 | 93.9 ± 0.9 | 91.9 ± 1.7 |
+| temperature 1.0, `--spec 2`, sampled drafts | 118.8 ± 16.5 | 95.5 ± 17.0 | 106.7 ± 2.1 | 106.4 ± 2.9 |
+
+Strata greedy there: 87.0 / 96.0 / 85.0 / 80.4 (`2026-09-27-w9-validation`; its build warns that
+its cache path changes its outputs; timings as measured). flashrt with the head is ahead at every
+depth; without it, level at 32K and ahead at the others. The expert cache's swap budget (64 since
+sw104) and admission were tuned on this protocol (sw89, sw100, sw104).
+
+History, before the warm-up work (`2026-09-29-sw91-depthbench`, sw96, sw101):
 
 | Arm | 1K | 32K | 134K | 250K |
 |---|---|---|---|---|
@@ -58,16 +72,16 @@ For comparison, at sw68 the same arms gave 99.6 / 106.4 / 82.9. The P2 gate (≥
 | greedy, no head (sw96, n = 5, the older admission) | 94.5 | 83.1 | 78.3 | 73.4 |
 | temperature 1.0, `--spec 2`, sampled drafts (sw101, n = 3) | 102.3 | 83.8 | 82.2 | 76.9 |
 
-Strata greedy there: 87.0 / 96.0 / 85.0 / 80.4 (its build warns that its cache path changes its
-outputs; timings as measured). flashrt trails it at 32K and 250K. Prefix reuse now matches
-Strata's (sw96) and decode did not move with it: the gap is the expert cache's warm-up. The cache
-is filled from a prompt that predicts the answer's routing poorly, and it reaches 68-70% hits
-with the head where the optimum is about 90% (sw99). The swap budget of 32 and the admission
-were tuned on this protocol (sw89, sw100).
+flashrt then trailed Strata at 32K and 250K. Prefix reuse matched Strata's (sw96) and decode did
+not move with it: the gap was the expert cache's warm-up. The cache was filled from a prompt that
+predicts the answer's routing poorly, and it reached 68-70% hits with the head where the optimum
+is about 90% (sw99). sw99-sw110 closed it.
 
 **Prefill.** Automatic chunks (the longest that fits the free VRAM, up to 16,384) and q8 KV:
-32K 6,216 and 64K 6,239 tok/s (sw83). The last 245K measurement is 5,309 (sw61), before the
-chunked GDN and later work.
+32K 6,216 and 64K 6,239 tok/s (sw83). With q8 host KV and the hot set of 4,096 (the long-context
+setting), `fr_bench` runs 5,981 / 5,935 / 5,710 tok/s at 32K / 128K / 245K (sw127, 2 rounds).
+Through the engine on window 9, per new token at 32K / 134K / 250K: 5,635 / 5,683 / 5,254 without
+the head and 5,385 / 5,352 / 4,871 with it (sw128).
 
 ## Where each track reached its knee
 
@@ -83,7 +97,8 @@ chunked GDN and later work.
   - So fusing kernels paid (sw73-sw75: +4.3% and +2.7%), and "PDL everywhere" would not.
 - **What remains outside the window:**
   - dense mat-vecs (at bandwidth except Q3R at ~600 GB/s);
-  - the LM head at ~730 GB/s;
+  - the LM head at DRAM bandwidth (the token's 16 Q5_K mat-vecs, 497 MiB with the 417 MiB head,
+    take 0.60 ms; sw126's profile);
   - the hc mix at ~590 GB/s (ceiling ~3%; hiding its loads under the miss wait lost twice, sw123,
     sw125);
   - attention.
@@ -119,7 +134,7 @@ Ranked by expected value. None of these has been implemented or measured end to 
 | ~~Sampled drafts with speculative sampling~~ | **Done (sw85): +20% at 32K (119.0 → 143.1 tok/s), +6% at 245K (91.7 → 97.1)**, `--spec 1`, temperature 1.0 | | |
 | ~~Adaptive draft length~~ from the head's probability or the last round | **Tried (sw114, simulated on logged rounds): at most ~2% for one rule across contexts, not consistent, below the model's error.** An oracle would gain 7-21%; the head's probability (well calibrated for argmax drafts) and acceptance streaks do not predict enough of it. Sampled drafts may not gate on q(d) at all (it breaks exactness). | A better predictor (target-side signals, q's shape) could revisit it: `fr_bench --round-log` and `simulate.py` are the harness. | |
 | ~~N-gram / prompt-lookup drafts stacked with the MTP head~~ | **Tried (sw115, simulated with measured window costs): −8% to +5% by text, about +1% on a code edit.** The head already keeps 100% of its drafts on copied code, and each extra window token costs a union of CPU misses (about 5 ms on code, 2 ms on 32K prose). | Windows that cost less per token would change it. | |
-| **Expert-cache warm-up for answers that route unlike the prompt** (done: sw100-sw109, window 9 with the head +8-25%, agent session +12%; left: uploads that cost less DRAM, or a prime that predicts the answer) | Up to the 1.5-9% gap to Strata at 32K-250K on window 9's protocol; per-turn in agent sessions (sw97: 73 tok/s at 44% hits, 125 at 86%) | sw99's simulator (`tools/cache_sim.py --policies engine`) reproduces the engine's hit rate: the loss is the first ~128 tokens, the optimum ~90%. Tail-weighted primes and generation priors trade one text against the other there. | Medium; try in the simulator first |
+| **Expert-cache warm-up for answers that route unlike the prompt** (done: sw100-sw109, window 9 with the head +8-25%, agent session +12%; left: uploads that cost less DRAM, or a prime that predicts the answer) | Window 9 has had no gap to Strata since sw110; what is left is the first ~128 tokens' warm-up, which matters most per turn in agent sessions (sw97: 73 tok/s at 44% hits, 125 at 86%) | sw99's simulator (`tools/cache_sim.py --policies engine`) reproduces the engine's hit rate: the loss is the first ~128 tokens, the optimum ~90%. Tail-weighted primes and generation priors trade one text against the other there. | Medium; try in the simulator first |
 | ~~The MTP head's pass over the prompt on the chunk path~~ | **Done: the head's KV mirror (sw98) and calls of 1,024 rows with grouped expert GEMMs (sw102): 131K prompt with the head 35.3 → 23.6 s; the head costs 5-7% of prefill at depth (was 27-60%)** | | |
 | **A larger KV hot set at depth** (fewer promotions over PCIe) | up to ~3% at 245K, less the slots it takes | `k_hot_copy` 31 µs per call at 245K, 12 per token (3.5% of GPU time, sw122), PCIe-bound. Each hot block costs VRAM the expert cache would use (about +0.3% speed per +1% of slots). | Small to try (`--kv-hot`); needs 6+ windows at 245K |
 | **Worker count per mode** (6 for one token, 8-11 for windows) | ~1-2% | Plain decode with 6 workers measured best but within noise (sw79). | Small. |
@@ -139,8 +154,8 @@ reproduces every output exactly. Removed: `FLASHRT_GDN_CHUNK` (sw71), `GDN_COL` 
 `ROUTE_WARP` (sw81), `Q3_Q8` (sw69), `MOE_Q2MMA` (sw55), `MOE_YD16` (sw59), `MOE_GU_STAGES` (2,
 sw55), `MOE_J` (the widest tile, sw48), `HC_GATE16` (sw59), `HC_DOWN2` / `HC_UP2` (sw75),
 `HC_COMB2` (sw78), `LINEAR_MULTI` (sw73), `FUSE_EPI` (sw74, sw82), `DB_SKIP` (sw77), `ATTN_TC` /
-`IDX_TC` (sw46, sw49), `MTP_CHUNK` (sw102) and `MTP_MIRROR` (sw98); after P-5, `ARGMAX_CLUSTER` (sw126) and
-`SELECT_CL1` (sw127), checked the same way (sw130).
+`IDX_TC` (sw46, sw49), `MTP_CHUNK` (sw102) and `MTP_MIRROR` (sw98). After P-5, sw130 removed
+`ARGMAX_CLUSTER` (sw126) and `SELECT_CL1` (sw127), and its fingerprint was identical.
 
 What remains:
 
@@ -149,3 +164,11 @@ What remains:
 | `FLASHRT_MOE_AB64` | off | per-64 activation scales (faster, fails KLD) | sw57 |
 | `FLASHRT_HC_Q8` | down | hc matrices as Q8P (down; up costs KLD) | sw66-sw68 |
 | `FLASHRT_ARGMAX_DRAFTS` | off | `1`: argmax drafts in sampled runs (as `--argmax-drafts`) | sw85 |
+
+Test-only variables (no effect on a normal run):
+
+| Variable | Read by | What it does |
+|---|---|---|
+| `FLASHRT_TEST_HOOKS` | the engine | `1` honours two request fields: `debug_fail` (a failure injected in prefill or decode) and `debug_first_top` (the first position's top logits in `done`); `bench/engine_smoke.py --faults` and `--reuse` set it |
+| `FLASHRT_TEST_MTP` | `tests/test_mtp_convert.cu` | the MTP GGUF: the head's real expert tensors are compared too |
+| `FLASHRT_TEST_MODEL` | ctest `gemm` and `moe_q2`; the server's `model_round_trip` test | the model GGUF; without it these tests are skipped |
