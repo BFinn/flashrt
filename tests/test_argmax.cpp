@@ -2,8 +2,7 @@
 // argmax_dev (greedy decoding's argmax over a logits row) against a CPU reference with the same
 // rule: the largest value, the lowest index on ties, NaN never taken (all -inf or NaN: INT32_MAX).
 // The target's vocabulary (262,144) and the drafter's (an odd length, from an unaligned pointer),
-// many ties, the maximum at either end; then its time at 262K. FLASHRT_ARGMAX_CLUSTER=0 runs the
-// one-CTA kernel.
+// many ties, the maximum at either end; then its time at 262K.
 //
 //   test_argmax
 #include "arch/qwen4exp/blocks.hpp"

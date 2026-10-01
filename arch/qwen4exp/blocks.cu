@@ -14,7 +14,6 @@
 
 #include <algorithm>
 #include <atomic>
-#include <cstdlib>
 #include <stdexcept>
 
 namespace flashrt::qwen4exp {
@@ -302,34 +301,11 @@ void embed(const BlockCtx& c, const int32_t* tokens, int T, float* out) {
 }
 
 namespace {
-// one block of 1024 threads: argmax over x[0 .. n), lowest index on ties
-__global__ void k_argmax(const float* x, int n, int32_t* out) {
-    __shared__ float bv[32];
-    __shared__ int bi[32];
-    float v = -INFINITY;
-    int idx = 0x7fffffff;
-    for (int i = threadIdx.x; i < n; i += blockDim.x) {
-        const float xi = x[i];
-        if (xi > v) { v = xi; idx = i; }   // i rises, so ties keep the lowest index
-    }
-    for (int o = 16; o > 0; o >>= 1) {
-        const float v2 = __shfl_xor_sync(0xffffffff, v, o);
-        const int i2 = __shfl_xor_sync(0xffffffff, idx, o);
-        if (v2 > v || (v2 == v && i2 < idx)) { v = v2; idx = i2; }
-    }
-    if ((threadIdx.x & 31) == 0) { bv[threadIdx.x >> 5] = v; bi[threadIdx.x >> 5] = idx; }
-    __syncthreads();
-    if (threadIdx.x == 0) {
-        for (int w = 1; w < (blockDim.x >> 5); ++w)
-            if (bv[w] > v || (bv[w] == v && bi[w] < idx)) { v = bv[w]; idx = bi[w]; }
-        out[0] = idx;
-    }
-}
-
-// The same argmax on a cluster of kArgmaxCluster CTAs (P-5): one CTA read the 1 MB of logits at
-// about 13 GB/s (79 us per call at 262K, sw122). Each thread takes every (8 * 1024)-th value, four
-// loads in flight, in rising index order; each CTA reduces as above, and CTA 0 takes the CTAs' results
-// in rank order through distributed shared memory. Same result as k_argmax, ties included.
+// argmax over x[0 .. n), lowest index on ties, NaN never taken (all -inf or NaN: INT32_MAX), on a
+// cluster of kArgmaxCluster CTAs (P-5): one CTA read the 1 MB of logits at about 13 GB/s (79 us per
+// call at 262K, sw122; 5 us here, sw126). Each thread takes every (8 * 1024)-th value, four loads in
+// flight, in rising index order; each CTA reduces its warps' results, and CTA 0 takes the CTAs'
+// results in rank order through distributed shared memory.
 constexpr int kArgmaxCluster = 8;
 __global__ void __cluster_dims__(kArgmaxCluster, 1, 1) __launch_bounds__(1024) k_argmax_cl(const float* x, int n, int32_t* out) {
     namespace cg = cooperative_groups;
@@ -379,12 +355,7 @@ __global__ void __cluster_dims__(kArgmaxCluster, 1, 1) __launch_bounds__(1024) k
 }  // namespace
 
 void argmax_dev(cudaStream_t stream, const float* x, int n, int32_t* out_dev) {
-    static const bool cluster = [] {   // FLASHRT_ARGMAX_CLUSTER=0: the one-CTA kernel
-        const char* e = std::getenv("FLASHRT_ARGMAX_CLUSTER");
-        return !(e && e[0] == '0');
-    }();
-    if (cluster) k_argmax_cl<<<kArgmaxCluster, 1024, 0, stream>>>(x, n, out_dev);
-    else k_argmax<<<1, 1024, 0, stream>>>(x, n, out_dev);
+    k_argmax_cl<<<kArgmaxCluster, 1024, 0, stream>>>(x, n, out_dev);
     ck(cudaGetLastError(), "argmax");
 }
 

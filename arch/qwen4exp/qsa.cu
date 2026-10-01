@@ -12,7 +12,6 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
-#include <cstdlib>
 #include <cstring>
 #include <stdexcept>
 #include <vector>
@@ -1021,14 +1020,10 @@ __global__ void __cluster_dims__(C, 1, 1) __launch_bounds__(1024)
 }
 
 // cluster: CTAs per token (1, 2, 4 or 8, the same output); 0 chooses: 8 in graphs and for short
-// windows, otherwise 1 or 4 by depth (FLASHRT_SELECT_CL1=0 keeps 8 always)
+// windows, otherwise 1 or 4 by depth (sw127)
 void select_launch(const float* scores, int ld, int32_t* cells, int32_t* counts, int ldc, int pos0, int T, int r, int nsel, int width,
                    const int32_t* dp, int cluster, cudaStream_t stream) {
-    static const bool cl1 = [] {
-        const char* e = std::getenv("FLASHRT_SELECT_CL1");
-        return !(e && e[0] == '0');
-    }();
-    if (cluster == 0) cluster = cl1 && !dp && T >= kSelSingleMin ? ((pos0 + T) / r >= kSelDeepBlocks ? 4 : 1) : kSelCluster;
+    if (cluster == 0) cluster = !dp && T >= kSelSingleMin ? ((pos0 + T) / r >= kSelDeepBlocks ? 4 : 1) : kSelCluster;
     switch (cluster) {
         case 1: k_idx_select<1><<<dim3(1, T), 1024, 0, stream>>>(scores, ld, cells, counts, ldc, pos0, r, nsel, width, dp); break;
         case 2: k_idx_select<2><<<dim3(2, T), 1024, 0, stream>>>(scores, ld, cells, counts, ldc, pos0, r, nsel, width, dp); break;

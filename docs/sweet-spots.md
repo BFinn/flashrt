@@ -139,7 +139,8 @@ reproduces every output exactly. Removed: `FLASHRT_GDN_CHUNK` (sw71), `GDN_COL` 
 `ROUTE_WARP` (sw81), `Q3_Q8` (sw69), `MOE_Q2MMA` (sw55), `MOE_YD16` (sw59), `MOE_GU_STAGES` (2,
 sw55), `MOE_J` (the widest tile, sw48), `HC_GATE16` (sw59), `HC_DOWN2` / `HC_UP2` (sw75),
 `HC_COMB2` (sw78), `LINEAR_MULTI` (sw73), `FUSE_EPI` (sw74, sw82), `DB_SKIP` (sw77), `ATTN_TC` /
-`IDX_TC` (sw46, sw49), `MTP_CHUNK` (sw102) and `MTP_MIRROR` (sw98).
+`IDX_TC` (sw46, sw49), `MTP_CHUNK` (sw102) and `MTP_MIRROR` (sw98); after P-5, `ARGMAX_CLUSTER` (sw126) and
+`SELECT_CL1` (sw127), checked the same way (sw130).
 
 What remains:
 
@@ -148,7 +149,3 @@ What remains:
 | `FLASHRT_MOE_AB64` | off | per-64 activation scales (faster, fails KLD) | sw57 |
 | `FLASHRT_HC_Q8` | down | hc matrices as Q8P (down; up costs KLD) | sw66-sw68 |
 | `FLASHRT_ARGMAX_DRAFTS` | off | `1`: argmax drafts in sampled runs (as `--argmax-drafts`) | sw85 |
-| `FLASHRT_ARGMAX_CLUSTER` | on | `0`: the one-CTA argmax (same output; 79 µs against 5 µs) | sw126 |
-| `FLASHRT_SELECT_CL1` | on | `0`: prefill sub-batches select on 8-CTA clusters as decode does (same output; prefill −11%) | sw127 |
-
-Both new toggles are exact and won; the next H-3 pass deletes them with their old paths.
