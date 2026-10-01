@@ -874,10 +874,12 @@ __device__ int block_scan_int(int v, int* total) {
 // per): each builds its digit histogram, and every CTA sums all of them through distributed shared
 // memory, so all take the same digit. The final pass offsets each CTA's blocks by the counts of the
 // CTAs before it, so the list is written in block order, as a single CTA would (P-5: one CTA took
-// 103 us per call at 245K, 61K blocks). C = 1 is that single CTA, for prefill sub-batches: their
-// tokens fill the GPU already, and 8 CTAs per token cost more barriers and passes (sw126).
+// 103 us per call at 245K, 61K blocks). Prefill sub-batches (128 tokens) fill the GPU with tokens
+// already, and 8 CTAs per token cost them 1.9-8.3x (test_idx_select, sw126): they take 1 CTA per
+// token below kSelDeepBlocks blocks and 4 above (33 us at 32K, 213 us at 245K, against 275 and 398).
 constexpr int kSelCluster = 8;
-constexpr int kSelSingleMin = 64;   // sub-batches of this many tokens or more select with C = 1
+constexpr int kSelSingleMin = 64;        // sub-batches of this many tokens or more: 1 or 4 CTAs per token
+constexpr int kSelDeepBlocks = 24576;    // (98K positions) the measured crossover between 1 and 4
 constexpr int kSelKeys = 9216;      // a CTA's keys held in shared memory (65,536 blocks over 8 CTAs: 262K positions)
 template <int C>
 __global__ void __cluster_dims__(C, 1, 1) __launch_bounds__(1024)
@@ -1018,15 +1020,15 @@ __global__ void __cluster_dims__(C, 1, 1) __launch_bounds__(1024)
     if (threadIdx.x == 0) counts[t] = filled * r + tail;
 }
 
-// cluster: 8 or 1 CTAs per token; 0 chooses (1 for kSelSingleMin tokens or more outside graphs;
-// FLASHRT_SELECT_CL1=0 keeps 8 always)
+// cluster: CTAs per token (1, 2, 4 or 8, the same output); 0 chooses: 8 in graphs and for short
+// windows, otherwise 1 or 4 by depth (FLASHRT_SELECT_CL1=0 keeps 8 always)
 void select_launch(const float* scores, int ld, int32_t* cells, int32_t* counts, int ldc, int pos0, int T, int r, int nsel, int width,
                    const int32_t* dp, int cluster, cudaStream_t stream) {
     static const bool cl1 = [] {
         const char* e = std::getenv("FLASHRT_SELECT_CL1");
         return !(e && e[0] == '0');
     }();
-    if (cluster == 0) cluster = cl1 && !dp && T >= kSelSingleMin ? 1 : kSelCluster;
+    if (cluster == 0) cluster = cl1 && !dp && T >= kSelSingleMin ? ((pos0 + T) / r >= kSelDeepBlocks ? 4 : 1) : kSelCluster;
     switch (cluster) {
         case 1: k_idx_select<1><<<dim3(1, T), 1024, 0, stream>>>(scores, ld, cells, counts, ldc, pos0, r, nsel, width, dp); break;
         case 2: k_idx_select<2><<<dim3(2, T), 1024, 0, stream>>>(scores, ld, cells, counts, ldc, pos0, r, nsel, width, dp); break;
