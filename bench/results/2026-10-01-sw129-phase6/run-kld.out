@@ -1,0 +1,13 @@
+
+== KLD gate: the fast path against llama.cpp's FP16-KV reference (published band 0.0087-0.0092)
+chunk 0 pos  5120: 1024 scored, mean KLD 0.01099, same top 96.97%, 119.9 tok/s
+chunk 0 pos  6144: 2048 scored, mean KLD 0.01274, same top 96.68%, 115.0 tok/s
+chunk 0 pos  7168: 3072 scored, mean KLD 0.01380, same top 95.83%, 111.7 tok/s
+chunk 0 pos  8191: 4095 scored, mean KLD 0.01231, same top 95.82%, 108.6 tok/s
+chunk 1 pos  5120: 5119 scored, mean KLD 0.01071, same top 96.07%, 114.6 tok/s
+chunk 1 pos  6144: 6143 scored, mean KLD 0.00976, same top 96.47%, 112.9 tok/s
+chunk 1 pos  7168: 7167 scored, mean KLD 0.00931, same top 96.57%, 111.3 tok/s
+chunk 1 pos  8191: 8190 scored, mean KLD 0.00891, same top 96.58%, 110.4 tok/s
+  KLD mean 0.008910, median 0.001185, p99 0.104523, p99.9 0.343547, max 0.788128
+  same top token 96.581%
+RUNSH-DONE

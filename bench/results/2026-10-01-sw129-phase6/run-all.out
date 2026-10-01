@@ -1,0 +1,52 @@
+
+== preflight: what this machine has, against what flashrt was built and measured on
+GPU: NVIDIA GeForce RTX 5080, 16303 MiB, compute capability 12.0 (measured: RTX 5080 16 GB, 12.0)
+RAM: 61 GB (measured: 64 GB; the experts take ~55 GB of host RAM)
+CPU: AVX-512 VNNI (the CPU expert kernels' path)
+CPU threads: 24 (measured: 12 cores / 24 threads; the miss pool uses 8 workers)
+model storage: /dev/nvme1n1p5 (rotational:    0); the n-gram (PLE) rows are read per token with O_DIRECT, so use an NVMe drive
+preflight: ok
+
+== build
+built (log: $BENCH/runsh/build.log)
+
+== tests (the CUDA kernels against CPU references; two of them load the model)
+100% tests passed, 0 tests failed out of 21
+
+== decode: window 9's 32K prompt, 256 tokens, greedy (published, the same prompt in the engine: 95.5 plain, 111.3 with --spec 2)
+prefill: 32793 tokens in 5.5 s (5957.6 tok/s, chunks of 11008, experts streamed to the GPU)
+decode: 256 tokens at depth 32793 in 2.69 s: 95.01 tok/s (fast path, doorbell), swaps 7836
+expert cache hit rate 85.29% (104805 hits, 18075 misses: 18075 on the CPU, 0 read over PCIe)
+decode: 257 tokens at depth 32793 in 2.64 s: 97.38 tok/s (speculative, MTP drafts), swaps 6129
+expert cache hit rate 75.36% (123708 hits, 40452 misses: 40452 on the CPU, 0 read over PCIe)
+speculative: 114 rounds, 2.254 tokens per round, 2.00 drafts verified per round; accepted drafts: 0:27.2% 1:20.2% 2:52.6%
+
+== window 9 (the reference engines' prompts, 1K / 32K / 134K / 250K in one conversation, 384 tokens each), 1 run(s) per arm
+run-P-plain-r1               depth    1055 | prefill   837.4 t/s (1055 new, 1.26 s) | decode 101.23 t/s wall, 101.49 engine | gen 384 length | hits 90.3% | vram_max 15341
+run-P-plain-r1               depth   32793 | prefill  5655.2 t/s (32793 new, 5.8 s) | decode  94.38 t/s wall,  94.62 engine | gen 384 length | hits 88.7% | vram_max 15341
+run-P-plain-r1               depth  134029 | prefill  5694.3 t/s (101261 new, 17.78 s) | decode  95.16 t/s wall,  95.41 engine | gen 384 length | hits 89.3% | vram_max 15341
+run-P-plain-r1               depth  250712 | prefill  5259.9 t/s (116708 new, 22.19 s) | decode  93.58 t/s wall,  93.82 engine | gen 384 length | hits 89.2% | vram_max 15341
+SUMMARY {"label": "run-P-plain-r1", "load_s": 21.6, "sampling": {"temperature": 0.0, "top_k": 20, "top_p": 1.0}, "engine_args": [], "vram_peak_mib": 15341, "rows": [{"depth": 1055, "new": 1055, "reused": 0, "generated": 384, "ttft_s": 1.26, "prompt_s": 1.26, "decode_wall_tps": 101.23, "decode_engine_tps": 101.49, "prefill_tps": 837.4, "drafts": {"proposed": 0, "accepted": 0}, "cache": {"hits": 166038, "misses": 17802, "miss_ms": 766.9251849999958, "slots": 8504}, "hit_rate": 0.9032, "finish": "length", "gpu": {"sm_mhz": 2820, "temp_c": 47, "power_w": 183.91}}, {"depth": 32793, "new": 32793, "reused": 0, "generated": 384, "ttft_s": 5.81, "prompt_s": 5.8, "decode_wall_tps": 94.38, "decode_engine_tps": 94.62, "prefill_tps": 5655.2, "drafts": {"proposed": 0, "accepted": 0}, "cache": {"hits": 163009, "misses": 20831, "miss_ms": 861.6134709999876, "slots": 8437}, "hit_rate": 0.8867, "finish": "length", "gpu": {"sm_mhz": 2827, "temp_c": 48, "power_w": 176.61}}, {"depth": 134029, "new": 101261, "reused": 32768, "generated": 384, "ttft_s": 17.82, "prompt_s": 17.78, "decode_wall_tps": 95.16, "decode_engine_tps": 95.41, "prefill_tps": 5694.3, "drafts": {"proposed": 0, "accepted": 0}, "cache": {"hits": 164207, "misses": 19633, "miss_ms": 722.633334999866, "slots": 8431}, "hit_rate": 0.8932, "finish": "length", "gpu": {"sm_mhz": 2820, "temp_c": 50, "power_w": 183.3}}, {"depth": 250712, "new": 116708, "reused": 134004, "generated": 384, "ttft_s": 22.23, "prompt_s": 22.19, "decode_wall_tps": 93.58, "decode_engine_tps": 93.82, "prefill_tps": 5259.9, "drafts": {"proposed": 0, "accepted": 0}, "cache": {"hits": 163945, "misses": 19895, "miss_ms": 732.4171689999215, "slots": 8431}, "hit_rate": 0.8918, "finish": "length", "gpu": {"sm_mhz": 2820, "temp_c": 51, "power_w": 184.89}}]}
+run-G-spec2-greedy-r1        depth    1055 | prefill   850.1 t/s (1055 new, 1.24 s) | decode 132.06 t/s wall, 132.38 engine | gen 384 length | drafts 205/358 | hits 86.4% | vram_max 15367
+run-G-spec2-greedy-r1        depth   32793 | prefill  5378.4 t/s (32793 new, 6.1 s) | decode 111.41 t/s wall, 111.68 engine | gen 384 length | drafts 206/354 | hits 81.7% | vram_max 15367
+run-G-spec2-greedy-r1        depth  134029 | prefill  5356.2 t/s (101261 new, 18.91 s) | decode 103.04 t/s wall, 103.29 engine | gen 384 length | drafts 203/362 | hits 82.5% | vram_max 15367
+run-G-spec2-greedy-r1        depth  250712 | prefill  4872.9 t/s (116708 new, 23.95 s) | decode 102.68 t/s wall, 102.93 engine | gen 384 length | drafts 208/354 | hits 82.9% | vram_max 15367
+SUMMARY {"label": "run-G-spec2-greedy-r1", "load_s": 27.2, "sampling": {"temperature": 0.0, "top_k": 20, "top_p": 1.0}, "engine_args": ["--mtp", "$MODELS/mtp-Flash-Next-Q8_0-noembd.gguf", "--spec", "2", "--draft-vocab", "$FLASHRT/bench/reference/mtp-vocab-ranks.txt"], "vram_peak_mib": 15367, "rows": [{"depth": 1055, "new": 1055, "reused": 0, "generated": 384, "ttft_s": 1.24, "prompt_s": 1.24, "decode_wall_tps": 132.06, "decode_engine_tps": 132.38, "prefill_tps": 850.1, "drafts": {"proposed": 358, "accepted": 205}, "cache": {"hits": 222740, "misses": 35020, "miss_ms": 1135.1088780000025, "slots": 7636}, "hit_rate": 0.8641, "finish": "length", "gpu": {"sm_mhz": 2812, "temp_c": 49, "power_w": 194.64}}, {"depth": 32793, "new": 32793, "reused": 0, "generated": 384, "ttft_s": 6.1, "prompt_s": 6.1, "decode_wall_tps": 111.41, "decode_engine_tps": 111.68, "prefill_tps": 5378.4, "drafts": {"proposed": 354, "accepted": 206}, "cache": {"hits": 208132, "misses": 46748, "miss_ms": 1495.3833430000084, "slots": 7548}, "hit_rate": 0.8166, "finish": "length", "gpu": {"sm_mhz": 2805, "temp_c": 51, "power_w": 189.89}}, {"depth": 134029, "new": 101261, "reused": 32768, "generated": 384, "ttft_s": 18.93, "prompt_s": 18.91, "decode_wall_tps": 103.04, "decode_engine_tps": 103.29, "prefill_tps": 5356.2, "drafts": {"proposed": 362, "accepted": 203}, "cache": {"hits": 215037, "misses": 45603, "miss_ms": 1482.1091559999666, "slots": 7536}, "hit_rate": 0.825, "finish": "length", "gpu": {"sm_mhz": 2805, "temp_c": 52, "power_w": 181.37}}, {"depth": 250712, "new": 116708, "reused": 134004, "generated": 384, "ttft_s": 23.99, "prompt_s": 23.95, "decode_wall_tps": 102.68, "decode_engine_tps": 102.93, "prefill_tps": 4872.9, "drafts": {"proposed": 354, "accepted": 208}, "cache": {"hits": 211350, "misses": 43530, "miss_ms": 1475.5238500000064, "slots": 7536}, "hit_rate": 0.8292, "finish": "length", "gpu": {"sm_mhz": 2797, "temp_c": 53, "power_w": 177.14}}]}
+run-S-spec2-t1.0-r1          depth    1055 | prefill   849.6 t/s (1055 new, 1.24 s) | decode 123.86 t/s wall, 124.16 engine | gen 384 length | drafts 195/378 | hits 87.0% | vram_max 15367
+run-S-spec2-t1.0-r1          depth   32793 | prefill  5390.9 t/s (32793 new, 6.08 s) | decode 112.58 t/s wall, 112.86 engine | gen 384 length | drafts 213/340 | hits 78.7% | vram_max 15367
+run-S-spec2-t1.0-r1          depth  134029 | prefill  5353.6 t/s (101261 new, 18.91 s) | decode 112.81 t/s wall, 113.08 engine | gen 384 length | drafts 217/334 | hits 82.1% | vram_max 15367
+run-S-spec2-t1.0-r1          depth  250712 | prefill  4872.6 t/s (116708 new, 23.95 s) | decode 109.55 t/s wall, 109.82 engine | gen 384 length | drafts 210/346 | hits 83.5% | vram_max 15367
+SUMMARY {"label": "run-S-spec2-t1.0-r1", "load_s": 27.3, "sampling": {"temperature": 1.0, "top_k": 20, "top_p": 0.95}, "engine_args": ["--mtp", "$MODELS/mtp-Flash-Next-Q8_0-noembd.gguf", "--spec", "2", "--draft-vocab", "$FLASHRT/bench/reference/mtp-vocab-ranks.txt"], "vram_peak_mib": 15367, "rows": [{"depth": 1055, "new": 1055, "reused": 0, "generated": 384, "ttft_s": 1.24, "prompt_s": 1.24, "decode_wall_tps": 123.86, "decode_engine_tps": 124.16, "prefill_tps": 849.6, "drafts": {"proposed": 378, "accepted": 195}, "cache": {"hits": 236671, "misses": 35489, "miss_ms": 1225.3434009999983, "slots": 7636}, "hit_rate": 0.8696, "finish": "length", "gpu": {"sm_mhz": 2812, "temp_c": 50, "power_w": 191.74}}, {"depth": 32793, "new": 32793, "reused": 0, "generated": 384, "ttft_s": 6.09, "prompt_s": 6.08, "decode_wall_tps": 112.58, "decode_engine_tps": 112.86, "prefill_tps": 5390.9, "drafts": {"proposed": 340, "accepted": 213}, "cache": {"hits": 192702, "misses": 52098, "miss_ms": 1553.4731180000008, "slots": 7548}, "hit_rate": 0.7872, "finish": "length", "gpu": {"sm_mhz": 2805, "temp_c": 51, "power_w": 184.55}}, {"depth": 134029, "new": 101261, "reused": 32768, "generated": 384, "ttft_s": 18.94, "prompt_s": 18.91, "decode_wall_tps": 112.81, "decode_engine_tps": 113.08, "prefill_tps": 5353.6, "drafts": {"proposed": 334, "accepted": 217}, "cache": {"hits": 197385, "misses": 43095, "miss_ms": 1376.113202, "slots": 7536}, "hit_rate": 0.8208, "finish": "length", "gpu": {"sm_mhz": 2797, "temp_c": 52, "power_w": 179.92}}, {"depth": 250712, "new": 116708, "reused": 134004, "generated": 384, "ttft_s": 23.99, "prompt_s": 23.95, "decode_wall_tps": 109.55, "decode_engine_tps": 109.82, "prefill_tps": 4872.6, "drafts": {"proposed": 346, "accepted": 210}, "cache": {"hits": 207956, "misses": 41164, "miss_ms": 1309.1040579999617, "slots": 7536}, "hit_rate": 0.8348, "finish": "length", "gpu": {"sm_mhz": 2797, "temp_c": 53, "power_w": 191.93}}]}
+DECODE tok/s (wall clock) (mean +- sd)
+arm                                      1055            32793           134029           250712
+run-P-plain (n=1)                       101.2             94.4             95.2             93.6
+run-G-spec2-greedy (n=1)                132.1            111.4            103.0            102.7
+run-S-spec2-t1.0 (n=1)                  123.9            112.6            112.8            109.5
+
+published (sw128, n=5): P 103.5 / 95.5 / 93.9 / 91.9, G 127.9 / 111.3 / 103.7 / 104.9, S 118.8 / 95.5 / 106.7 / 106.4
+
+== server: flashrt-server with the engine, then bench/server_smoke.py against it
+ok   top_k 0 accepted: 'OK'
+ok   metrics: 11 requests, 391 tokens, slots 7619, last hit ratio 0.751, CPU miss time 1.93 s
+all checks passed
+RUNSH-DONE
