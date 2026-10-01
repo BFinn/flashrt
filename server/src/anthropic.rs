@@ -18,7 +18,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
 
 use crate::chat::{self, ChatEvent, ChatRequest, Finish};
-use crate::{api_error, AppState};
+use crate::AppState;
 
 fn anth_error(status: u16, kind: &str, msg: &str) -> Response {
     let mut r = Json(json!({"type": "error", "error": {"type": kind, "message": msg}})).into_response();
@@ -127,15 +127,12 @@ fn to_chat(req: &Value) -> Result<(ChatRequest, bool), String> {
             r.tools = Some(Value::Array(fns));
         }
     }
-    r.max_tokens = req.get("max_tokens").and_then(Value::as_u64).map(|v| v as u32);
-    r.temperature = req.get("temperature").and_then(Value::as_f64).map(|v| v as f32);
-    r.top_p = req.get("top_p").and_then(Value::as_f64).map(|v| v as f32);
-    r.top_k = req.get("top_k").and_then(Value::as_u64).map(|v| v as u32);
-    r.stop = req
-        .get("stop_sequences")
-        .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
-        .unwrap_or_default();
+    // a field of the wrong type or out of range is an error; absent or null takes the default
+    r.max_tokens = chat::field_u32(req, "max_tokens")?;
+    r.temperature = chat::field_f32(req, "temperature")?;
+    r.top_p = chat::field_f32(req, "top_p")?;
+    r.top_k = chat::field_u32(req, "top_k")?;
+    r.stop = chat::field_stops(req, "stop_sequences")?;
     let show = match req.pointer("/thinking/type").and_then(Value::as_str) {
         Some("enabled") => true,
         Some("disabled") => {
@@ -202,10 +199,10 @@ pub async fn messages(st: Arc<AppState>, req: Value) -> Response {
             }
         }
     }
-    api_error(500, "api_error", "generation ended without a result")
+    anth_error(500, "api_error", "generation ended without a result")
 }
 
-fn stream_messages(
+pub(crate) fn stream_messages(
     mut rx: mpsc::Receiver<ChatEvent>,
     id: String,
     model: String,
@@ -245,7 +242,9 @@ fn stream_messages(
             "id": id, "type": "message", "role": "assistant", "model": model, "content": [],
             "stop_reason": null, "stop_sequence": null, "usage": {"input_tokens": n_prompt, "output_tokens": 0}}})));
         send!(ev("ping", json!({"type": "ping"})));
-        while let Some(e) = rx.recv().await {
+        // next_event also ends the task when the client leaves while nothing is sent (a prefill,
+        // or reasoning that is not shown)
+        while let Some(e) = chat::next_event(&mut rx, &tx).await {
             match e {
                 ChatEvent::Reasoning(s) => {
                     if !show_thinking {
@@ -292,4 +291,24 @@ fn stream_messages(
         }
     });
     Sse::new(ReceiverStream::new(out).map(Ok)).keep_alive(KeepAlive::default())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn out_of_range_and_mistyped_numbers_are_rejected() {
+        let base = |k: &str, v: Value| json!({"messages": [{"role": "user", "content": "x"}], k: v});
+        // 2^32 would have become 0 and 2^32 + 1 a top_k of 1 (under the 64 limit)
+        for (k, v) in [("max_tokens", json!(4294967296u64)), ("top_k", json!(4294967297u64)), ("temperature", json!("1")),
+                       ("top_p", json!([])), ("stop_sequences", json!([1]))] {
+            let e = to_chat(&base(k, v)).err().unwrap_or_else(|| panic!("{k} accepted"));
+            assert!(e.starts_with(k), "{k}: {e}");
+        }
+        let (r, _) = to_chat(&base("max_tokens", json!(100))).unwrap();
+        assert_eq!((r.max_tokens, r.top_k), (Some(100), None));
+        let (r, _) = to_chat(&base("stop_sequences", json!(["a", "b"]))).unwrap();
+        assert_eq!(r.stop, ["a", "b"]);
+    }
 }

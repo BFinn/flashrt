@@ -41,6 +41,24 @@ pub enum Finish {
     Cancelled,
 }
 
+impl Finish {
+    /// The server's name for how a generation ended (the `finish` label of /metrics).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Finish::Stop => "stop",
+            Finish::StopSequence => "stop_sequence",
+            Finish::Length => "length",
+            Finish::ToolCalls => "tool_calls",
+            Finish::Cancelled => "cancelled",
+        }
+    }
+}
+
+/// Stop strings a request may set, and the longest one in bytes: each token's check of the
+/// held-back text costs up to the sum of their squared lengths.
+pub const MAX_STOPS: usize = 16;
+pub const MAX_STOP_BYTES: usize = 256;
+
 #[derive(Debug)]
 pub enum ChatEvent {
     Reasoning(String),
@@ -194,7 +212,8 @@ impl Section {
             if s.is_empty() {
                 continue;
             }
-            // search a little before `sent`, in case a stop straddles the boundary (held back, so it cannot)
+            // the search starts at `sent`: a stop cannot straddle it, because `take` holds back
+            // any tail of the text that is a stop's prefix
             if let Some(i) = self.text[from..].find(s.as_str()) {
                 if best.is_none_or(|(b, _)| from + i < b) {
                     best = Some((from + i, s));
@@ -215,8 +234,72 @@ pub fn prompt_of(st: &AppState, req: &ChatRequest) -> Result<(String, Vec<u32>)>
         Some(p) => p.clone(),
         None => st.template.render(&req.messages, req.tools.as_ref(), &req.template_vars)?,
     };
-    let toks = st.tokenizer.encode(&text, true);
+    let toks = st.tokenizer.encode(&text, true)?;
     Ok((text, toks))
+}
+
+/// Request fields. Absent or null means "use the default"; a value of the wrong type or out of
+/// range is the request's error (HTTP 400), never a silent default or a truncated number.
+pub fn field_u32(req: &Value, key: &str) -> Result<Option<u32>, String> {
+    match req.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => v
+            .as_u64()
+            .and_then(|n| u32::try_from(n).ok())
+            .map(Some)
+            .ok_or_else(|| format!("{key} must be an integer in 0..={}, not {v}", u32::MAX)),
+    }
+}
+
+pub fn field_f32(req: &Value, key: &str) -> Result<Option<f32>, String> {
+    match req.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => v.as_f64().map(|x| Some(x as f32)).ok_or_else(|| format!("{key} must be a number, not {v}")),
+    }
+}
+
+/// A seed: a non-negative integer (sampling_of keeps its low 53 bits), or -1 for a random one
+/// (llama.cpp's convention).
+pub fn field_seed(req: &Value, key: &str) -> Result<Option<u64>, String> {
+    match req.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) if v.as_i64() == Some(-1) => Ok(None),
+        Some(v) => v.as_u64().map(Some).ok_or_else(|| format!("{key} must be a non-negative integer or -1 (random), not {v}")),
+    }
+}
+
+/// Stop strings: a string or an array of strings (their count and length are checked by `start`).
+pub fn field_stops(req: &Value, key: &str) -> Result<Vec<String>, String> {
+    let bad = || format!("{key} must be a string or an array of strings");
+    match req.get(key) {
+        None | Some(Value::Null) => Ok(vec![]),
+        Some(Value::String(s)) => Ok(vec![s.clone()]),
+        Some(Value::Array(a)) => a.iter().map(|x| x.as_str().map(String::from).ok_or_else(bad)).collect(),
+        Some(_) => Err(bad()),
+    }
+}
+
+/// The stop strings' limits (MAX_STOPS, MAX_STOP_BYTES).
+fn check_stops(stops: &[String]) -> Result<()> {
+    if stops.len() > MAX_STOPS {
+        bail!("{} stop strings; at most {MAX_STOPS} are allowed, each at most {MAX_STOP_BYTES} bytes", stops.len());
+    }
+    if let Some(s) = stops.iter().find(|s| s.len() > MAX_STOP_BYTES) {
+        bail!("a stop string of {} bytes; each may have at most {MAX_STOP_BYTES} (and at most {MAX_STOPS} strings)", s.len());
+    }
+    Ok(())
+}
+
+/// The next event for an SSE task, or None once the generation is over or the client has gone.
+/// When the connection closes, hyper drops the response body and with it the receiver of `out`,
+/// which can be long before the next event is due: a prefill sends nothing for minutes, and the
+/// Anthropic API sends nothing while it hides the reasoning. The task then ends and drops `rx`,
+/// and the generation task (`start`) sees its channel close and stops the engine.
+pub async fn next_event<T>(rx: &mut mpsc::Receiver<ChatEvent>, out: &mpsc::Sender<T>) -> Option<ChatEvent> {
+    tokio::select! {
+        ev = rx.recv() => ev,
+        _ = out.closed() => None,
+    }
 }
 
 /// A request's sampling settings, checked against what the engine accepts. `top_k` 0 means no
@@ -250,6 +333,7 @@ fn sampling_of(st: &AppState, req: &ChatRequest) -> Result<(f32, f32, u32, f32, 
 pub async fn start(st: Arc<AppState>, req: ChatRequest) -> Result<(mpsc::Receiver<ChatEvent>, u32)> {
     let raw = req.raw_prompt.is_some();
     let (temperature, top_p, top_k, min_p, seed) = sampling_of(&st, &req)?;
+    check_stops(&req.stop)?;
     // rendering and tokenizing a long prompt takes a while: not on an async worker
     let (req, prepared) = tokio::task::spawn_blocking({
         let st = st.clone();
@@ -308,8 +392,10 @@ pub async fn start(st: Arc<AppState>, req: ChatRequest) -> Result<(mpsc::Receive
         loop {
             let ev = tokio::select! {
                 ev = rx.recv() => ev,
-                // the client left (also while the request waits in the engine's queue): cancel it
-                // now, then drain its events to the done
+                // the receiver was dropped: the client left, at any point (queued in the engine,
+                // in prefill, generating). The HTTP handler's future, or the SSE task watching the
+                // connection (next_event), drops it. Cancel the request now, then drain its events
+                // to the done
                 _ = tx.closed(), if !gone => {
                     gone = true;
                     st.engine.stop(&id).await;
@@ -428,28 +514,34 @@ pub async fn start(st: Arc<AppState>, req: ChatRequest) -> Result<(mpsc::Receive
                         ev.get("decode_ms").and_then(|x| x.as_f64()).unwrap_or(0.0),
                         finish
                     );
-                    st.metrics.record_done(&ev);
-                    send!(ChatEvent::Done {
-                        finish,
-                        stop_sequence: stopped.clone(),
-                        prompt_tokens: n("prompt_tokens"),
-                        completion_tokens: n("generated"),
-                        reused: n("reused"),
-                        timings: timings_of(&ev),
-                    });
+                    st.metrics.record_done(&ev, finish.as_str());
+                    // the request is over: a client that has gone needs no stop
+                    if !gone {
+                        let _ = tx
+                            .send(ChatEvent::Done {
+                                finish,
+                                stop_sequence: stopped.clone(),
+                                prompt_tokens: n("prompt_tokens"),
+                                completion_tokens: n("generated"),
+                                reused: n("reused"),
+                                timings: timings_of(&ev),
+                            })
+                            .await;
+                    }
                     break;
                 }
                 Some("error") => {
                     let msg = ev.get("msg").and_then(Value::as_str).unwrap_or("engine error").to_string();
                     tracing::error!("{id}: engine error: {msg}");
                     st.metrics.record_error();
-                    send!(ChatEvent::Error(msg));
+                    if !gone {
+                        let _ = tx.send(ChatEvent::Error(msg)).await;
+                    }
                     break;
                 }
                 _ => {}
             }
         }
-        let _ = gone;
     });
     Ok((out, n_prompt))
 }
@@ -554,6 +646,82 @@ mod tests {
             assert!(t0.elapsed() < std::time::Duration::from_secs(2), "no stop reached the engine");
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
+    }
+
+    #[tokio::test]
+    async fn client_leaving_a_stream_during_prefill_cancels() {
+        use axum::response::IntoResponse;
+        // the fake engine is in a long prefill: it takes the request and emits nothing; it only
+        // answers a stop for it (with the done that ends the route)
+        let script = format!(
+            r#"{READY}; read line; read line; case "$line" in *'"op":"stop"'*'"id":"r0"'*) echo '{{"ev":"done","id":"r0","generated":0,"finish":"cancelled"}}';; esac; read line"#
+        );
+        for api in ["chat", "completions", "messages"] {
+            let st = fake_state(&script).await;
+            let (rx, n_prompt) = start(st.clone(), request("x")).await.unwrap();
+            let resp = match api {
+                "chat" => crate::openai::stream_chat(rx, "id".into(), 0, "m".into(), false).into_response(),
+                "completions" => crate::openai::stream_completion(rx, "id".into(), 0, "m".into()).into_response(),
+                _ => crate::anthropic::stream_messages(rx, "id".into(), "m".into(), n_prompt, false).into_response(),
+            };
+            // the SSE task has sent its opening frames and waits for the first event
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            assert!(st.engine.has_route("r0"), "{api}: the request ended before the client left");
+            drop(resp);   // the connection closed: hyper drops the response body
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                while st.engine.has_route("r0") {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("{api}: no stop reached the engine within 2 s"));
+        }
+    }
+
+    #[tokio::test]
+    async fn stop_string_limits() {
+        assert!(check_stops(&vec!["x".repeat(MAX_STOP_BYTES); MAX_STOPS]).is_ok());
+        let e = check_stops(&vec!["x".to_string(); MAX_STOPS + 1]).unwrap_err().to_string();
+        assert!(e.contains("17 stop strings") && e.contains("at most 16"), "{e}");
+        let e = check_stops(&["é".repeat(129)]).unwrap_err().to_string();   // 258 bytes, 129 chars
+        assert!(e.contains("258 bytes") && e.contains("at most 256"), "{e}");
+        // through start: the request's error (400), before the engine sees it
+        let st = fake_state(&format!("{READY}; read line")).await;
+        let mut r = request("x");
+        r.stop = vec!["s".into(); 17];
+        let e = start(st.clone(), r).await.expect_err("rejected");
+        assert_eq!(crate::start_error_status(&e), 400);
+        assert!(!st.engine.has_route("r0"));
+    }
+
+    #[tokio::test]
+    async fn untokenizable_prompt_is_the_requests_error() {
+        // a million spaces exceed the pre-tokenizer's backtracking stack (tokenizer.rs): the
+        // request fails with a 400 instead of losing the text
+        let st = fake_state(&format!("{READY}; read line")).await;
+        let e = start(st.clone(), request(&" ".repeat(1 << 20))).await.expect_err("rejected");
+        assert_eq!(crate::start_error_status(&e), 400);
+        assert!(e.to_string().contains("could not be tokenized"), "{e}");
+    }
+
+    #[test]
+    fn request_fields_are_checked_not_truncated() {
+        let req = json!({"a": 4294967296u64, "b": 4294967295u64, "c": "7", "d": null, "e": -3, "f": 1.5,
+                         "s": -1, "t": 12, "u": "x", "v": ["x", 1], "w": 2});
+        assert!(field_u32(&req, "a").unwrap_err().contains("0..=4294967295"));   // 2^32 is not 0
+        assert_eq!(field_u32(&req, "b"), Ok(Some(u32::MAX)));
+        assert!(field_u32(&req, "c").is_err());   // a string is not a number
+        assert_eq!(field_u32(&req, "d"), Ok(None));   // null: the default
+        assert_eq!(field_u32(&req, "missing"), Ok(None));
+        assert!(field_u32(&req, "e").is_err() && field_u32(&req, "f").is_err());
+        assert_eq!(field_f32(&req, "f"), Ok(Some(1.5)));
+        assert!(field_f32(&req, "c").is_err());
+        assert_eq!(field_seed(&req, "s"), Ok(None));   // -1: random
+        assert_eq!(field_seed(&req, "t"), Ok(Some(12)));
+        assert!(field_seed(&req, "e").is_err() && field_seed(&req, "f").is_err());
+        assert_eq!(field_stops(&req, "u"), Ok(vec!["x".to_string()]));
+        assert!(field_stops(&req, "v").is_err() && field_stops(&req, "w").is_err());
+        assert_eq!(field_stops(&req, "d"), Ok(vec![]));
     }
 
     #[tokio::test]

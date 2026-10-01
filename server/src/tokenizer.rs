@@ -18,13 +18,11 @@ use crate::gguf::Value;
 const QWEN35_PATTERN: &str = r"(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\r\n\p{L}\p{N}]?[\p{L}\p{M}]+|\p{N}| ?[^\s\p{L}\p{M}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+";
 
 pub struct Tokenizer {
-    pub n_vocab: usize,
     pub eos: u32,
     token_bytes: Vec<Vec<u8>>,              // id -> the bytes it stands for
     byte_token: [u32; 256],                 // the token of each single byte
     merges: HashMap<(u32, u32), (u32, u32)>, // pair -> (rank, merged id)
     specials: Vec<(String, u32)>,           // longest first
-    special_ids: Vec<bool>,
     control_ids: Vec<bool>,
     pretok: Regex,
     cache: Mutex<HashMap<String, Vec<u32>>>,
@@ -77,7 +75,6 @@ impl Tokenizer {
         let mut id_of: HashMap<&str, u32> = HashMap::with_capacity(tokens.len());
         let mut token_bytes = Vec::with_capacity(tokens.len());
         let mut specials = Vec::new();
-        let mut special_ids = vec![false; tokens.len()];
         let mut control_ids = vec![false; tokens.len()];
         for (i, t) in tokens.iter().enumerate() {
             id_of.insert(t, i as u32);
@@ -85,7 +82,6 @@ impl Tokenizer {
             control_ids[i] = types.get(i) == Some(&3);
             if special {
                 specials.push((t.to_string(), i as u32));
-                special_ids[i] = true;
                 token_bytes.push(t.as_bytes().to_vec());
             } else {
                 let mut bytes = Vec::with_capacity(t.len());
@@ -122,13 +118,11 @@ impl Tokenizer {
             .filter(|&e| e >= 0 && (e as usize) < tokens.len())
             .ok_or_else(|| anyhow!("gguf: no valid tokenizer.ggml.eos_token_id"))? as u32;
         Ok(Self {
-            n_vocab: tokens.len(),
             eos,
             token_bytes,
             byte_token,
             merges,
             specials,
-            special_ids,
             control_ids,
             pretok: Regex::new(QWEN35_PATTERN)?,
             cache: Mutex::new(HashMap::new()),
@@ -139,8 +133,9 @@ impl Tokenizer {
         self.specials.iter().find(|(s, _)| s == text).map(|(_, id)| *id)
     }
 
+    #[cfg(test)]
     pub fn is_special(&self, id: u32) -> bool {
-        self.special_ids.get(id as usize).copied().unwrap_or(false)
+        self.specials.iter().any(|&(_, s)| s == id)
     }
 
     /// A control token (GGUF token type 3, such as <|im_start|>): structure, never output text.
@@ -152,8 +147,9 @@ impl Tokenizer {
         self.token_bytes.get(id as usize).map(|v| v.as_slice()).unwrap_or(&[])
     }
 
-    /// Tokenizes text; with `specials`, the special tokens' strings become their ids.
-    pub fn encode(&self, text: &str, specials: bool) -> Vec<u32> {
+    /// Tokenizes text; with `specials`, the special tokens' strings become their ids. Fails when
+    /// the pre-tokenizer's regex cannot run over the text (see `encode_plain`).
+    pub fn encode(&self, text: &str, specials: bool) -> Result<Vec<u32>> {
         let mut out = Vec::new();
         let mut start = 0;
         if specials {
@@ -162,7 +158,7 @@ impl Tokenizer {
             while i < bytes.len() {
                 if bytes[i] == b'<' {
                     if let Some((s, id)) = self.specials.iter().find(|(s, _)| text[i..].starts_with(s.as_str())) {
-                        self.encode_plain(&text[start..i], &mut out);
+                        self.encode_plain(&text[start..i], start, &mut out)?;
                         out.push(*id);
                         i += s.len();
                         start = i;
@@ -172,18 +168,27 @@ impl Tokenizer {
                 i += 1;
             }
         }
-        self.encode_plain(&text[start..], &mut out);
-        out
+        self.encode_plain(&text[start..], start, &mut out)?;
+        Ok(out)
     }
 
     /// The words' ids, from the cache or merged. The cache lock is taken per word, so a long
     /// text does not hold up other requests' tokenization; words longer than CACHE_WORD bytes are
     /// not cached, which bounds the cache at CACHE_WORDS entries of that size.
-    fn encode_plain(&self, text: &str, out: &mut Vec<u32>) {
+    ///
+    /// The pattern's lookahead makes fancy_regex run it on its backtracking VM, whose limits a
+    /// long run of whitespace exceeds (a million spaces overflow its stack). That is an error for
+    /// the caller (an HTTP 400), never text silently left out. `offset` places `text` in the
+    /// whole input, for the message.
+    fn encode_plain(&self, text: &str, offset: usize, out: &mut Vec<u32>) -> Result<()> {
         const CACHE_WORDS: usize = 200_000;
         const CACHE_WORD: usize = 256;
+        let mut at = 0;   // the end of the last pre-token
         for m in self.pretok.find_iter(text) {
-            let Ok(m) = m else { continue };
+            let m = m.map_err(|e| {
+                anyhow!("the text could not be tokenized at byte {} (a very long run of whitespace?): {e}", offset + at)
+            })?;
+            at = m.end();
             let word = m.as_str();
             if let Some(ids) = self.cache.lock().unwrap().get(word) {
                 out.extend_from_slice(ids);
@@ -199,6 +204,7 @@ impl Tokenizer {
                 cache.insert(word.to_string(), ids);
             }
         }
+        Ok(())
     }
 
     /// Byte-level BPE: repeatedly merges the adjacent pair of lowest rank, the leftmost among
@@ -395,6 +401,22 @@ mod tests {
     }
 
     #[test]
+    fn a_pre_tokenizer_failure_is_an_error_not_lost_text() {
+        let tok = test_tokenizer();
+        let bytes_of = |ids: &[u32]| ids.iter().flat_map(|&id| tok.token_bytes(id).to_vec()).collect::<Vec<u8>>();
+        // a long run of whitespace still tokenizes whole
+        let ok = format!("a{}b <|im_end|>", " ".repeat(400_000));
+        let ids = tok.encode(&ok, true).unwrap();
+        assert_eq!(bytes_of(&ids), ok.as_bytes());
+        assert_eq!(ids.last(), Some(&261));
+        // a million spaces overflow fancy_regex's backtracking stack: an error that says where,
+        // not a prompt with the text after it gone (find_iter ends at the error)
+        let long = format!("<|im_start|>ab{}x", " ".repeat(1 << 20));
+        let e = tok.encode(&long, true).unwrap_err().to_string();
+        assert!(e.contains("could not be tokenized at byte 14 "), "{e}");
+    }
+
+    #[test]
     fn decoder_holds_incomplete_utf8() {
         let mut d = Decoder::default();
         let e = "é".as_bytes();
@@ -418,7 +440,7 @@ mod tests {
         let kv = crate::gguf::read_metadata(&path).unwrap();
         let tok = Tokenizer::from_gguf(&kv).unwrap();
         for text in ["Hello, world! 1234 5678", "ünïcödé, 日本語, emoji 😀 and\ttabs\n\nnewlines", "  leading and trailing  "] {
-            let ids = tok.encode(text, false);
+            let ids = tok.encode(text, false).unwrap();
             let mut d = Decoder::default();
             let mut back = String::new();
             for id in &ids {
@@ -428,7 +450,7 @@ mod tests {
             assert_eq!(back, text);
         }
         let im = tok.token_id("<|im_start|>").expect("<|im_start|> is a special token");
-        assert_eq!(tok.encode("<|im_start|>user", true)[0], im);
+        assert_eq!(tok.encode("<|im_start|>user", true).unwrap()[0], im);
         assert!(tok.is_special(im));
     }
 }

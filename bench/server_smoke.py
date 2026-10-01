@@ -18,16 +18,33 @@ A = None
 FAILED = []
 
 
+def auth():
+    return {"Authorization": f"Bearer {A.key}"} if A.key else {}
+
+
 def post(path, body, stream=False, headers=None):
-    h = {"Content-Type": "application/json"}
-    if A.key:
-        h["Authorization"] = f"Bearer {A.key}"
+    h = {"Content-Type": "application/json", **auth()}
     h.update(headers or {})
     req = urllib.request.Request(A.url + path, data=json.dumps(body).encode(), headers=h, method="POST")
     r = urllib.request.urlopen(req, timeout=1800)
     if not stream:
         return json.loads(r.read())
     return r
+
+
+def get(path):
+    """The body of a GET, with the same key as the POSTs."""
+    return urllib.request.urlopen(urllib.request.Request(A.url + path, headers=auth()), timeout=60).read()
+
+
+def metrics():
+    """/metrics as {series: value}."""
+    mt = {}
+    for line in get("/metrics").decode().splitlines():
+        if line and not line.startswith("#"):
+            k, v = line.rsplit(" ", 1)
+            mt[k] = float(v)
+    return mt
 
 
 def sse(resp):
@@ -65,7 +82,7 @@ def main():
     ap.add_argument("--key")
     A = ap.parse_args()
 
-    m = json.loads(urllib.request.urlopen(A.url + "/v1/models").read())
+    m = json.loads(get("/v1/models"))
     check("models", m["data"][0]["id"] != "", json.dumps(m["data"][0]))
 
     # 1. plain chat, reasoning off, greedy
@@ -178,6 +195,25 @@ def main():
                                       "chat_template_kwargs": {"enable_thinking": False}})
     check("disconnect cancels", time.time() - t < 30, f"next request answered in {time.time() - t:.1f} s: {r['choices'][0]['message']['content']!r}")
 
+    # 10b. a client that leaves during a long prefill: the server notices before any token is due
+    # and stops the request, so it ends cancelled with nothing generated. A nonce first, so no
+    # prefix is reused; about 40K tokens (the sw93 server has a 65,536 context)
+    before = metrics()
+    text = f"{time.time()} " + "The quick brown fox jumps over the lazy dog. " * 4000
+    resp = post("/v1/chat/completions", {"messages": [{"role": "user", "content": text + "Summarise."}],
+                                         "max_tokens": 64, "stream": True}, stream=True)
+    resp.close()
+    t = time.time()
+    r = post("/v1/chat/completions", {"messages": [{"role": "user", "content": "Say OK."}], "max_tokens": 16, "temperature": 0,
+                                      "chat_template_kwargs": {"enable_thinking": False}})
+    dt = time.time() - t
+    after = metrics()
+    cancelled = after.get('flashrt_requests_total{finish="cancelled"}', 0) - before.get('flashrt_requests_total{finish="cancelled"}', 0)
+    long_generated = (after.get("flashrt_generated_tokens_total", 0) - before.get("flashrt_generated_tokens_total", 0)
+                      - r["usage"]["completion_tokens"])
+    check("disconnect in prefill cancels", cancelled == 1 and long_generated == 0,
+          f"{cancelled:.0f} cancelled, {long_generated:.0f} tokens generated for it; next request answered in {dt:.1f} s")
+
     # 11. sampling limits: top_k above the engine's 64 and a negative temperature are 400s, not
     # silent caps; top_k 0 means no limit
     for name, extra in [("top_k 65", {"top_k": 65}), ("temperature -1", {"temperature": -1})]:
@@ -192,12 +228,7 @@ def main():
     check("top_k 0 accepted", "<|im" not in text, repr(text))
 
     # 12. /metrics: the totals over the generations above, in Prometheus's text format
-    req = urllib.request.Request(A.url + "/metrics", headers={"Authorization": f"Bearer {A.key}"} if A.key else {})
-    mt = {}
-    for line in urllib.request.urlopen(req, timeout=60).read().decode().splitlines():
-        if line and not line.startswith("#"):
-            k, v = line.rsplit(" ", 1)
-            mt[k] = float(v)
+    mt = metrics()
     done = sum(v for k, v in mt.items() if k.startswith("flashrt_requests_total{"))
     check("metrics", mt.get("flashrt_engine_up") == 1 and done >= 10 and mt.get("flashrt_generated_tokens_total", 0) > 0
           and mt.get("flashrt_expert_cache_hits_total", 0) > 0 and mt.get("flashrt_expert_cache_slots", 0) > 0,

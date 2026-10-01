@@ -79,26 +79,19 @@ fn normalize_messages(msgs: &Value) -> Result<Value, String> {
     Ok(Value::Array(out))
 }
 
-fn stops(v: Option<&Value>) -> Vec<String> {
-    match v {
-        Some(Value::String(s)) => vec![s.clone()],
-        Some(Value::Array(a)) => a.iter().filter_map(|x| x.as_str().map(String::from)).collect(),
-        _ => vec![],
-    }
-}
-
-fn common(req: &Value, r: &mut ChatRequest) {
-    r.max_tokens = req
-        .get("max_completion_tokens")
-        .or_else(|| req.get("max_tokens"))
-        .and_then(Value::as_u64)
-        .map(|v| v as u32);
-    r.temperature = req.get("temperature").and_then(Value::as_f64).map(|v| v as f32);
-    r.top_p = req.get("top_p").and_then(Value::as_f64).map(|v| v as f32);
-    r.top_k = req.get("top_k").and_then(Value::as_u64).map(|v| v as u32);
-    r.min_p = req.get("min_p").and_then(Value::as_f64).map(|v| v as f32);
-    r.seed = req.get("seed").and_then(Value::as_u64);
-    r.stop = stops(req.get("stop"));
+/// The settings both endpoints share; a field of the wrong type or out of range is an error.
+fn common(req: &Value, r: &mut ChatRequest) -> Result<(), String> {
+    r.max_tokens = match chat::field_u32(req, "max_completion_tokens")? {
+        Some(n) => Some(n),
+        None => chat::field_u32(req, "max_tokens")?,
+    };
+    r.temperature = chat::field_f32(req, "temperature")?;
+    r.top_p = chat::field_f32(req, "top_p")?;
+    r.top_k = chat::field_u32(req, "top_k")?;
+    r.min_p = chat::field_f32(req, "min_p")?;
+    r.seed = chat::field_seed(req, "seed")?;
+    r.stop = chat::field_stops(req, "stop")?;
+    Ok(())
 }
 
 pub fn empty_request() -> ChatRequest {
@@ -124,7 +117,9 @@ pub async fn chat_completions(st: Arc<AppState>, req: Value) -> Response {
     };
     let mut r = empty_request();
     r.messages = messages;
-    common(&req, &mut r);
+    if let Err(e) = common(&req, &mut r) {
+        return api_error(400, "invalid_request_error", &e);
+    }
     let tool_choice_none = req.get("tool_choice").and_then(Value::as_str) == Some("none");
     if let Some(t) = req.get("tools").filter(|t| t.as_array().is_some_and(|a| !a.is_empty())) {
         if !tool_choice_none {
@@ -193,7 +188,7 @@ pub async fn chat_completions(st: Arc<AppState>, req: Value) -> Response {
     api_error(500, "server_error", "generation ended without a result")
 }
 
-fn stream_chat(
+pub(crate) fn stream_chat(
     mut rx: mpsc::Receiver<ChatEvent>,
     id: String,
     created: u64,
@@ -211,7 +206,7 @@ fn stream_chat(
         if tx.send(send(chunk(json!({"role": "assistant", "content": ""}), Value::Null))).await.is_err() {
             return;
         }
-        while let Some(ev) = rx.recv().await {
+        while let Some(ev) = chat::next_event(&mut rx, &tx).await {
             let e = match ev {
                 ChatEvent::Reasoning(s) => send(chunk(json!({"reasoning_content": s}), Value::Null)),
                 ChatEvent::Content(s) => send(chunk(json!({"content": s}), Value::Null)),
@@ -254,7 +249,9 @@ pub async fn completions(st: Arc<AppState>, req: Value) -> Response {
         _ => return api_error(400, "invalid_request_error", "prompt must be a string"),
     };
     let mut r = empty_request();
-    common(&req, &mut r);
+    if let Err(e) = common(&req, &mut r) {
+        return api_error(400, "invalid_request_error", &e);
+    }
     r.raw_prompt = Some(prompt);
     let model = st.model_name.clone();
     let mut rx = match chat::start(st, r).await {
@@ -264,27 +261,7 @@ pub async fn completions(st: Arc<AppState>, req: Value) -> Response {
     let id = chat::new_id("cmpl-");
     let created = now();
     if req.get("stream").and_then(Value::as_bool).unwrap_or(false) {
-        let (tx, out) = mpsc::channel::<Event>(256);
-        tokio::spawn(async move {
-            while let Some(ev) = rx.recv().await {
-                let (text, finish, last) = match ev {
-                    ChatEvent::Content(s) => (s, Value::Null, false),
-                    ChatEvent::Done { finish, .. } => (String::new(), json!(finish_str(finish)), true),
-                    ChatEvent::Error(e) => (String::new(), json!(format!("error: {e}")), true),
-                    _ => continue,
-                };
-                let v = json!({"id": id, "object": "text_completion", "created": created, "model": model,
-                               "choices": [{"index": 0, "text": text, "finish_reason": finish}]});
-                if tx.send(Event::default().data(v.to_string())).await.is_err() {
-                    return;
-                }
-                if last {
-                    let _ = tx.send(Event::default().data("[DONE]")).await;
-                    return;
-                }
-            }
-        });
-        return Sse::new(ReceiverStream::new(out).map(Ok::<_, Infallible>)).keep_alive(KeepAlive::default()).into_response();
+        return stream_completion(rx, id, created, model).into_response();
     }
     let mut text = String::new();
     while let Some(ev) = rx.recv().await {
@@ -305,6 +282,35 @@ pub async fn completions(st: Arc<AppState>, req: Value) -> Response {
         }
     }
     api_error(500, "server_error", "generation ended without a result")
+}
+
+pub(crate) fn stream_completion(
+    mut rx: mpsc::Receiver<ChatEvent>,
+    id: String,
+    created: u64,
+    model: String,
+) -> Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>> {
+    let (tx, out) = mpsc::channel::<Event>(256);
+    tokio::spawn(async move {
+        while let Some(ev) = chat::next_event(&mut rx, &tx).await {
+            let (text, finish, last) = match ev {
+                ChatEvent::Content(s) => (s, Value::Null, false),
+                ChatEvent::Done { finish, .. } => (String::new(), json!(finish_str(finish)), true),
+                ChatEvent::Error(e) => (String::new(), json!(format!("error: {e}")), true),
+                _ => continue,
+            };
+            let v = json!({"id": id, "object": "text_completion", "created": created, "model": model,
+                           "choices": [{"index": 0, "text": text, "finish_reason": finish}]});
+            if tx.send(Event::default().data(v.to_string())).await.is_err() {
+                return;   // the client left; dropping rx makes the generation task stop the engine
+            }
+            if last {
+                let _ = tx.send(Event::default().data("[DONE]")).await;
+                return;
+            }
+        }
+    });
+    Sse::new(ReceiverStream::new(out).map(Ok)).keep_alive(KeepAlive::default())
 }
 
 #[cfg(test)]
@@ -366,6 +372,24 @@ mod tests {
         assert_eq!(v[4]["timings"]["cache_n"], 6);
         assert_eq!(v[5]["usage"]["prompt_tokens_details"]["cached_tokens"], 6);
         assert!(v.iter().all(|c| c["id"] == "id1" && c["object"] == "chat.completion.chunk"));
+    }
+
+    #[test]
+    fn out_of_range_and_mistyped_numbers_are_rejected() {
+        let mut r = empty_request();
+        // 2^32 would have become 0 and 2^32 + 1 a top_k of 1 (under the 64 limit)
+        for (k, v) in [("max_tokens", json!(4294967296u64)), ("top_k", json!(4294967297u64)), ("max_completion_tokens", json!(-1)),
+                       ("temperature", json!("0.7")), ("top_p", json!(true)), ("seed", json!(1.5)), ("stop", json!(7))] {
+            let e = common(&json!({k: v}), &mut r).unwrap_err();
+            assert!(e.starts_with(k), "{k}: {e}");
+        }
+        // absent and null take the defaults; max_completion_tokens wins over max_tokens
+        common(&json!({"max_tokens": null, "top_k": null}), &mut r).unwrap();
+        assert_eq!((r.max_tokens, r.top_k), (None, None));
+        common(&json!({"max_completion_tokens": null, "max_tokens": 9, "top_k": 64, "seed": 5, "stop": ["a", "b"]}), &mut r).unwrap();
+        assert_eq!((r.max_tokens, r.top_k, r.seed, r.stop.len()), (Some(9), Some(64), Some(5), 2));
+        common(&json!({"max_completion_tokens": 3, "max_tokens": 9}), &mut r).unwrap();
+        assert_eq!(r.max_tokens, Some(3));
     }
 
     #[test]

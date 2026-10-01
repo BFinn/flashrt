@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Running totals over the engine's `done` events, served at `/metrics` in Prometheus's text
-//! format (phase 6): requests by finish, tokens, prompt and decode time, drafts proposed and
+//! format (phase 6): requests by how the server ended them, tokens, prompt and decode time, drafts proposed and
 //! accepted, the decode's expert-cache hits and misses, the host's time running the misses, and
 //! the cache's slot count; then the last request's rates, for a reader without Prometheus.
 
@@ -50,12 +50,14 @@ fn num(v: &Value, path: &[&str]) -> Option<f64> {
 }
 
 impl Metrics {
-    /// One finished generation (the engine's `done` event; absent fields count as zero).
-    pub fn record_done(&self, done: &Value) {
+    /// One finished generation. `finish` is how the server ended it (`chat::Finish::as_str`:
+    /// stop, stop_sequence, length, tool_calls or cancelled), which can differ from the engine's
+    /// (a stop string is a `cancelled` there); the numbers come from the engine's `done` event
+    /// (absent fields count as zero).
+    pub fn record_done(&self, done: &Value, finish: &str) {
         let n = |p: &[&str]| num(done, p).unwrap_or(0.0);
-        let finish = done.get("finish").and_then(Value::as_str).unwrap_or("stop").to_string();
         let mut t = self.t.lock().unwrap();
-        *t.finished.entry(finish).or_default() += 1;
+        *t.finished.entry(finish.to_string()).or_default() += 1;
         let (prompt, reused, generated) = (n(&["prompt_tokens"]), n(&["reused"]), n(&["generated"]));
         let (prompt_ms, decode_ms) = (n(&["prompt_ms"]), n(&["decode_ms"]));
         let (proposed, accepted) = (n(&["drafts", "proposed"]), n(&["drafts", "accepted"]));
@@ -101,7 +103,7 @@ impl Metrics {
         let one = |v: f64| vec![(String::new(), v)];
         metric("engine_up", "gauge", "1 while the engine process is serving.", &one(f64::from(u8::from(engine_up))));
         let by_finish: Vec<(String, f64)> = t.finished.iter().map(|(k, v)| (format!("{{finish=\"{k}\"}}"), *v as f64)).collect();
-        metric("requests_total", "counter", "Generations finished, by how they ended.", &by_finish);
+        metric("requests_total", "counter", "Generations finished, by how the server ended them.", &by_finish);
         metric("request_errors_total", "counter", "Generations the engine answered with an error.", &one(t.errors as f64));
         metric("prompt_tokens_total", "counter", "Prompt tokens, reused ones included.", &one(t.prompt_tokens as f64));
         metric("prompt_tokens_reused_total", "counter", "Prompt tokens taken from the previous sequence.", &one(t.reused as f64));
@@ -140,14 +142,17 @@ mod tests {
         let m = Metrics::default();
         m.record_done(&json!({"generated": 100, "prompt_tokens": 1000, "reused": 200, "prompt_ms": 400.0, "decode_ms": 1000.0,
             "finish": "length", "drafts": {"proposed": 80, "accepted": 60},
-            "cache": {"hits": 900, "misses": 100, "slots": 8800, "miss_ms": 250.0}}));
-        m.record_done(&json!({"generated": 0, "finish": "cancelled"}));
+            "cache": {"hits": 900, "misses": 100, "slots": 8800, "miss_ms": 250.0}}), "length");
+        m.record_done(&json!({"generated": 0, "finish": "cancelled"}), "cancelled");
+        // a stop string: the engine reports the stop the server sent as cancelled
+        m.record_done(&json!({"generated": 0, "finish": "cancelled"}), "stop_sequence");
         m.record_error();
         let r = m.render(true);
         for line in [
             "flashrt_engine_up 1",
             "flashrt_requests_total{finish=\"cancelled\"} 1",
             "flashrt_requests_total{finish=\"length\"} 1",
+            "flashrt_requests_total{finish=\"stop_sequence\"} 1",
             "flashrt_request_errors_total 1",
             "flashrt_prompt_tokens_reused_total 200",
             "flashrt_generated_tokens_total 100",
@@ -170,7 +175,7 @@ mod tests {
         let m = Metrics::default();
         let r = m.render(false);
         assert!(r.contains("flashrt_engine_up 0") && !r.contains("expert_cache_slots ") && !r.contains("last_decode"));
-        m.record_done(&json!({"generated": 4, "decode_ms": 40.0, "finish": "stop", "cache": {"hits": 3, "misses": 1}}));
+        m.record_done(&json!({"generated": 4, "decode_ms": 40.0, "finish": "stop", "cache": {"hits": 3, "misses": 1}}), "stop");
         let r = m.render(true);
         assert!(r.contains("flashrt_cpu_miss_seconds_total 0\n") && !r.contains("expert_cache_slots "));
         assert!(r.contains("flashrt_last_expert_cache_hit_ratio 0.75") && !r.contains("last_draft_acceptance"));

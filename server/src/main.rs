@@ -123,7 +123,7 @@ fn check_tokenizer(tok: &tokenizer::Tokenizer, text: &str, ids: &str) -> Result<
     let reference: Vec<u32> = std::fs::read_to_string(ids)?.split_whitespace().filter_map(|s| s.parse().ok()).collect();
     let cut: String = text.chars().take(200_000).collect();
     let t0 = std::time::Instant::now();
-    let ours = tok.encode(&cut, false);
+    let ours = tok.encode(&cut, false)?;
     let dt = t0.elapsed().as_secs_f64();
     let n = ours.len().min(reference.len()).saturating_sub(64);   // the text was cut mid-token
     let same = ours[..n].iter().zip(&reference[..n]).filter(|(a, b)| a == b).count();
@@ -153,7 +153,7 @@ async fn main() -> Result<()> {
         return check_tokenizer(&tok, &c[0], &c[1]);
     }
     if let Some(path) = &args.tokenize {
-        let ids = tok.encode(&std::fs::read_to_string(path)?, true);
+        let ids = tok.encode(&std::fs::read_to_string(path)?, true)?;
         println!("{}", ids.iter().map(|t| t.to_string()).collect::<Vec<_>>().join(" "));
         return Ok(());
     }
@@ -189,7 +189,7 @@ async fn main() -> Result<()> {
             r.template_vars = kw.clone();
         }
         let text = template.render(&r.messages, r.tools.as_ref(), &r.template_vars)?;
-        let toks = tok.encode(&text, true);
+        let toks = tok.encode(&text, true)?;
         println!("{text}");
         println!("--- {} tokens; first ids {:?}", toks.len(), &toks[..toks.len().min(12)]);
         return Ok(());
@@ -197,7 +197,6 @@ async fn main() -> Result<()> {
 
     let exe = args.engine.as_deref().context("--engine is required")?;
     let engine = engine::Engine::spawn(exe, &args.engine_args).await?;
-    tracing::info!(version = %engine.ready.version, arch = %engine.ready.arch, max_context = engine.ready.max_context, "engine ready");
     let state = Arc::new(AppState {
         max_context: engine.ready.max_context,
         engine,

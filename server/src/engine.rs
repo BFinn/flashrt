@@ -20,7 +20,6 @@ use tokio::sync::{mpsc, Mutex};
 
 /// The engine's first line.
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 pub struct Ready {
     pub version: String,
     pub arch: String,
@@ -82,7 +81,13 @@ impl Engine {
             let line = lines.next_line().await?.ok_or_else(|| anyhow!("engine exited before it was ready"))?;
             let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
             match v.get("ev").and_then(Value::as_str) {
-                Some("ready") => break serde_json::from_value::<Ready>(v)?,
+                Some("ready") => {
+                    let ready = serde_json::from_value::<Ready>(v)?;
+                    // the features say what this engine's protocol supports (docs/design.md)
+                    tracing::info!(version = %ready.version, arch = %ready.arch, max_context = ready.max_context,
+                                   features = ?ready.features, "engine ready");
+                    break ready;
+                }
                 Some("error") => return Err(anyhow!("engine: {}", v.get("msg").and_then(Value::as_str).unwrap_or("error"))),
                 _ => {}
             }
