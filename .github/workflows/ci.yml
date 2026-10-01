@@ -1,7 +1,7 @@
 # CI on GitHub's hosted runners (no GPU): the CPU build and its tests; the whole tree with CUDA
 # for sm_120, compiled in NVIDIA's CUDA 12.9 container, with the CPU tests of that build; the
-# server's unit tests and lints; and the Python and shell tools' lints. The GPU tests (ctest -L gpu)
-# run on the target box (README: Tests).
+# server's unit tests and lints; the CPU tests under ASan/UBSan and TSan; and the Python and shell
+# tools' lints. The GPU tests (ctest -L gpu) run on the target box (README: Tests).
 name: ci
 on:
   push:
@@ -35,6 +35,36 @@ jobs:
       - run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=120 -DFLASHRT_NATIVE=OFF
       - run: cmake --build build
       - run: ctest --test-dir build --output-on-failure -L cpu
+
+  # the CPU parts and their tests (cpu_pool's 20,000-run stress test among them) under the
+  # sanitizers; TSan runs without ASLR (its runtime rejects the kernel's high-entropy mappings)
+  sanitize:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: asan-ubsan
+            flags: -fsanitize=address,undefined -fno-sanitize-recover=all
+            run: ""
+          - name: tsan
+            flags: -fsanitize=thread
+            run: setarch x86_64 -R
+    name: sanitize (${{ matrix.name }})
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+      - run: sudo apt-get update && sudo apt-get install -y ninja-build
+      # -Wno-maybe-uninitialized: GCC's false positive in <regex>'s std::function under the sanitizers
+      - run: >-
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DFLASHRT_CUDA=OFF -DFLASHRT_NATIVE=OFF
+          -DCMAKE_CXX_FLAGS="${{ matrix.flags }} -fno-omit-frame-pointer -Wno-maybe-uninitialized"
+          -DCMAKE_EXE_LINKER_FLAGS="${{ matrix.flags }}"
+      - run: cmake --build build
+      - run: ${{ matrix.run }} ctest --test-dir build --output-on-failure
+        env:
+          ASAN_OPTIONS: detect_leaks=1
+          UBSAN_OPTIONS: print_stacktrace=1
+          TSAN_OPTIONS: halt_on_error=1
 
   lint:
     runs-on: ubuntu-24.04

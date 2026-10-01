@@ -39,7 +39,7 @@ int main() {
         std::ofstream(path, std::ios::binary).write(data.data(), std::streamsize(size));
     }
     std::mt19937 rng(7);
-    for (const auto [base, row] : {std::pair<uint64_t, size_t>{0, 4096}, {100, 1000}, {4000, 3000}, {12345, 7}, {0, 1}, {2048, 4096}}) {
+    for (const auto& [base, row] : {std::pair<uint64_t, size_t>{0, 4096}, {100, 1000}, {4000, 3000}, {12345, 7}, {0, 1}, {2048, 4096}}) {
         RowReader rr(path, base, row, 8);
         const uint32_t n_rows = uint32_t((size - base) / row);
         const std::string tag = "base " + std::to_string(base) + ", row " + std::to_string(row);
