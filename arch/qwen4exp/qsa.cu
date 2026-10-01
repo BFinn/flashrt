@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <stdexcept>
 #include <vector>
@@ -873,10 +874,13 @@ __device__ int block_scan_int(int v, int* total) {
 // per): each builds its digit histogram, and every CTA sums all of them through distributed shared
 // memory, so all take the same digit. The final pass offsets each CTA's blocks by the counts of the
 // CTAs before it, so the list is written in block order, as a single CTA would (P-5: one CTA took
-// 103 us per call at 245K, 61K blocks).
+// 103 us per call at 245K, 61K blocks). C = 1 is that single CTA, for prefill sub-batches: their
+// tokens fill the GPU already, and 8 CTAs per token cost more barriers and passes (sw126).
 constexpr int kSelCluster = 8;
-constexpr int kSelKeys = 9216;   // a CTA's keys held in shared memory (65,536 blocks: 262K positions)
-__global__ void __cluster_dims__(kSelCluster, 1, 1) __launch_bounds__(1024)
+constexpr int kSelSingleMin = 64;   // sub-batches of this many tokens or more select with C = 1
+constexpr int kSelKeys = 9216;      // a CTA's keys held in shared memory (65,536 blocks over 8 CTAs: 262K positions)
+template <int C>
+__global__ void __cluster_dims__(C, 1, 1) __launch_bounds__(1024)
     k_idx_select(const float* scores, int ld, int32_t* cells, int32_t* counts, int ldc, int pos0, int r, int nsel, int width,
                  const int32_t* dp) {
     namespace cg = cooperative_groups;
@@ -891,7 +895,7 @@ __global__ void __cluster_dims__(kSelCluster, 1, 1) __launch_bounds__(1024)
     const int nb = (q + 1) / r, tail = (q + 1) - nb * r, M = nsel - (tail > 0 ? 1 : 0);
     const float* sc = scores + size_t(t) * ld;
     int32_t* out = cells + size_t(t) * ldc;
-    const int per = (nb + kSelCluster - 1) / kSelCluster;
+    const int per = (nb + C - 1) / C;
     const int lo = min(nb, rank * per), hi = min(nb, lo + per);
     int filled;
     if (nb <= M) {
@@ -937,7 +941,7 @@ __global__ void __cluster_dims__(kSelCluster, 1, 1) __launch_bounds__(1024)
             cl.sync();   // every CTA's histogram is complete (and last pass's buffer read by all)
             for (int d = threadIdx.x; d < 256; d += blockDim.x) {
                 int v = 0;
-                for (int k = 0; k < kSelCluster; ++k) v += cl.map_shared_rank(hist, k)[d];
+                for (int k = 0; k < C; ++k) v += cl.map_shared_rank(hist, k)[d];
                 tot[d] = v;
             }
             __syncthreads();
@@ -987,7 +991,7 @@ __global__ void __cluster_dims__(kSelCluster, 1, 1) __launch_bounds__(1024)
         }
         cl.sync();
         int g_off = 0, e_off = 0, g_total = 0;
-        for (int k = 0; k < kSelCluster; ++k) {
+        for (int k = 0; k < C; ++k) {
             const int* o = cl.map_shared_rank(cta_ge, k);
             if (k < rank) {
                 g_off += o[0];
@@ -1014,12 +1018,25 @@ __global__ void __cluster_dims__(kSelCluster, 1, 1) __launch_bounds__(1024)
     if (threadIdx.x == 0) counts[t] = filled * r + tail;
 }
 
+// cluster: 8 or 1 CTAs per token; 0 chooses (1 for kSelSingleMin tokens or more outside graphs;
+// FLASHRT_SELECT_CL1=0 keeps 8 always)
+void select_launch(const float* scores, int ld, int32_t* cells, int32_t* counts, int ldc, int pos0, int T, int r, int nsel, int width,
+                   const int32_t* dp, int cluster, cudaStream_t stream) {
+    static const bool cl1 = [] {
+        const char* e = std::getenv("FLASHRT_SELECT_CL1");
+        return !(e && e[0] == '0');
+    }();
+    if (cluster == 0) cluster = cl1 && !dp && T >= kSelSingleMin ? 1 : kSelCluster;
+    if (cluster == 1) k_idx_select<1><<<dim3(1, T), 1024, 0, stream>>>(scores, ld, cells, counts, ldc, pos0, r, nsel, width, dp);
+    else k_idx_select<kSelCluster><<<dim3(kSelCluster, T), 1024, 0, stream>>>(scores, ld, cells, counts, ldc, pos0, r, nsel, width, dp);
+    ck(cudaGetLastError(), "qsa_select");
+}
+
 }  // namespace
 
 void qsa_select(const float* scores, int ld, int32_t* cells, int32_t* counts, int ldc, int pos0, int T, int r, int nsel, int width,
-                cudaStream_t stream) {
-    k_idx_select<<<dim3(kSelCluster, T), 1024, 0, stream>>>(scores, ld, cells, counts, ldc, pos0, r, nsel, width, nullptr);
-    ck(cudaGetLastError(), "qsa_select");
+                cudaStream_t stream, int cluster) {
+    select_launch(scores, ld, cells, counts, ldc, pos0, T, r, nsel, width, nullptr, cluster, stream);
 }
 
 void qsa_h2q8_rows(const void* src_f16, void* dst_q8, void* dst_scales, long n_rows, int dim, cudaStream_t stream) {
@@ -1330,8 +1347,7 @@ void qsa_mixer(const BlockCtx& c, int il, const float* x, int T, int pos0, QsaCa
             } else {
                 k_idx_scores<<<dim3((max_nb + 127) / 128, Ts), 128, 0, c.stream>>>(qi_s, reinterpret_cast<const __half*>(kv.idx_pooled), bs.idx_scores, max_nb, p0, r, IH, ID);
             }
-            k_idx_select<<<dim3(kSelCluster, Ts), 1024, 0, c.stream>>>(bs.idx_scores, max_nb, bs.idx_cells, bs.idx_counts, ldc, p0, r,
-                                                                     nsel, width, c.dparams);
+            select_launch(bs.idx_scores, max_nb, bs.idx_cells, bs.idx_counts, ldc, p0, Ts, r, nsel, width, c.dparams, 0, c.stream);
             cells = bs.idx_cells;
             counts = bs.idx_counts;
             if (sel_out) {

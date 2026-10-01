@@ -2,7 +2,8 @@
 // qsa_select (the indexer's block selection) against a CPU reference: the top M blocks by score,
 // ties taken in block order, listed in block order, then the incomplete tail's cells; dense below
 // the width. Positions from within the width to 250K, T = 1 and 3 (decode and verify windows) and
-// a prefill sub-batch, scores rounded so that many tie; then its time at 245K.
+// a prefill sub-batch, scores rounded so that many tie, with 8 CTAs per token and with 1; then
+// its time for decode and prefill sub-batches.
 //
 //   test_idx_select
 #include "arch/qwen4exp/blocks.hpp"
@@ -53,7 +54,7 @@ int main() {
     std::normal_distribution<float> nd(0.0f, 1.0f);
     float* d_sc;
     int32_t *d_cells, *d_counts;
-    const int Tmax = 16;
+    const int Tmax = 128;
     cudaMalloc(&d_sc, size_t(Tmax) * ld * 4);
     cudaMalloc(&d_cells, size_t(Tmax) * ldc * 4);
     cudaMalloc(&d_counts, Tmax * 4);
@@ -62,6 +63,7 @@ int main() {
     const Case cs[] = {{100, 1, 0.25f}, {2040, 3, 0.25f}, {2051, 1, 0.25f}, {2100, 3, 0.1f}, {4096, 1, 0.5f}, {32768, 1, 0.25f},
                        {32769, 3, 0.25f}, {131070, 3, 0.05f}, {245760, 1, 0.25f}, {245761, 3, 1.0f}, {249990, 3, 0.25f},
                        {60000, 16, 0.25f}, {245000, 1, 0.0f}};
+    for (int cl : {8, 1})   // CTAs per token: decode's cluster, prefill's single CTA (sw126)
     for (const Case& c : cs) {
         std::vector<float> sc(size_t(c.T) * ld);
         for (auto& v : sc) {
@@ -70,7 +72,7 @@ int main() {
         }
         cudaMemcpy(d_sc, sc.data(), sc.size() * 4, cudaMemcpyHostToDevice);
         cudaMemset(d_cells, 0xff, size_t(Tmax) * ldc * 4);
-        qsa_select(d_sc, ld, d_cells, d_counts, ldc, c.pos0, c.T, r, nsel, width, nullptr);
+        qsa_select(d_sc, ld, d_cells, d_counts, ldc, c.pos0, c.T, r, nsel, width, nullptr, cl);
         if (cudaDeviceSynchronize() != cudaSuccess) {
             std::printf("CUDA error at pos0 %d\n", c.pos0);
             return 1;
@@ -86,29 +88,33 @@ int main() {
             ++cases;
             if (!ok) {
                 ++fails;
-                std::printf("MISMATCH pos %d (t %d): count %d, want %d\n", c.pos0 + t, t, counts[t], want_n);
+                std::printf("MISMATCH (%d CTAs) pos %d (t %d): count %d, want %d\n", cl, c.pos0 + t, t, counts[t], want_n);
             }
         }
     }
     std::printf("%d of %d token selections match the reference\n", cases - fails, cases);
-    // time: 245K, T = 1 and 3, 12 calls as in one decode step
-    for (int T : {1, 3}) {
+    // time: decode (T = 1, 3 at 245K) and a prefill sub-batch (T = 128 at 32K and 245K), each with
+    // 8 CTAs per token and with 1
+    struct Timing { int pos0, T; };
+    for (const Timing tm : {Timing{245760, 1}, Timing{245760, 3}, Timing{32768, 128}, Timing{245760, 128}})
+    for (int cl : {8, 1}) {
+        const int T = tm.T, p0 = tm.pos0;
         std::vector<float> sc(size_t(T) * ld);
         for (auto& v : sc) v = nd(rng);
         cudaMemcpy(d_sc, sc.data(), sc.size() * 4, cudaMemcpyHostToDevice);
-        for (int i = 0; i < 3; ++i) qsa_select(d_sc, ld, d_cells, d_counts, ldc, 245760, T, r, nsel, width, nullptr);
+        for (int i = 0; i < 3; ++i) qsa_select(d_sc, ld, d_cells, d_counts, ldc, p0, T, r, nsel, width, nullptr, cl);
         cudaDeviceSynchronize();
         cudaEvent_t e0, e1;
         cudaEventCreate(&e0);
         cudaEventCreate(&e1);
-        const int n = 120;
+        const int n = T > 3 ? 12 : 120;
         cudaEventRecord(e0);
-        for (int i = 0; i < n; ++i) qsa_select(d_sc, ld, d_cells, d_counts, ldc, 245760, T, r, nsel, width, nullptr);
+        for (int i = 0; i < n; ++i) qsa_select(d_sc, ld, d_cells, d_counts, ldc, p0, T, r, nsel, width, nullptr, cl);
         cudaEventRecord(e1);
         cudaEventSynchronize(e1);
         float ms = 0;
         cudaEventElapsedTime(&ms, e0, e1);
-        std::printf("245K, T = %d: %.1f us per call\n", T, 1000.0f * ms / n);
+        std::printf("pos %d, T = %d, %d CTA(s) per token: %.1f us per call\n", p0, T, cl, 1000.0f * ms / n);
     }
     cudaFree(d_sc);
     cudaFree(d_cells);
