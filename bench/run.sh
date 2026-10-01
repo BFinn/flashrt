@@ -90,7 +90,7 @@ tests() {
 }
 
 decode() {
-    say "decode: window 9's 32K prompt, 256 tokens, greedy (published, the same prompt in the engine: 95.5 plain, 111.3 with --spec 2)"
+    say "decode: fr_bench on window 9's 32K prompt, fresh prefill, 256 tokens, greedy (the reference box, 2026-10-01: prefill 5,958 tok/s; decode 95.0 plain, 97.4 with --spec 2)"
     python3 - "$IDS" "$BENCH/w9-32k.ids" << 'EOF'
 import json, sys
 item = next(i for i in json.load(open(sys.argv[1])) if 30000 < len(i["ids"]) < 40000)
