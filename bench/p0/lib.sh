@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 # shellcheck shell=bash disable=SC2034
 # Shared by the measurement-window scripts: take the GPU and RAM, and give the live server
 # back on exit if it was running. Source it, then call `take_gpu`. (Its variables are for the

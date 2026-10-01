@@ -10,3 +10,16 @@ directory it lives in (see docs/clean-room.md for what may be vendored).
 This product includes code from ggml / llama.cpp (https://github.com/ggml-org/llama.cpp),
 copyright (c) 2023-2026 The ggml authors, licensed under the MIT License. The vendored files
 are in third_party/ggml (unmodified; see third_party/ggml/VENDORED.md and its LICENSE).
+
+Portions of flashrt are adapted from ggml / llama.cpp (MIT, the ggml authors):
+- kernels/cuda/mmq_launch.cuh follows the grid and stream-k logic of ggml's launch_mul_mat_q;
+- server/src/tokenizer.rs and bench/mtp_vocab.py use llama.cpp's QWEN35 pre-tokenizer pattern;
+- arch/qwen4exp follows the semantics of llama.cpp's qwen4exp graph, and quant/q2_0 the Q2_0 format.
+
+bench/reference/llama.cpp-flashnext.patch is a patch against llama.cpp (MIT, the ggml authors and
+contributors), the reference engine of the published comparisons. It contains a GPU expert cache
+by csantiago78 and the qwen4exp MTP draft head of ggml-org/llama.cpp pull request #28243 (both
+under llama.cpp's MIT license), with changes by the flashrt authors.
+
+Files without a license header (the scripts, logs and summaries under bench/results, the data
+under bench/reference) are under the project's Apache-2.0 license, except the patch noted above.

@@ -5,14 +5,17 @@ name: docker
 on:
   push:
     branches: [main]
-    paths: [Dockerfile, .dockerignore, .github/workflows/docker.yml, CMakeLists.txt, server/Cargo.lock]
+    paths: [Dockerfile, .dockerignore, .github/workflows/docker.yml, CMakeLists.txt, server/**, engine/**, arch/**, kernels/**, core/**, quant/**, tools/**]
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   image:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
       - run: docker build -t flashrt .
       - run: docker run --rm --entrypoint flashrt-server flashrt --help
       - run: docker run --rm --entrypoint sh flashrt -c 'ldd /opt/flashrt/bin/flashrt-engine | grep "not found" && exit 1 || true'

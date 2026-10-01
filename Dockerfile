@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 # flashrt in a container (phase 6, X-2): the engine, the tools and the server, built in NVIDIA's
 # CUDA 12.9 image, run on its runtime image. The GPU is passed through by the NVIDIA container
 # toolkit; the model files are mounted.

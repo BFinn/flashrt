@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
 # Calibration window for the per-expert quant search (docs/research/dynamic-quant.md).
 # Needs the GPU and nearly all RAM. Run it as its own unit, when the owner frees the box:
 #

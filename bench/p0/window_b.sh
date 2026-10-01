@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: Apache-2.0
 # P0 window B on the target box. Window A's depth prompts turned out to be 134 distinct
 # tokens repeated, so this window re-measures on natural text (wikitext-2, raw):
 #   1. h2dbw with concurrent CPU readers (the arm that crashed in window A)

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
 """Depth sweep against a llama-server started by this script.
 
   depthbench.py --label X --bin DIR --depths 1000,32000,128000,240000 -- <server args>

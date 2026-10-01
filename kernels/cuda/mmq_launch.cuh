@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: Apache-2.0 AND MIT
 // flashrt's launcher for ggml's MMQ kernels (third_party/ggml/src/ggml-cuda/mmq.cuh, MIT): the
 // same grid and stream-k logic as ggml's launch_mul_mat_q, with the fixup buffer passed in
 // instead of taken from a ggml backend context. Included by one translation unit per weight

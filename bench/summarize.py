@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
 """Aggregate window 9 (background validation) into a mean +- sd table per arm and depth.
 
 Decode: llama.cpp rows report decode_tps, Strata rows decode_wall_tps.

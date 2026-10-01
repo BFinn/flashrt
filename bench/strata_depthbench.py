@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
 """Depth sweep for the Strata engine with the exact prompts of depthbench.py.
 
   strata_depthbench.py tokenize --url http://HOST:PORT --api-key-file F --out ids.json

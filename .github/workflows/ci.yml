@@ -13,11 +13,14 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   cpu:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
       - run: sudo apt-get update && sudo apt-get install -y ninja-build
       - run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DFLASHRT_CUDA=OFF -DFLASHRT_NATIVE=OFF
       - run: cmake --build build
@@ -27,7 +30,7 @@ jobs:
     runs-on: ubuntu-24.04
     container: nvidia/cuda:12.9.1-devel-ubuntu24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
       - run: apt-get update && apt-get install -y --no-install-recommends cmake ninja-build g++
       - run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=120 -DFLASHRT_NATIVE=OFF
       - run: cmake --build build
@@ -36,8 +39,8 @@ jobs:
   lint:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97   # v7.0.0
         with:
           python-version: "3.12"
       - run: pip install ruff==0.16.9 shellcheck-py==0.11.0.1
@@ -51,9 +54,10 @@ jobs:
       run:
         working-directory: server
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87   # stable, 2026-10-01
         with:
+          toolchain: stable   # pinned by commit, the action cannot take it from the ref
           components: clippy
       - run: cargo test --release --locked
-      - run: cargo clippy --release --locked -- -D warnings
+      - run: cargo clippy --release --all-targets --locked -- -D warnings
