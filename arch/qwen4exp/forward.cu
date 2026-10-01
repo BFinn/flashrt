@@ -432,7 +432,7 @@ std::vector<uint32_t> Forward::fill_counts(float tail_weight) const {
     }
     if (tail_weight > 0.0f && st > 0 && sc > 0)
         for (size_t i = 0; i < c.size(); ++i)
-            c[i] += uint32_t(std::min(4.0e9, double(tail_weight) * sc * tail_counts_[i] / st + 0.5));
+            c[i] = uint32_t(std::min(4.0e9, double(c[i]) + double(tail_weight) * sc * tail_counts_[i] / st + 0.5));   // saturating
     return c;
 }
 

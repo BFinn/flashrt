@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: Apache-2.0
+# A record of a run on the development box (its systemd units, services and paths), not a portable
+# script: bench/run.sh is the entry point for another machine.
 # Calibration window for the per-expert quant search (docs/research/dynamic-quant.md).
 # Needs the GPU and nearly all RAM. Run it as its own unit, when the owner frees the box:
 #

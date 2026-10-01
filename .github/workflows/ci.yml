@@ -47,6 +47,8 @@ jobs:
       # the Python and shell tools outside bench/results (those are records of what ran)
       - run: git ls-files '*.py' | grep -v '^bench/results\|^third_party' | xargs ruff check --select F,E9,B,PLE --ignore B905
       - run: git ls-files '*.sh' | grep -v '^bench/results' | xargs shellcheck -S warning
+      # no machine paths in tracked files (results are scrubbed with bench/scrub.py before commit)
+      - run: "! git grep -nE '/home/[a-z][a-z0-9_-]*/|/Users/[A-Za-z]' -- . ':!third_party'"
 
   server:
     runs-on: ubuntu-24.04

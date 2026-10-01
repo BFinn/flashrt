@@ -1,5 +1,7 @@
 #!/bin/bash
 # SPDX-License-Identifier: Apache-2.0
+# A record of a run on the development box (its systemd units, services and paths), not a portable
+# script: bench/run.sh is the entry point for another machine.
 # HISTORICAL (window A, 2026-09-27). Do not rerun as is: it restarts flashnext-262k-server on
 # exit, and no live service should run now. New windows source bench/p0/lib.sh instead.
 # P0 window A on the target box: bandwidth probes, routing traces, llama.cpp prefill ubatch

@@ -276,7 +276,7 @@ int main(int argc, char** argv) {
         cudaStream_t st = fwd.stream();
         for (int j = 0; j < T; j += 64) {
             const int Tj = std::min(64, T - j);
-            const float* h = fwd.streams() + size_t(j - 1) * hrow;   // rows j-1 .. j+Tj-2
+            const float* h = j > 0 ? fwd.streams() + size_t(j - 1) * hrow : nullptr;   // rows j-1 .. j+Tj-2
             if (j == 0) {
                 ck(cudaMemcpyAsync(h_buf, h_carry, hrow * 4, cudaMemcpyDeviceToDevice, st), "cudaMemcpyAsync");
                 if (Tj > 1) ck(cudaMemcpyAsync(h_buf + hrow, fwd.streams(), size_t(Tj - 1) * hrow * 4, cudaMemcpyDeviceToDevice, st), "cudaMemcpyAsync");

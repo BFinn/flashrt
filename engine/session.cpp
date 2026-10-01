@@ -116,6 +116,7 @@ struct Session::Impl {
         arena_register(arena);   // now, not in the first long prompt's prefill
         stage("experts read into the host arena and registered");
         cpus = physical_cpus();
+        if (cpus.empty()) throw std::runtime_error("no CPUs found for the miss server and its pool");
         pool = std::make_unique<CpuPool>(o.workers, cpus);   // pins this thread to cpus[0] for now
         const bool spec = !o.mtp.empty() && o.spec_k > 0;
         const int W = spec ? o.spec_k + 1 : 1;

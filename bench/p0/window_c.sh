@@ -1,5 +1,7 @@
 #!/bin/bash
 # SPDX-License-Identifier: Apache-2.0
+# A record of a run on the development box (its systemd units, services and paths), not a portable
+# script: bench/run.sh is the entry point for another machine.
 # P0 window C on the target box, all on natural text (wikitext-2):
 #   1. Strata's own time breakdown at 32K: `--stats` and `--gpu-stages` (per-stage GPU
 #      table), in generate mode; then PLE read depth (--ple-inflight) and --ple-io mmap
