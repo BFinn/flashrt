@@ -1,0 +1,14 @@
+cl1=0 32768 prefill: 32768 tokens in 6.1 s (5369.7 tok/s, chunks of 16384, experts streamed to the GPU
+cl1=0 131072 prefill: 131072 tokens in 24.8 s (5294.2 tok/s, chunks of 16384, experts streamed to the G
+cl1=0 245760 prefill: 245760 tokens in 48.0 s (5124.7 tok/s, chunks of 16384, experts streamed to the G
+cl1=1 32768 prefill: 32768 tokens in 5.5 s (5986.7 tok/s, chunks of 16384, experts streamed to the GPU
+cl1=1 131072 prefill: 131072 tokens in 22.1 s (5932.1 tok/s, chunks of 16384, experts streamed to the G
+cl1=1 245760 prefill: 245760 tokens in 43.0 s (5713.8 tok/s, chunks of 16384, experts streamed to the G
+cl1=1 32768 prefill: 32768 tokens in 5.5 s (5975.4 tok/s, chunks of 16384, experts streamed to the GPU
+cl1=1 131072 prefill: 131072 tokens in 22.1 s (5937.5 tok/s, chunks of 16384, experts streamed to the G
+cl1=1 245760 prefill: 245760 tokens in 43.1 s (5706.4 tok/s, chunks of 16384, experts streamed to the G
+cl1=0 32768 prefill: 32768 tokens in 6.1 s (5355.3 tok/s, chunks of 16384, experts streamed to the GPU
+cl1=0 131072 prefill: 131072 tokens in 24.7 s (5296.5 tok/s, chunks of 16384, experts streamed to the G
+cl1=0 245760 prefill: 245760 tokens in 48.0 s (5121.2 tok/s, chunks of 16384, experts streamed to the G
+FINGERPRINT-IDENTICAL
+ALLDONE
