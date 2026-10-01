@@ -61,11 +61,12 @@ void write_npy(const std::string& path, const char* descr, const std::vector<siz
     if (!f) { std::perror(path.c_str()); std::exit(1); }
     const unsigned char magic[8] = {0x93, 'N', 'U', 'M', 'P', 'Y', 1, 0};
     const uint16_t len = uint16_t(hdr.size());
-    std::fwrite(magic, 1, 8, f);
-    std::fwrite(&len, 2, 1, f);
-    std::fwrite(hdr.data(), 1, hdr.size(), f);
-    std::fwrite(data, 1, bytes, f);
-    std::fclose(f);
+    const bool ok = std::fwrite(magic, 1, 8, f) == 8 && std::fwrite(&len, 2, 1, f) == 1 &&
+                    std::fwrite(hdr.data(), 1, hdr.size(), f) == hdr.size() && std::fwrite(data, 1, bytes, f) == bytes;
+    if (std::fclose(f) != 0 || !ok) {   // a short file would read as a valid but truncated trace
+        std::fprintf(stderr, "write failed: %s\n", path.c_str());
+        std::exit(1);
+    }
 }
 
 // Parses "<prefix>-<layer>"; returns the layer or -1.

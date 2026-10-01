@@ -8,6 +8,7 @@
 //
 //   test_gdn
 #include "arch/qwen4exp/blocks.hpp"
+#include "tests/cuda_check.hpp"
 
 #include <cuda_runtime.h>
 
@@ -59,19 +60,19 @@ int main() {
         for (float& v : S0) v = 0.05f * nd(rng);
         float *dconv, *dg, *db, *dS1, *dS2, *do1, *do2;
         void* ws;
-        cudaMalloc(&dconv, conv.size() * 4);
-        cudaMalloc(&dg, g.size() * 4);
-        cudaMalloc(&db, beta.size() * 4);
-        cudaMalloc(&dS1, S0.size() * 4);
-        cudaMalloc(&dS2, S0.size() * 4);
-        cudaMalloc(&do1, size_t(T) * H * DK * 4);
-        cudaMalloc(&do2, size_t(T) * H * DK * 4);
-        cudaMalloc(&ws, gdn_chunk_ws_bytes(s));
-        cudaMemcpy(dconv, conv.data(), conv.size() * 4, cudaMemcpyHostToDevice);
-        cudaMemcpy(dg, g.data(), g.size() * 4, cudaMemcpyHostToDevice);
-        cudaMemcpy(db, beta.data(), beta.size() * 4, cudaMemcpyHostToDevice);
-        cudaMemcpy(dS1, S0.data(), S0.size() * 4, cudaMemcpyHostToDevice);
-        cudaMemcpy(dS2, S0.data(), S0.size() * 4, cudaMemcpyHostToDevice);
+        CUDA_CHECK(cudaMalloc(&dconv, conv.size() * 4));
+        CUDA_CHECK(cudaMalloc(&dg, g.size() * 4));
+        CUDA_CHECK(cudaMalloc(&db, beta.size() * 4));
+        CUDA_CHECK(cudaMalloc(&dS1, S0.size() * 4));
+        CUDA_CHECK(cudaMalloc(&dS2, S0.size() * 4));
+        CUDA_CHECK(cudaMalloc(&do1, size_t(T) * H * DK * 4));
+        CUDA_CHECK(cudaMalloc(&do2, size_t(T) * H * DK * 4));
+        CUDA_CHECK(cudaMalloc(&ws, gdn_chunk_ws_bytes(s)));
+        CUDA_CHECK(cudaMemcpy(dconv, conv.data(), conv.size() * 4, cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(dg, g.data(), g.size() * 4, cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(db, beta.data(), beta.size() * 4, cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(dS1, S0.data(), S0.size() * 4, cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(dS2, S0.data(), S0.size() * 4, cudaMemcpyHostToDevice));
         gdn_delta_prefill(s, dS1, dconv, dg, db, do1, T, false, nullptr, nullptr);
         gdn_delta_prefill(s, dS2, dconv, dg, db, do2, T, true, ws, nullptr);
         if (cudaDeviceSynchronize() != cudaSuccess) {
@@ -79,24 +80,24 @@ int main() {
             return 2;
         }
         std::vector<float> o1(size_t(T) * H * DK), o2(o1.size()), s1(S0.size()), s2(S0.size());
-        cudaMemcpy(o1.data(), do1, o1.size() * 4, cudaMemcpyDeviceToHost);
-        cudaMemcpy(o2.data(), do2, o2.size() * 4, cudaMemcpyDeviceToHost);
-        cudaMemcpy(s1.data(), dS1, s1.size() * 4, cudaMemcpyDeviceToHost);
-        cudaMemcpy(s2.data(), dS2, s2.size() * 4, cudaMemcpyDeviceToHost);
+        CUDA_CHECK(cudaMemcpy(o1.data(), do1, o1.size() * 4, cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(o2.data(), do2, o2.size() * 4, cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(s1.data(), dS1, s1.size() * 4, cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(s2.data(), dS2, s2.size() * 4, cudaMemcpyDeviceToHost));
         const double eo = rel(o2, o1), es = rel(s2, s1);
         const bool ok = std::isfinite(eo) && std::isfinite(es) && eo < 1e-2 && es < 1e-2;
         fail += !ok;
         // timing at this T
         cudaEvent_t e0, e1;
-        cudaEventCreate(&e0);
-        cudaEventCreate(&e1);
+        CUDA_CHECK(cudaEventCreate(&e0));
+        CUDA_CHECK(cudaEventCreate(&e1));
         float ms[2];
         for (int k = 0; k < 2; ++k) {
-            cudaEventRecord(e0);
+            CUDA_CHECK(cudaEventRecord(e0));
             for (int r = 0; r < 5; ++r) gdn_delta_prefill(s, k ? dS2 : dS1, dconv, dg, db, k ? do2 : do1, T, k == 1, ws, nullptr);
-            cudaEventRecord(e1);
-            cudaEventSynchronize(e1);
-            cudaEventElapsedTime(&ms[k], e0, e1);
+            CUDA_CHECK(cudaEventRecord(e1));
+            CUDA_CHECK(cudaEventSynchronize(e1));
+            CUDA_CHECK(cudaEventElapsedTime(&ms[k], e0, e1));
         }
         std::printf("T %5d: outputs %.2e, final state %.2e relative %s; column %.2f ms, chunked %.2f ms\n", T, eo, es, ok ? "ok" : "FAIL",
                     ms[0] / 5, ms[1] / 5);

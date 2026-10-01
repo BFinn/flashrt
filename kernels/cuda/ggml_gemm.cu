@@ -3,6 +3,7 @@
 #include "src/ggml-cuda/mmq.cuh"
 #include "src/ggml-cuda/quantize.cuh"
 
+#include "kernels/cuda/expert_group.cuh"
 #include "kernels/cuda/ggml_gemm.h"
 
 #include <cublas_v2.h>
@@ -65,7 +66,7 @@ size_t up256(size_t x) { return (x + 255) & ~size_t(255); }
 size_t fixup_bytes() { return size_t(ggml_cuda_info().devices[ggml_cuda_get_device()].nsm) * 128 * 128 * 4; }
 
 // Expert grouping (moe_prepare): tokens per block of the histogram and placement passes
-constexpr int kGroupTokens = 512, kGroupMaxExperts = 4096;
+constexpr int kGroupTokens = expert_group::kTokens, kGroupMaxExperts = expert_group::kMaxExperts;
 int64_t group_blocks(int64_t rows) { return (rows + kGroupTokens - 1) / kGroupTokens; }   // rows >= tokens
 
 // workspace: [fixup | activations (Q8_1 MMQ or BF16) | ids_src1 | ids_dst | expert_bounds | group counts]
@@ -89,7 +90,7 @@ Ws carve(void* ws, size_t ws_bytes, int64_t ncols, int64_t rows, bool bf16) {
     w.ids_dst = reinterpret_cast<int32_t*>(p);
     p += up256(size_t(rows) * 4);
     w.bounds = reinterpret_cast<int32_t*>(p);
-    p += up256(4096 * 4);
+    p += up256(size_t(kGroupMaxExperts) * 4);   // E + 1 bounds: moe_prepare takes E < kGroupMaxExperts
     w.group = reinterpret_cast<int32_t*>(p);
     p += up256(size_t(group_blocks(rows)) * kGroupMaxExperts * 4);
     if (size_t(p - static_cast<char*>(ws)) > ws_bytes) throw std::runtime_error("gemm: workspace too small");
@@ -107,16 +108,7 @@ cublasHandle_t cublas() {
 
 // Groups the (token, slot) pairs by expert, as ggml's mm_ids_helper does (same outputs: within
 // an expert in token order), but in O(T K) work: ggml's has each expert's warp scan every slot.
-// 1. per block of kGroupTokens tokens: a histogram of experts (integer atomics: exact)
-__global__ void k_group_hist(const int32_t* ids, int T, int K, int E, int32_t* cnt) {
-    __shared__ int32_t h[kGroupMaxExperts];
-    for (int e = threadIdx.x; e < E; e += blockDim.x) h[e] = 0;
-    __syncthreads();
-    const int s0 = blockIdx.x * kGroupTokens * K, s1 = min(T, (blockIdx.x + 1) * kGroupTokens) * K;
-    for (int sl = s0 + threadIdx.x; sl < s1; sl += blockDim.x) atomicAdd(&h[ids[sl]], 1);
-    __syncthreads();
-    for (int e = threadIdx.x; e < E; e += blockDim.x) cnt[size_t(blockIdx.x) * E + e] = h[e];
-}
+// 1. per block of kGroupTokens tokens: a histogram of experts (expert_group.cuh)
 // 2. one block: bounds[e] = slots of lower experts; cnt[b][e] becomes block b's first row of e
 __global__ void k_group_scan(int32_t* cnt, int nb, int E, int32_t* bounds) {
     __shared__ int32_t tot[kGroupMaxExperts];
@@ -203,7 +195,7 @@ size_t workspace_bytes(int64_t ncols, int64_t rows, bool bf16) {
     const int64_t padded = GGML_PAD(ncols, MATRIX_ROW_PADDING);
     const size_t act = std::max<size_t>(size_t(rows) * padded * sizeof(block_q8_1_mmq) / QK8_1_MMQ + 128 * sizeof(block_q8_1_mmq),
                                         bf16 ? size_t(rows) * ncols * 2 : 0);
-    return up256(fixup_bytes()) + up256(act) + 2 * up256(size_t(rows) * 4) + up256(4096 * 4) +
+    return up256(fixup_bytes()) + up256(act) + 2 * up256(size_t(rows) * 4) + up256(size_t(kGroupMaxExperts) * 4) +
            up256(size_t(group_blocks(rows)) * kGroupMaxExperts * 4);
 }
 
@@ -276,7 +268,7 @@ void to_bf16(const float* x, void* y_bf16, size_t n, cudaStream_t stream) {
 MoePlan moe_prepare(uint32_t t, int E, const float* x, bool x_per_slot, const int32_t* ids, int64_t T, int K, int64_t ncols, void* ws,
                     size_t ws_bytes, cudaStream_t stream) {
     const TypeInfo ti = info(t);
-    if (!ti.blck || ncols % ti.blck || E > 4095) throw std::runtime_error("gemm::moe_prepare: unsupported type or shape");
+    if (!ti.blck || ncols % ti.blck || E >= kGroupMaxExperts) throw std::runtime_error("gemm::moe_prepare: unsupported type or shape");
     MoePlan p;
     p.type = t;
     p.n_experts = E;
@@ -290,7 +282,7 @@ MoePlan moe_prepare(uint32_t t, int E, const float* x, bool x_per_slot, const in
     const bool dedup = p.ne11 == 1 && K > 1;
     {
         const int nb = int((T + kGroupTokens - 1) / kGroupTokens);
-        k_group_hist<<<nb, 256, 0, stream>>>(ids, int(T), K, E, w.group);
+        expert_group::k_hist<<<nb, 256, 0, stream>>>(ids, int(T), K, E, w.group);
         k_group_scan<<<1, 512, 0, stream>>>(w.group, nb, E, w.bounds);
         k_group_place<<<nb, 32, 0, stream>>>(ids, int(T), K, E, w.group, w.ids_src1, w.ids_dst, int(p.ne11), int(p.ne11), dedup);
     }

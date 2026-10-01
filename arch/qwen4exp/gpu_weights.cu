@@ -2,6 +2,7 @@
 #include "arch/qwen4exp/gpu_weights.hpp"
 
 #include "core/gguf.hpp"
+#include "core/scope.hpp"
 #include "kernels/cuda/ggml_gemv.h"
 #include "kernels/cuda/q3r.h"
 
@@ -99,24 +100,35 @@ void GpuWeights::load(const Gguf& g, const WeightPlan& plan, bool q3r_on) {
 
     constexpr size_t kStage = size_t(64) << 20;
     void* stage[2] = {nullptr, nullptr};
+    cudaStream_t st = nullptr;
+    cudaEvent_t done[2] = {nullptr, nullptr};
+    void *hc_tmp = nullptr, *q3r_tmp = nullptr;
+    // freed on every path; a failed read must not leave copies in flight from a freed stage buffer
+    ScopeExit cleanup([&] {
+        if (st) cudaStreamSynchronize(st);
+        if (hc_tmp) cudaFree(hc_tmp);
+        if (q3r_tmp) cudaFree(q3r_tmp);
+        for (cudaEvent_t e : done)
+            if (e) cudaEventDestroy(e);
+        if (st) cudaStreamDestroy(st);
+        for (void* p : stage)
+            if (p) cudaFreeHost(p);
+    });
     ck(cudaHostAlloc(&stage[0], kStage, cudaHostAllocDefault), "cudaHostAlloc");
     ck(cudaHostAlloc(&stage[1], kStage, cudaHostAllocDefault), "cudaHostAlloc");
-    cudaStream_t st;
     ck(cudaStreamCreate(&st), "cudaStreamCreate");
-    cudaEvent_t done[2];
     ck(cudaEventCreate(&done[0]), "cudaEventCreate");
     ck(cudaEventCreate(&done[1]), "cudaEventCreate");
     ck(cudaEventRecord(done[0], st), "cudaEventRecord");
     ck(cudaEventRecord(done[1], st), "cudaEventRecord");
 
-    std::vector<int> fds(g.shards.size(), -1);
+    std::vector<UniqueFd> fds;
     for (size_t i = 0; i < g.shards.size(); ++i) {
-        fds[i] = open(g.shards[i].c_str(), O_RDONLY);
-        if (fds[i] < 0) throw std::runtime_error("open " + g.shards[i]);
+        fds.emplace_back(open(g.shards[i].c_str(), O_RDONLY));
+        if (fds.back().get() < 0) throw std::runtime_error("open " + g.shards[i]);
     }
 
     // hc matrices go through a BF16 staging copy on the device, converted into their Q8P slot
-    void* hc_tmp = nullptr;
     {
         size_t hb = 0;
         for (const Placement& p : plan.tensors)
@@ -132,8 +144,9 @@ void GpuWeights::load(const Gguf& g, const WeightPlan& plan, bool q3r_on) {
         if (host_resident(t)) {
             void* h = nullptr;
             ck(cudaHostAlloc(&h, t.bytes, cudaHostAllocMapped), "cudaHostAlloc host-resident tensor");
+            host_bufs_.push_back(h);   // owned (and freed by the destructor) from here, a failed read included
             for (size_t r = 0; r < t.bytes;) {
-                const ssize_t got = pread(fds[t.shard], static_cast<char*>(h) + r, t.bytes - r, off_t(t.file_offset + r));
+                const ssize_t got = pread(fds[t.shard].get(), static_cast<char*>(h) + r, t.bytes - r, off_t(t.file_offset + r));
                 if (got <= 0) throw std::runtime_error("short read of " + t.name);
                 r += size_t(got);
             }
@@ -141,7 +154,6 @@ void GpuWeights::load(const Gguf& g, const WeightPlan& plan, bool q3r_on) {
             gt.type = t.type;
             gt.dims = t.dims;
             gt.bytes = t.bytes;
-            host_bufs_.push_back(h);
             tensors_.emplace(t.name, std::move(gt));
             continue;
         }
@@ -156,7 +168,7 @@ void GpuWeights::load(const Gguf& g, const WeightPlan& plan, bool q3r_on) {
             const size_t n = std::min(kStage, t.bytes - done_b);
             ck(cudaEventSynchronize(done[buf]), "cudaEventSynchronize");
             for (size_t r = 0; r < n;) {
-                const ssize_t got = pread(fds[t.shard], static_cast<char*>(stage[buf]) + r, n - r, off_t(t.file_offset + done_b + r));
+                const ssize_t got = pread(fds[t.shard].get(), static_cast<char*>(stage[buf]) + r, n - r, off_t(t.file_offset + done_b + r));
                 if (got <= 0) throw std::runtime_error("short read of " + t.name);
                 r += size_t(got);
             }
@@ -179,7 +191,7 @@ void GpuWeights::load(const Gguf& g, const WeightPlan& plan, bool q3r_on) {
     }
     if (hc_tmp) {
         ck(cudaStreamSynchronize(st), "hc to Q8P");
-        cudaFree(hc_tmp);
+        cudaFree(std::exchange(hc_tmp, nullptr));
     }
     // Q3_K -> Q3R in place, through one temporary (the slots were sized for the larger of the two)
     if (q3r_on) {
@@ -188,28 +200,21 @@ void GpuWeights::load(const Gguf& g, const WeightPlan& plan, bool q3r_on) {
             if (p.tier == Tier::VramDense && q3r_eligible(*p.tensor))
                 tmp_bytes = std::max(tmp_bytes, q3r::bytes(p.tensor->dims[1], p.tensor->dims[0]));
         if (tmp_bytes) {
-            void* tmp = nullptr;
-            ck(cudaMalloc(&tmp, tmp_bytes), "cudaMalloc q3r temporary");
+            ck(cudaMalloc(&q3r_tmp, tmp_bytes), "cudaMalloc q3r temporary");
             for (const Placement& p : plan.tensors) {
                 if (p.tier != Tier::VramDense || !q3r_eligible(*p.tensor)) continue;
                 GpuTensor& t = tensors_.at(p.tensor->name);
                 const size_t qb = q3r::bytes(t.rows(), t.cols());
-                q3r::repack(t.dev, tmp, t.rows(), t.cols(), st);
-                ck(cudaMemcpyAsync(t.dev, tmp, qb, cudaMemcpyDeviceToDevice, st), "q3r copy back");
+                q3r::repack(t.dev, q3r_tmp, t.rows(), t.cols(), st);
+                ck(cudaMemcpyAsync(t.dev, q3r_tmp, qb, cudaMemcpyDeviceToDevice, st), "q3r copy back");
                 t.type = kTypeQ3R;
                 t.bytes = qb;
             }
             ck(cudaStreamSynchronize(st), "q3r repack");
-            cudaFree(tmp);
+            cudaFree(std::exchange(q3r_tmp, nullptr));
         }
     }
-    ck(cudaStreamSynchronize(st), "cudaStreamSynchronize");
-    for (int fd : fds) close(fd);
-    cudaEventDestroy(done[0]);
-    cudaEventDestroy(done[1]);
-    cudaStreamDestroy(st);
-    cudaFreeHost(stage[0]);
-    cudaFreeHost(stage[1]);
+    ck(cudaStreamSynchronize(st), "cudaStreamSynchronize");   // the staging resources go with `cleanup`
     seconds_ = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
 }
 

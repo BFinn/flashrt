@@ -5,6 +5,7 @@
 //
 //   test_route_topk
 #include "arch/qwen4exp/blocks.hpp"
+#include "tests/cuda_check.hpp"
 
 #include <cuda_runtime.h>
 
@@ -28,20 +29,20 @@ int main() {
     int32_t* d_ids;
     float* d_w;
     uint32_t* d_cnt;
-    cudaMalloc(&d_lg, lg.size() * 4);
-    cudaMalloc(&d_ids, size_t(T) * K * 4);
-    cudaMalloc(&d_w, size_t(T) * K * 4);
-    cudaMalloc(&d_cnt, E * 4);
-    cudaMemcpy(d_lg, lg.data(), lg.size() * 4, cudaMemcpyHostToDevice);
-    cudaMemset(d_cnt, 0, E * 4);
+    CUDA_CHECK(cudaMalloc(&d_lg, lg.size() * 4));
+    CUDA_CHECK(cudaMalloc(&d_ids, size_t(T) * K * 4));
+    CUDA_CHECK(cudaMalloc(&d_w, size_t(T) * K * 4));
+    CUDA_CHECK(cudaMalloc(&d_cnt, E * 4));
+    CUDA_CHECK(cudaMemcpy(d_lg, lg.data(), lg.size() * 4, cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemset(d_cnt, 0, E * 4));
     moe_route_topk(nullptr, d_lg, T, E, K, d_ids, d_w, d_cnt);
-    cudaDeviceSynchronize();
+    CUDA_CHECK(cudaDeviceSynchronize());
     std::vector<int32_t> ids(size_t(T) * K);
     std::vector<float> w(size_t(T) * K);
     std::vector<uint32_t> cnt(E);
-    cudaMemcpy(ids.data(), d_ids, ids.size() * 4, cudaMemcpyDeviceToHost);
-    cudaMemcpy(w.data(), d_w, w.size() * 4, cudaMemcpyDeviceToHost);
-    cudaMemcpy(cnt.data(), d_cnt, E * 4, cudaMemcpyDeviceToHost);
+    CUDA_CHECK(cudaMemcpy(ids.data(), d_ids, ids.size() * 4, cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(w.data(), d_w, w.size() * 4, cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(cnt.data(), d_cnt, E * 4, cudaMemcpyDeviceToHost));
     int bad = 0;
     double werr = 0;
     std::vector<uint32_t> rc(E, 0);
@@ -67,14 +68,14 @@ int main() {
     for (int e = 0; e < E; ++e) cbad += cnt[e] != rc[e];
     const bool ok = bad == 0 && cbad == 0 && werr < 1e-5;
     cudaEvent_t e0, e1;
-    cudaEventCreate(&e0);
-    cudaEventCreate(&e1);
-    cudaEventRecord(e0);
+    CUDA_CHECK(cudaEventCreate(&e0));
+    CUDA_CHECK(cudaEventCreate(&e1));
+    CUDA_CHECK(cudaEventRecord(e0));
     for (int r = 0; r < 20; ++r) moe_route_topk(nullptr, d_lg, T, E, K, d_ids, d_w, nullptr);
-    cudaEventRecord(e1);
-    cudaEventSynchronize(e1);
+    CUDA_CHECK(cudaEventRecord(e1));
+    CUDA_CHECK(cudaEventSynchronize(e1));
     float ms = 0;
-    cudaEventElapsedTime(&ms, e0, e1);
+    CUDA_CHECK(cudaEventElapsedTime(&ms, e0, e1));
     std::printf("T %d, E %d, top-%d: %d wrong ids, %d wrong counts, max weight error %.1e %s; %.3f ms per call\n", T, E, K, bad, cbad, werr,
                 ok ? "ok" : "FAIL", ms / 20);
     return ok ? 0 : 1;

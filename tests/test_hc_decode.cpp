@@ -6,6 +6,7 @@
 //
 //   test_hc_decode
 #include "arch/qwen4exp/blocks.hpp"
+#include "tests/cuda_check.hpp"
 
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
@@ -55,37 +56,37 @@ int main() {
     const int copies = int((256u << 20) / set_bytes) + 1;
     std::vector<char*> sets(copies);
     for (auto& p : sets) {
-        cudaMalloc(&p, set_bytes);
-        cudaMemcpy(p, dq.data(), dq.size(), cudaMemcpyHostToDevice);
-        cudaMemcpy(p + dq.size(), ds.data(), ds.size() * 2, cudaMemcpyHostToDevice);
-        cudaMemcpy(p + down_bytes, wi.data(), inj_bytes, cudaMemcpyHostToDevice);
-        cudaMemcpy(p + down_bytes + inj_bytes, wu.data(), up_bytes, cudaMemcpyHostToDevice);
+        CUDA_CHECK(cudaMalloc(&p, set_bytes));
+        CUDA_CHECK(cudaMemcpy(p, dq.data(), dq.size(), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(p + dq.size(), ds.data(), ds.size() * 2, cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(p + down_bytes, wi.data(), inj_bytes, cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(p + down_bytes + inj_bytes, wu.data(), up_bytes, cudaMemcpyHostToDevice));
     }
     float *dx, *dwn, *xn, *part, *mixed, *inject;
-    cudaMalloc(&dx, x.size() * 4);
-    cudaMalloc(&dwn, wn.size() * 4);
-    cudaMalloc(&xn, size_t(4) * W4 * 4);
-    cudaMalloc(&part, size_t(4) * HC * (rank + NI) * 4);
-    cudaMalloc(&mixed, size_t(4) * n * 4);
-    cudaMalloc(&inject, size_t(4) * NI * 4);
-    cudaMemcpy(dx, x.data(), x.size() * 4, cudaMemcpyHostToDevice);
-    cudaMemcpy(dwn, wn.data(), wn.size() * 4, cudaMemcpyHostToDevice);
+    CUDA_CHECK(cudaMalloc(&dx, x.size() * 4));
+    CUDA_CHECK(cudaMalloc(&dwn, wn.size() * 4));
+    CUDA_CHECK(cudaMalloc(&xn, size_t(4) * W4 * 4));
+    CUDA_CHECK(cudaMalloc(&part, size_t(4) * HC * (rank + NI) * 4));
+    CUDA_CHECK(cudaMalloc(&mixed, size_t(4) * n * 4));
+    CUDA_CHECK(cudaMalloc(&inject, size_t(4) * NI * 4));
+    CUDA_CHECK(cudaMemcpy(dx, x.data(), x.size() * 4, cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(dwn, wn.data(), wn.size() * 4, cudaMemcpyHostToDevice));
     cudaStream_t st;
-    cudaStreamCreate(&st);
+    CUDA_CHECK(cudaStreamCreate(&st));
     auto run = [&](int T, int set) {
         char* p = sets[set];
         hc_decode_raw(T, dx, dwn, p, p + down_bytes, p + down_bytes + inj_bytes, xn, part, mixed, inject, n, rank, eps, st);
     };
     int fail = 0;
     cudaEvent_t e0, e1;
-    cudaEventCreate(&e0);
-    cudaEventCreate(&e1);
+    CUDA_CHECK(cudaEventCreate(&e0));
+    CUDA_CHECK(cudaEventCreate(&e1));
     for (int T = 1; T <= 4; ++T) {
         run(T, 0);
-        cudaStreamSynchronize(st);
+        CUDA_CHECK(cudaStreamSynchronize(st));
         std::vector<float> gm(size_t(T) * n), gi(size_t(T) * NI);
-        cudaMemcpy(gm.data(), mixed, gm.size() * 4, cudaMemcpyDeviceToHost);
-        cudaMemcpy(gi.data(), inject, gi.size() * 4, cudaMemcpyDeviceToHost);
+        CUDA_CHECK(cudaMemcpy(gm.data(), mixed, gm.size() * 4, cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(gi.data(), inject, gi.size() * 4, cudaMemcpyDeviceToHost));
         double num = 0, den = 0, inum = 0, iden = 0;
         for (int t = 0; t < T; ++t) {
             std::vector<double> xnr(W4), xs(rank);
@@ -124,11 +125,11 @@ int main() {
         fail += !ok;
         const int iters = 300;
         float ms = 0;
-        cudaEventRecord(e0, st);
+        CUDA_CHECK(cudaEventRecord(e0, st));
         for (int it = 0; it < iters; ++it) run(T, it % copies);
-        cudaEventRecord(e1, st);
-        cudaEventSynchronize(e1);
-        cudaEventElapsedTime(&ms, e0, e1);
+        CUDA_CHECK(cudaEventRecord(e1, st));
+        CUDA_CHECK(cudaEventSynchronize(e1));
+        CUDA_CHECK(cudaEventElapsedTime(&ms, e0, e1));
         const double us = 1e3 * ms / iters;
         std::printf("T %d: mixed %.1e, inject %.1e relative %s; %.2f us per mix, %.0f GB/s of weights\n", T, em, ei, ok ? "ok" : "FAIL", us,
                     set_bytes / (us * 1e3));
@@ -137,22 +138,22 @@ int main() {
     // place); checked against the same reference on the combined x
     {
         float *dco, *dci;
-        cudaMalloc(&dco, size_t(4) * n * 4);
-        cudaMalloc(&dci, size_t(4) * HC * 4);
+        CUDA_CHECK(cudaMalloc(&dco, size_t(4) * n * 4));
+        CUDA_CHECK(cudaMalloc(&dci, size_t(4) * HC * 4));
         std::vector<float> co(size_t(4) * n), ci(size_t(4) * HC);
         for (auto& v : co) v = nd(rng);
         for (auto& v : ci) v = nd(rng);
-        cudaMemcpy(dco, co.data(), co.size() * 4, cudaMemcpyHostToDevice);
-        cudaMemcpy(dci, ci.data(), ci.size() * 4, cudaMemcpyHostToDevice);
+        CUDA_CHECK(cudaMemcpy(dco, co.data(), co.size() * 4, cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(dci, ci.data(), ci.size() * 4, cudaMemcpyHostToDevice));
         for (int T = 1; T <= 4; ++T) {
-            cudaMemcpy(dx, x.data(), x.size() * 4, cudaMemcpyHostToDevice);
+            CUDA_CHECK(cudaMemcpy(dx, x.data(), x.size() * 4, cudaMemcpyHostToDevice));
             char* p = sets[0];
             hc_decode_raw(T, dx, dwn, p, p + down_bytes, p + down_bytes + inj_bytes, xn, part, mixed, inject, n, rank, eps, st, dco, dci);
-            cudaStreamSynchronize(st);
+            CUDA_CHECK(cudaStreamSynchronize(st));
             std::vector<float> gx(size_t(T) * W4), gm(size_t(T) * n), gi(size_t(T) * NI);
-            cudaMemcpy(gx.data(), dx, gx.size() * 4, cudaMemcpyDeviceToHost);
-            cudaMemcpy(gm.data(), mixed, gm.size() * 4, cudaMemcpyDeviceToHost);
-            cudaMemcpy(gi.data(), inject, gi.size() * 4, cudaMemcpyDeviceToHost);
+            CUDA_CHECK(cudaMemcpy(gx.data(), dx, gx.size() * 4, cudaMemcpyDeviceToHost));
+            CUDA_CHECK(cudaMemcpy(gm.data(), mixed, gm.size() * 4, cudaMemcpyDeviceToHost));
+            CUDA_CHECK(cudaMemcpy(gi.data(), inject, gi.size() * 4, cudaMemcpyDeviceToHost));
             double xnum = 0, xden = 0, num = 0, den = 0, inum = 0, iden = 0;
             for (int t = 0; t < T; ++t) {
                 std::vector<double> xc(W4), xnr(W4), xs(rank);
@@ -199,14 +200,14 @@ int main() {
             fail += !ok;
             const int iters = 300;
             float ms = 0;
-            cudaEventRecord(e0, st);
+            CUDA_CHECK(cudaEventRecord(e0, st));
             for (int it = 0; it < iters; ++it) {
                 char* q = sets[it % copies];
                 hc_decode_raw(T, dx, dwn, q, q + down_bytes, q + down_bytes + inj_bytes, xn, part, mixed, inject, n, rank, eps, st, dco, dci);
             }
-            cudaEventRecord(e1, st);
-            cudaEventSynchronize(e1);
-            cudaEventElapsedTime(&ms, e0, e1);
+            CUDA_CHECK(cudaEventRecord(e1, st));
+            CUDA_CHECK(cudaEventSynchronize(e1));
+            CUDA_CHECK(cudaEventElapsedTime(&ms, e0, e1));
             std::printf("T %d with the combine: x %.1e, mixed %.1e, inject %.1e relative %s; %.2f us per combine + mix\n", T, ex, em, ei,
                         ok ? "ok" : "FAIL", 1e3 * ms / iters);
         }

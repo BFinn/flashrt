@@ -234,35 +234,28 @@ void linear(const BlockCtx& c, const GpuTensor& W, const float* x, float* y, int
 }
 
 namespace {
+// element e (of K) of row `row` of a Q3_K table, to float (110-byte blocks of 256 values)
+__device__ __forceinline__ float q3k_value(const uint8_t* table, int32_t row, int e, int K) {
+    const uint8_t* b = table + (size_t(row) * (K / 256) + e / 256) * 110;
+    const int el = e % 256, n = el / 128, j = (el % 128) / 32, l = el % 32, is = el / 16;
+    const int q = ((b[32 + 32 * n + l] >> (2 * j)) & 3) | (((b[l] >> (4 * n + j)) & 1) << 2);
+    const uint8_t* sc = b + 96;
+    const int us = is < 4 ? (sc[is] & 0xF) | (((sc[is + 8] >> 0) & 3) << 4)
+                 : is < 8 ? (sc[is] & 0xF) | (((sc[is + 4] >> 2) & 3) << 4)
+                 : is < 12 ? (sc[is - 8] >> 4) | (((sc[is] >> 4) & 3) << 4)
+                           : (sc[is - 8] >> 4) | (((sc[is - 4] >> 6) & 3) << 4);
+    return __half2float(*reinterpret_cast<const __half*>(b + 108)) * float(us - 32) * float(q - 4);
+}
 // one Q3_K row per token (row t: token dp[t ? 2 + t : 0], see BlockCtx::dparams) to float; one
 // thread per element
 __global__ void k_embed_q3k(const uint8_t* table, const int32_t* dp, float* out, int K) {
     const int e = blockIdx.x * blockDim.x + threadIdx.x, t = blockIdx.y;
-    if (e >= K) return;
-    out += size_t(t) * K;
-    const uint8_t* b = table + (size_t(dp[t ? 2 + t : 0]) * (K / 256) + e / 256) * 110;
-    const int el = e % 256, n = el / 128, j = (el % 128) / 32, l = el % 32, is = el / 16;
-    const int q = ((b[32 + 32 * n + l] >> (2 * j)) & 3) | (((b[l] >> (4 * n + j)) & 1) << 2);
-    const uint8_t* sc = b + 96;
-    const int us = is < 4 ? (sc[is] & 0xF) | (((sc[is + 8] >> 0) & 3) << 4)
-                 : is < 8 ? (sc[is] & 0xF) | (((sc[is + 4] >> 2) & 3) << 4)
-                 : is < 12 ? (sc[is - 8] >> 4) | (((sc[is] >> 4) & 3) << 4)
-                           : (sc[is - 8] >> 4) | (((sc[is - 4] >> 6) & 3) << 4);
-    out[e] = __half2float(*reinterpret_cast<const __half*>(b + 108)) * float(us - 32) * float(q - 4);
+    if (e < K) out[size_t(t) * K + e] = q3k_value(table, dp[t ? 2 + t : 0], e, K);
 }
 // the same for many tokens: row t (blockIdx.y) of token tokens[t]
 __global__ void k_embed_q3k_tok(const uint8_t* table, const int32_t* tokens, float* out, int K) {
     const int e = blockIdx.x * blockDim.x + threadIdx.x, t = blockIdx.y;
-    if (e >= K) return;
-    const uint8_t* b = table + (size_t(tokens[t]) * (K / 256) + e / 256) * 110;
-    const int el = e % 256, n = el / 128, j = (el % 128) / 32, l = el % 32, is = el / 16;
-    const int q = ((b[32 + 32 * n + l] >> (2 * j)) & 3) | (((b[l] >> (4 * n + j)) & 1) << 2);
-    const uint8_t* sc = b + 96;
-    const int us = is < 4 ? (sc[is] & 0xF) | (((sc[is + 8] >> 0) & 3) << 4)
-                 : is < 8 ? (sc[is] & 0xF) | (((sc[is + 4] >> 2) & 3) << 4)
-                 : is < 12 ? (sc[is - 8] >> 4) | (((sc[is] >> 4) & 3) << 4)
-                           : (sc[is - 8] >> 4) | (((sc[is - 4] >> 6) & 3) << 4);
-    out[size_t(t) * K + e] = __half2float(*reinterpret_cast<const __half*>(b + 108)) * float(us - 32) * float(q - 4);
+    if (e < K) out[size_t(t) * K + e] = q3k_value(table, tokens[t], e, K);
 }
 }  // namespace
 

@@ -12,6 +12,7 @@
 //
 //   test_spec_sample
 #include "kernels/cuda/sample.h"
+#include "tests/cuda_check.hpp"
 
 #include <cuda_runtime.h>
 
@@ -65,26 +66,26 @@ int main() {
     }
 
     float *d_t, *d_d;
-    cudaMalloc(&d_t, size_t(2) * V * 4);   // rows: the draft's position, then the last row (the same logits)
-    cudaMalloc(&d_d, size_t(V) * 4);
-    cudaMemcpy(d_t, tl.data(), size_t(V) * 4, cudaMemcpyHostToDevice);
-    cudaMemcpy(d_t + V, tl.data(), size_t(V) * 4, cudaMemcpyHostToDevice);
-    cudaMemcpy(d_d, dl.data(), size_t(V) * 4, cudaMemcpyHostToDevice);
+    CUDA_CHECK(cudaMalloc(&d_t, size_t(2) * V * 4));   // rows: the draft's position, then the last row (the same logits)
+    CUDA_CHECK(cudaMalloc(&d_d, size_t(V) * 4));
+    CUDA_CHECK(cudaMemcpy(d_t, tl.data(), size_t(V) * 4, cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_t + V, tl.data(), size_t(V) * 4, cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_d, dl.data(), size_t(V) * 4, cudaMemcpyHostToDevice));
     std::vector<sample::DraftCfg> cfg(N);
     for (int i = 0; i < N; ++i) cfg[size_t(i)] = sample::DraftCfg{sp, 1000003ull * uint64_t(i) + 17};
     sample::DraftCfg* d_cfg;
-    cudaMalloc(&d_cfg, size_t(N) * sizeof(sample::DraftCfg));
-    cudaMemcpy(d_cfg, cfg.data(), size_t(N) * sizeof(sample::DraftCfg), cudaMemcpyHostToDevice);
+    CUDA_CHECK(cudaMalloc(&d_cfg, size_t(N) * sizeof(sample::DraftCfg)));
+    CUDA_CHECK(cudaMemcpy(d_cfg, cfg.data(), size_t(N) * sizeof(sample::DraftCfg), cudaMemcpyHostToDevice));
     const int32_t dp_h[4] = {0, int32_t(pos - 1), 0, 0};
     int32_t *d_dp, *d_v, *d_qi, *d_qn, *d_out;
     float* d_qp;
-    cudaMalloc(&d_dp, 16);
-    cudaMemcpy(d_dp, dp_h, 16, cudaMemcpyHostToDevice);
-    cudaMalloc(&d_v, 16);
-    cudaMalloc(&d_qi, sample::kMaxTopK * 4);
-    cudaMalloc(&d_qp, sample::kMaxTopK * 4);
-    cudaMalloc(&d_qn, 4);
-    cudaMalloc(&d_out, size_t(N) * 3 * 4);
+    CUDA_CHECK(cudaMalloc(&d_dp, 16));
+    CUDA_CHECK(cudaMemcpy(d_dp, dp_h, 16, cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMalloc(&d_v, 16));
+    CUDA_CHECK(cudaMalloc(&d_qi, sample::kMaxTopK * 4));
+    CUDA_CHECK(cudaMalloc(&d_qp, sample::kMaxTopK * 4));
+    CUDA_CHECK(cudaMalloc(&d_qn, 4));
+    CUDA_CHECK(cudaMalloc(&d_out, size_t(N) * 3 * 4));
     for (int i = 0; i < N; ++i) {
         sample::draft_row(d_d, V, d_cfg + i, d_dp, nullptr, d_v, d_qi, d_qp, d_qn, nullptr);
         sample::spec_verify(d_t, 2, V, sp, cfg[size_t(i)].seed, pos, d_v + 1, d_qi, d_qp, d_qn, d_out + size_t(i) * 3, nullptr);
@@ -94,7 +95,7 @@ int main() {
         return 2;
     }
     std::vector<int32_t> out(size_t(N) * 3);
-    cudaMemcpy(out.data(), d_out, out.size() * 4, cudaMemcpyDeviceToHost);
+    CUDA_CHECK(cudaMemcpy(out.data(), d_out, out.size() * 4, cudaMemcpyDeviceToHost));
     std::map<int, long> h0, h1;
     long acc = 0;
     for (int i = 0; i < N; ++i) {
@@ -140,28 +141,28 @@ int main() {
     }
     float *d_rows, *d_drafter;
     int32_t *d_ids, *d_drafts, *d_dp2;
-    cudaMalloc(&d_rows, size_t(R) * V * 4);
-    cudaMalloc(&d_drafter, size_t(R - 1) * VD * 4);
-    cudaMalloc(&d_ids, size_t(VD) * 4);
-    cudaMalloc(&d_drafts, size_t(R - 1) * 4);
-    cudaMalloc(&d_dp2, size_t(R - 1) * 16);
-    for (int r = 0; r < R; ++r) cudaMemcpy(d_rows + size_t(r) * V, trow[r].data(), size_t(V) * 4, cudaMemcpyHostToDevice);
+    CUDA_CHECK(cudaMalloc(&d_rows, size_t(R) * V * 4));
+    CUDA_CHECK(cudaMalloc(&d_drafter, size_t(R - 1) * VD * 4));
+    CUDA_CHECK(cudaMalloc(&d_ids, size_t(VD) * 4));
+    CUDA_CHECK(cudaMalloc(&d_drafts, size_t(R - 1) * 4));
+    CUDA_CHECK(cudaMalloc(&d_dp2, size_t(R - 1) * 16));
+    for (int r = 0; r < R; ++r) CUDA_CHECK(cudaMemcpy(d_rows + size_t(r) * V, trow[r].data(), size_t(V) * 4, cudaMemcpyHostToDevice));
     for (int r = 0; r < R - 1; ++r) {
-        cudaMemcpy(d_drafter + size_t(r) * VD, drow[r].data(), size_t(VD) * 4, cudaMemcpyHostToDevice);
+        CUDA_CHECK(cudaMemcpy(d_drafter + size_t(r) * VD, drow[r].data(), size_t(VD) * 4, cudaMemcpyHostToDevice));
         const int32_t dp[4] = {0, int32_t(pos - 1 + r), 0, r};   // draft r is for position pos + r, step r
-        cudaMemcpy(d_dp2 + 4 * r, dp, 16, cudaMemcpyHostToDevice);
+        CUDA_CHECK(cudaMemcpy(d_dp2 + 4 * r, dp, 16, cudaMemcpyHostToDevice));
     }
-    cudaMemcpy(d_ids, ids.data(), size_t(VD) * 4, cudaMemcpyHostToDevice);
+    CUDA_CHECK(cudaMemcpy(d_ids, ids.data(), size_t(VD) * 4, cudaMemcpyHostToDevice));
     int32_t *d_qi2, *d_qn2, *d_out2;
     float* d_qp2;
-    cudaMalloc(&d_qi2, size_t(R - 1) * sample::kMaxTopK * 4);
-    cudaMalloc(&d_qp2, size_t(R - 1) * sample::kMaxTopK * 4);
-    cudaMalloc(&d_qn2, size_t(R - 1) * 4);
-    cudaMalloc(&d_out2, size_t(N) * (2 * R - 1) * 4);
+    CUDA_CHECK(cudaMalloc(&d_qi2, size_t(R - 1) * sample::kMaxTopK * 4));
+    CUDA_CHECK(cudaMalloc(&d_qp2, size_t(R - 1) * sample::kMaxTopK * 4));
+    CUDA_CHECK(cudaMalloc(&d_qn2, size_t(R - 1) * 4));
+    CUDA_CHECK(cudaMalloc(&d_out2, size_t(N) * (2 * R - 1) * 4));
     for (int i = 0; i < N; ++i) {
         for (int r = 0; r < R - 1; ++r) {
             sample::draft_row(d_drafter + size_t(r) * VD, VD, d_cfg + i, d_dp2 + 4 * r, d_ids, d_v, d_qi2, d_qp2, d_qn2, nullptr);
-            cudaMemcpyAsync(d_drafts + r, d_v + 1, 4, cudaMemcpyDeviceToDevice, nullptr);
+            CUDA_CHECK(cudaMemcpyAsync(d_drafts + r, d_v + 1, 4, cudaMemcpyDeviceToDevice, nullptr));
         }
         sample::spec_verify(d_rows, R, V, sp, cfg[size_t(i)].seed, pos, d_drafts, d_qi2, d_qp2, d_qn2, d_out2 + size_t(i) * (2 * R - 1), nullptr);
     }
@@ -170,7 +171,7 @@ int main() {
         return 2;
     }
     std::vector<int32_t> out2(size_t(N) * (2 * R - 1));
-    cudaMemcpy(out2.data(), d_out2, out2.size() * 4, cudaMemcpyDeviceToHost);
+    CUDA_CHECK(cudaMemcpy(out2.data(), d_out2, out2.size() * 4, cudaMemcpyDeviceToHost));
     // position r is reached when drafts 0 .. r-1 were accepted; its token is the emitted one there
     std::vector<std::map<int, long>> hist(R);
     std::vector<long> reached(R, 0), accepted(R - 1, 0);

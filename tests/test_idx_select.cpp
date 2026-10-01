@@ -7,6 +7,7 @@
 //
 //   test_idx_select
 #include "arch/qwen4exp/blocks.hpp"
+#include "tests/cuda_check.hpp"
 
 #include <cuda_runtime.h>
 
@@ -55,9 +56,9 @@ int main() {
     float* d_sc;
     int32_t *d_cells, *d_counts;
     const int Tmax = 128;
-    cudaMalloc(&d_sc, size_t(Tmax) * ld * 4);
-    cudaMalloc(&d_cells, size_t(Tmax) * ldc * 4);
-    cudaMalloc(&d_counts, Tmax * 4);
+    CUDA_CHECK(cudaMalloc(&d_sc, size_t(Tmax) * ld * 4));
+    CUDA_CHECK(cudaMalloc(&d_cells, size_t(Tmax) * ldc * 4));
+    CUDA_CHECK(cudaMalloc(&d_counts, Tmax * 4));
     int fails = 0, cases = 0;
     struct Case { int pos0, T; float step; };
     const Case cs[] = {{100, 1, 0.25f}, {2040, 3, 0.25f}, {2051, 1, 0.25f}, {2100, 3, 0.1f}, {4096, 1, 0.5f}, {32768, 1, 0.25f},
@@ -70,16 +71,16 @@ int main() {
             v = c.step > 0 ? std::round(nd(rng) / c.step) * c.step : 1.0f;   // step 0: every score equal
             if (v == 0.0f) v = 0.0f;   // no -0: the kernel orders it below +0 (bit order), a float compare does not
         }
-        cudaMemcpy(d_sc, sc.data(), sc.size() * 4, cudaMemcpyHostToDevice);
-        cudaMemset(d_cells, 0xff, size_t(Tmax) * ldc * 4);
+        CUDA_CHECK(cudaMemcpy(d_sc, sc.data(), sc.size() * 4, cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemset(d_cells, 0xff, size_t(Tmax) * ldc * 4));
         qsa_select(d_sc, ld, d_cells, d_counts, ldc, c.pos0, c.T, r, nsel, width, nullptr, cl);
         if (cudaDeviceSynchronize() != cudaSuccess) {
             std::printf("CUDA error at pos0 %d\n", c.pos0);
             return 1;
         }
         std::vector<int32_t> cells(size_t(c.T) * ldc), counts(c.T);
-        cudaMemcpy(cells.data(), d_cells, cells.size() * 4, cudaMemcpyDeviceToHost);
-        cudaMemcpy(counts.data(), d_counts, counts.size() * 4, cudaMemcpyDeviceToHost);
+        CUDA_CHECK(cudaMemcpy(cells.data(), d_cells, cells.size() * 4, cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(counts.data(), d_counts, counts.size() * 4, cudaMemcpyDeviceToHost));
         for (int t = 0; t < c.T; ++t) {
             int want_n = 0;
             const std::vector<int32_t> want = reference(sc.data() + size_t(t) * ld, c.pos0 + t, r, nsel, width, want_n);
@@ -101,19 +102,19 @@ int main() {
         const int T = tm.T, p0 = tm.pos0;
         std::vector<float> sc(size_t(T) * ld);
         for (auto& v : sc) v = nd(rng);
-        cudaMemcpy(d_sc, sc.data(), sc.size() * 4, cudaMemcpyHostToDevice);
+        CUDA_CHECK(cudaMemcpy(d_sc, sc.data(), sc.size() * 4, cudaMemcpyHostToDevice));
         for (int i = 0; i < 3; ++i) qsa_select(d_sc, ld, d_cells, d_counts, ldc, p0, T, r, nsel, width, nullptr, cl);
-        cudaDeviceSynchronize();
+        CUDA_CHECK(cudaDeviceSynchronize());
         cudaEvent_t e0, e1;
-        cudaEventCreate(&e0);
-        cudaEventCreate(&e1);
+        CUDA_CHECK(cudaEventCreate(&e0));
+        CUDA_CHECK(cudaEventCreate(&e1));
         const int n = T > 3 ? 12 : 120;
-        cudaEventRecord(e0);
+        CUDA_CHECK(cudaEventRecord(e0));
         for (int i = 0; i < n; ++i) qsa_select(d_sc, ld, d_cells, d_counts, ldc, p0, T, r, nsel, width, nullptr, cl);
-        cudaEventRecord(e1);
-        cudaEventSynchronize(e1);
+        CUDA_CHECK(cudaEventRecord(e1));
+        CUDA_CHECK(cudaEventSynchronize(e1));
         float ms = 0;
-        cudaEventElapsedTime(&ms, e0, e1);
+        CUDA_CHECK(cudaEventElapsedTime(&ms, e0, e1));
         std::printf("pos %d, T = %d, %d CTA(s) per token: %.1f us per call\n", p0, T, cl, 1000.0f * ms / n);
     }
     cudaFree(d_sc);

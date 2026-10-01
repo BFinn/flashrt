@@ -2,6 +2,7 @@
 #include "arch/qwen4exp/experts.hpp"
 
 #include "core/gguf.hpp"
+#include "core/scope.hpp"
 #include "quant/q2_0/q2_0.hpp"
 
 #include <fcntl.h>
@@ -92,10 +93,10 @@ LoadStats load_experts(const Gguf& g, const Spec& s, ExpertArena& arena, int thr
     for (int t = 0; t < threads; ++t) {
         ts.emplace_back([&] {
             try {
-                std::vector<int> fds(g.shards.size(), -1);
+                std::vector<UniqueFd> fds;   // closed on every path, a failed read included
                 for (size_t i = 0; i < g.shards.size(); ++i) {
-                    fds[i] = open(g.shards[i].c_str(), O_RDONLY | O_DIRECT);
-                    if (fds[i] < 0) throw std::runtime_error("open " + g.shards[i] + ": " + std::strerror(errno));
+                    fds.emplace_back(open(g.shards[i].c_str(), O_RDONLY | O_DIRECT));
+                    if (fds.back().get() < 0) throw std::runtime_error("open " + g.shards[i] + ": " + std::strerror(errno));
                 }
                 AlignedBuf bufs[3];
                 uint64_t read = 0;
@@ -106,7 +107,7 @@ LoadStats load_experts(const Gguf& g, const Spec& s, ExpertArena& arena, int thr
                     const uint8_t* src[3];
                     for (int k = 0; k < 3; ++k) {
                         const GgufTensor* tt = layers[l].t[k];
-                        src[k] = read_range(fds[tt->shard], tt->file_offset + uint64_t(e0) * slice[k], size_t(ne) * slice[k],
+                        src[k] = read_range(fds[tt->shard].get(), tt->file_offset + uint64_t(e0) * slice[k], size_t(ne) * slice[k],
                                             bufs[k], read);
                     }
                     for (int e = 0; e < ne; ++e)
@@ -114,7 +115,6 @@ LoadStats load_experts(const Gguf& g, const Spec& s, ExpertArena& arena, int thr
                                             src[2] + size_t(e) * slice[2], shape, arena.blob(l, e0 + e));
                 }
                 total_read += read;
-                for (int fd : fds) close(fd);
             } catch (const std::exception& ex) {
                 std::lock_guard<std::mutex> lk(err_mu);
                 if (err.empty()) err = ex.what();

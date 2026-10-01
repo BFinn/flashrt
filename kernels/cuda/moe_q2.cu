@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "kernels/cuda/moe_q2.h"
 
+#include "kernels/cuda/expert_group.cuh"
+
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
 
@@ -25,7 +27,7 @@ constexpr int kThreads = 256;                // 8 warps: rows x tokens per warp 
 constexpr int kActStride = kKB * 64 + 32;    // bytes per token in shared: 32 mod 128, so the 8-byte fragment loads do not conflict
 constexpr int kMagic = 0x4B400000;           // bits of 1.5 * 2^23: int_as_float(kMagic + i) = 12582912 + i for |i| < 2^22
 constexpr float kMagicF = 12582912.0f;
-constexpr int kGroupTokens = 512, kMaxExperts = 4096;
+constexpr int kGroupTokens = expert_group::kTokens, kMaxExperts = expert_group::kMaxExperts;
 
 // Activations are int8 in scale blocks of AB (32 or 64) with a float scale d and m = kMagic - (sum
 // of the block's codes), stored together as float2 {d, m's bits} (one load per block pair; sw83). Within each 32 elements, element 16w + 4c + i sits at byte 8c + 4w + i,
@@ -79,18 +81,8 @@ __global__ void k_quant(const float* x, int n_blocks, int8_t* q, float2* dm) {
 }
 
 // Grouping of the (token, slot) pairs by expert, stable in token order (as in ggml_gemm.cu):
-// per-block histograms, one scan, one placement warp per block. row r of the compact order holds
+// per-block histograms (expert_group.cuh), one scan, one placement warp per block. row r of the compact order holds
 // slot slot_of[r] = t * K + k of token tok_of[r] = t.
-__global__ void k_hist(const int32_t* ids, int T, int K, int E, int32_t* cnt) {
-    __shared__ int32_t h[kMaxExperts];
-    for (int e = threadIdx.x; e < E; e += blockDim.x) h[e] = 0;
-    __syncthreads();
-    const int s0 = blockIdx.x * kGroupTokens * K, s1 = min(T, (blockIdx.x + 1) * kGroupTokens) * K;
-    for (int sl = s0 + threadIdx.x; sl < s1; sl += blockDim.x) atomicAdd(&h[ids[sl]], 1);
-    __syncthreads();
-    for (int e = threadIdx.x; e < E; e += blockDim.x) cnt[size_t(blockIdx.x) * E + e] = h[e];
-}
-
 // block-wide exclusive scan (blockDim a multiple of 32); returns the thread's offset, sets *total
 __device__ int block_excl_scan(int v, int* total) {
     __shared__ int ws[32];
@@ -526,7 +518,7 @@ void run(const uint8_t* experts, size_t stride, int E, int n, int ff, const floa
     const Ws w = carve(ws, T, K, n, ff, E);
     if (w.bytes > ws_bytes) throw std::runtime_error("moe_q2::run: workspace too small");
     const int nbk = (T + kGroupTokens - 1) / kGroupTokens;
-    k_hist<<<nbk, 256, 0, stream>>>(ids, T, K, E, w.cnt);
+    expert_group::k_hist<<<nbk, 256, 0, stream>>>(ids, T, K, E, w.cnt);
     k_scan_tiles<<<1, 1024, 0, stream>>>(w.cnt, nbk, E, w.bounds, w.tiles, w.n_tiles);
     k_place<<<nbk, 32, 0, stream>>>(ids, T, K, E, w.cnt, w.tok_of, w.slot_of);
     const size_t gu = size_t(ff) * (n / 64) * 18;   // q2_0::mat_bytes(ff, n)

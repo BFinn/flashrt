@@ -7,6 +7,7 @@
 //
 //   test_gdn_decode
 #include "arch/qwen4exp/blocks.hpp"
+#include "tests/cuda_check.hpp"
 
 #include <cuda_runtime.h>
 
@@ -86,16 +87,16 @@ int main() {
     for (float& v : S0) v = 0.05f * nd(rng);
     const size_t sb = S0.size() * 4;
     float *dconv, *dg, *db, *dS, *dS2, *dbak, *dout;
-    cudaMalloc(&dconv, conv.size() * 4);
-    cudaMalloc(&dg, g.size() * 4);
-    cudaMalloc(&db, beta.size() * 4);
-    cudaMalloc(&dS, sb);
-    cudaMalloc(&dS2, sb);
-    cudaMalloc(&dbak, sb);
-    cudaMalloc(&dout, size_t(TMAX) * H * DK * 4);
-    cudaMemcpy(dconv, conv.data(), conv.size() * 4, cudaMemcpyHostToDevice);
-    cudaMemcpy(dg, g.data(), g.size() * 4, cudaMemcpyHostToDevice);
-    cudaMemcpy(db, beta.data(), beta.size() * 4, cudaMemcpyHostToDevice);
+    CUDA_CHECK(cudaMalloc(&dconv, conv.size() * 4));
+    CUDA_CHECK(cudaMalloc(&dg, g.size() * 4));
+    CUDA_CHECK(cudaMalloc(&db, beta.size() * 4));
+    CUDA_CHECK(cudaMalloc(&dS, sb));
+    CUDA_CHECK(cudaMalloc(&dS2, sb));
+    CUDA_CHECK(cudaMalloc(&dbak, sb));
+    CUDA_CHECK(cudaMalloc(&dout, size_t(TMAX) * H * DK * 4));
+    CUDA_CHECK(cudaMemcpy(dconv, conv.data(), conv.size() * 4, cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(dg, g.data(), g.size() * 4, cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(db, beta.data(), beta.size() * 4, cudaMemcpyHostToDevice));
     int fail = 0;
     auto sync = [&] {
         if (cudaDeviceSynchronize() != cudaSuccess) {
@@ -106,12 +107,12 @@ int main() {
 
     // 1. against the reference, T = 1..8, the state updated in place (a decode step or window)
     for (int T = 1; T <= TMAX; ++T) {
-        cudaMemcpy(dS, S0.data(), sb, cudaMemcpyHostToDevice);
+        CUDA_CHECK(cudaMemcpy(dS, S0.data(), sb, cudaMemcpyHostToDevice));
         gdn_delta_decode(s, dS, dS, nullptr, dconv, dg, db, dout, T, nullptr);
         sync();
         std::vector<float> o(size_t(T) * H * DK), S(S0.size());
-        cudaMemcpy(o.data(), dout, o.size() * 4, cudaMemcpyDeviceToHost);
-        cudaMemcpy(S.data(), dS, sb, cudaMemcpyDeviceToHost);
+        CUDA_CHECK(cudaMemcpy(o.data(), dout, o.size() * 4, cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(S.data(), dS, sb, cudaMemcpyDeviceToHost));
         std::vector<double> Sr(S0.begin(), S0.end()), orf(o.size());
         reference(Sr, conv, g, beta, orf, T, H, G, DK);
         const double eo = rel(o, orf), es = rel(S, Sr);
@@ -124,16 +125,16 @@ int main() {
     // gdn_rewind does) gives exactly the state of a fresh call over n tokens
     for (int T = 2; T <= 4; ++T)
         for (int n = 0; n < T; ++n) {
-            cudaMemcpy(dS, S0.data(), sb, cudaMemcpyHostToDevice);
+            CUDA_CHECK(cudaMemcpy(dS, S0.data(), sb, cudaMemcpyHostToDevice));
             gdn_delta_decode(s, dS, dS, dbak, dconv, dg, db, dout, T, nullptr);    // the window
             gdn_delta_decode(s, dbak, dS, nullptr, dconv, dg, db, dout, n, nullptr);   // the rewind to n
-            cudaMemcpy(dS2, S0.data(), sb, cudaMemcpyHostToDevice);
+            CUDA_CHECK(cudaMemcpy(dS2, S0.data(), sb, cudaMemcpyHostToDevice));
             gdn_delta_decode(s, dS2, dS2, nullptr, dconv, dg, db, dout, n, nullptr);   // n tokens, fresh
             sync();
             std::vector<float> a(S0.size()), b(S0.size()), bak(S0.size());
-            cudaMemcpy(a.data(), dS, sb, cudaMemcpyDeviceToHost);
-            cudaMemcpy(b.data(), dS2, sb, cudaMemcpyDeviceToHost);
-            cudaMemcpy(bak.data(), dbak, sb, cudaMemcpyDeviceToHost);
+            CUDA_CHECK(cudaMemcpy(a.data(), dS, sb, cudaMemcpyDeviceToHost));
+            CUDA_CHECK(cudaMemcpy(b.data(), dS2, sb, cudaMemcpyDeviceToHost));
+            CUDA_CHECK(cudaMemcpy(bak.data(), dbak, sb, cudaMemcpyDeviceToHost));
             const bool same = std::memcmp(a.data(), b.data(), sb) == 0, bak_ok = std::memcmp(bak.data(), S0.data(), sb) == 0;
             if (!same || !bak_ok) {
                 std::printf("window %d rewound to %d: %s%s\n", T, n, same ? "" : "state differs from a fresh run ",

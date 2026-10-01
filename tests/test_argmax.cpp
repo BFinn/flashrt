@@ -6,6 +6,7 @@
 //
 //   test_argmax
 #include "arch/qwen4exp/blocks.hpp"
+#include "tests/cuda_check.hpp"
 
 #include <cuda_runtime.h>
 
@@ -33,17 +34,17 @@ int main() {
     std::normal_distribution<float> nd(0.0f, 4.0f);
     float* dx;
     int32_t* dout;
-    cudaMalloc(&dx, (NV + 4) * 4);
-    cudaMalloc(&dout, 4);
+    CUDA_CHECK(cudaMalloc(&dx, (NV + 4) * 4));
+    CUDA_CHECK(cudaMalloc(&dout, 4));
     cudaStream_t st;
-    cudaStreamCreate(&st);
+    CUDA_CHECK(cudaStreamCreate(&st));
     int fail = 0;
     auto check = [&](const char* what, const std::vector<float>& x, int off) {
         const int n = int(x.size());
-        cudaMemcpy(dx + off, x.data(), size_t(n) * 4, cudaMemcpyHostToDevice);
+        CUDA_CHECK(cudaMemcpy(dx + off, x.data(), size_t(n) * 4, cudaMemcpyHostToDevice));
         argmax_dev(st, dx + off, n, dout);
         int32_t got = -1;
-        cudaMemcpyAsync(&got, dout, 4, cudaMemcpyDeviceToHost, st);
+        CUDA_CHECK(cudaMemcpyAsync(&got, dout, 4, cudaMemcpyDeviceToHost, st));
         if (cudaStreamSynchronize(st) != cudaSuccess) {
             std::printf("%s: CUDA error\n", what);
             ++fail;
@@ -72,18 +73,18 @@ int main() {
     {
         std::vector<float> x(NV);
         for (auto& v : x) v = nd(rng);
-        cudaMemcpy(dx, x.data(), size_t(NV) * 4, cudaMemcpyHostToDevice);
+        CUDA_CHECK(cudaMemcpy(dx, x.data(), size_t(NV) * 4, cudaMemcpyHostToDevice));
         cudaEvent_t e0, e1;
-        cudaEventCreate(&e0);
-        cudaEventCreate(&e1);
+        CUDA_CHECK(cudaEventCreate(&e0));
+        CUDA_CHECK(cudaEventCreate(&e1));
         const int iters = 1000;
         argmax_dev(st, dx, NV, dout);
-        cudaEventRecord(e0, st);
+        CUDA_CHECK(cudaEventRecord(e0, st));
         for (int it = 0; it < iters; ++it) argmax_dev(st, dx, NV, dout);
-        cudaEventRecord(e1, st);
-        cudaEventSynchronize(e1);
+        CUDA_CHECK(cudaEventRecord(e1, st));
+        CUDA_CHECK(cudaEventSynchronize(e1));
         float ms = 0;
-        cudaEventElapsedTime(&ms, e0, e1);
+        CUDA_CHECK(cudaEventElapsedTime(&ms, e0, e1));
         const double us = 1e3 * ms / iters;
         std::printf("262K: %.2f us per call, %.0f GB/s\n", us, NV * 4.0 / (us * 1e3));
     }
