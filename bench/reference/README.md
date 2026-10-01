@@ -34,5 +34,6 @@ validation files concatenated and tokenized with BOS (`bench/p0/window_c.sh`, st
 
 ```bash
 cat $DATA/wikitext-2-raw/wiki.test.raw $DATA/wikitext-2-raw/wiki.valid.raw > wiki.txt
+# route_trace is built when CMake is given -DFLASHRT_LLAMA_DIR=$LLAMA_CPP (it links llama.cpp)
 build/route_trace --model $M --text wiki.txt --n-prompt 250000 --tokenize-only --out wiki   # wiki.prompt_ids.txt
 ```
