@@ -1,0 +1,38 @@
+WARNING: Device-side CUDA Event completion trace is currently enabled.
+         This may increase runtime overhead and the likelihood of false
+         dependencies across CUDA Streams. If you wish to avoid this, please
+         disable the feature with --cuda-event-trace=false.
+WARNING: CPU IP/backtrace sampling not supported, disabling.
+Try the 'nsys status --environment' command to learn more.
+
+WARNING: CPU context switch tracing not supported, disabling.
+Try the 'nsys status --environment' command to learn more.
+
+expert arena registered in 1.8 s
+KV cache: q8_0, host-resident, hot set of 4096 blocks per layer
+VRAM before prefill: 11873 MiB free
+state: loaded $BENCH/state-245k-q8-mtp.bin (245759 positions) in 1.7 s
+expert cache: 8809 slots (35.8% of experts), filled in 0.3 s from 11870 MiB free
+adaptive cache: decayed LFU, admit 1.00, margin 1.20, swap budget 64, seed scale 0.030 (set up in 0.0 s)
+decode: 256 tokens at depth 245760 in 2.87 s: 89.05 tok/s (fast path, doorbell), swaps 5893
+expert cache hit rate 90.82% (111605 hits, 11275 misses: 11275 on the CPU, 0 read over PCIe)
+host per token: 8.62 ms waiting for routing, 1.86 ms running misses
+misses per layer: count (share of layers) and mean host miss time
+   0 :  51.1%     0.6 us
+   1 :  27.8%    50.9 us
+   2 :  11.6%    84.0 us
+   3 :   4.5%   114.1 us
+   4 :   2.1%   142.8 us
+   5 :   1.1%   179.8 us
+   6 :   0.7%   205.7 us
+   7 :   0.5%   233.7 us
+   8 :   0.4%   268.5 us
+   9 :   0.2%   302.1 us
+  10 :   0.1%   369.2 us
+CUDA graphs: on (1 capture(s))
+tokens: 279 37298 353 6636 1208 3643 3920 1901 71 25483 310 10000 836 3471 2552 303 279 3809 641 2302 21504 279 14208 1083
+Collecting data...
+Generating '/tmp/nsys-report-bdcd.qdstrm'
+[1/1] [0%                          ] p_new.nsys-rep[1/1] [0%                          ] p_new.nsys-rep[1/1] [===23%                      ] p_new.nsys-rep[1/1] [==18%                       ] p_new.nsys-rep[1/1] [=15%                        ] p_new.nsys-rep[1/1] [====26%                     ] p_new.nsys-rep[1/1] [===22%                      ] p_new.nsys-rep[1/1] [==20%                       ] p_new.nsys-rep[1/1] [=17%                        ] p_new.nsys-rep[1/1] [=16%                        ] p_new.nsys-rep[1/1] [14%                         ] p_new.nsys-rep[1/1] [13%                         ] p_new.nsys-rep[1/1] [12%                         ] p_new.nsys-rep[1/1] [11%                         ] p_new.nsys-rep[1/1] [10%                         ] p_new.nsys-rep[1/1] [9%                          ] p_new.nsys-rep[1/1] [8%                          ] p_new.nsys-rep[1/1] [7%                          ] p_new.nsys-rep[1/1] [10%                         ] p_new.nsys-rep[1/1] [12%                         ] p_new.nsys-rep[1/1] [14%                         ] p_new.nsys-rep[1/1] [=17%                        ] p_new.nsys-rep[1/1] [==19%                       ] p_new.nsys-rep[1/1] [==21%                       ] p_new.nsys-rep[1/1] [===24%                      ] p_new.nsys-rep[1/1] [====26%                     ] p_new.nsys-rep[1/1] [=====29%                    ] p_new.nsys-rep[1/1] [=====31%                    ] p_new.nsys-rep[1/1] [======33%                   ] p_new.nsys-rep[1/1] [=======36%                  ] p_new.nsys-rep[1/1] [=======38%                  ] p_new.nsys-rep[1/1] [========40%                 ] p_new.nsys-rep[1/1] [=========43%                ] p_new.nsys-rep[1/1] [=========45%                ] p_new.nsys-rep[1/1] [==========48%               ] p_new.nsys-rep[1/1] [===========50%              ] p_new.nsys-rep[1/1] [===========52%              ] p_new.nsys-rep[1/1] [============55%             ] p_new.nsys-rep[1/1] [========================100%] p_new.nsys-rep[1/1] [========================100%] p_new.nsys-rep
+Generated:
+	$BENCH/sw126/p_new.nsys-rep

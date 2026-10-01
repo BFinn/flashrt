@@ -1,0 +1,31 @@
+kld fast 0.008910, 0.001185, 0.104523, 0.343547, 0.788128 5120:
+6144:
+7168:
+8191:
+5120:
+6144:
+7168:
+8191:
+96.581% 159229 swaps
+kld win3 0.008513, 0.001165, 0.107298, 0.255412, 0.472202 5120:
+6144:
+7168:
+8191:
+5122:
+6145:
+7169:
+8191:
+96.886% 85039 swaps
+kld chunk 0.008879, 0.001210, 0.106685, 0.294635, 0.521131 5120:
+6144:
+7168:
+8192:
+5120:
+6144:
+7168:
+8192:
+96.825% 
+bench w9-teacher expert cache hit rate 82.16% (126194 hits, 27406 misses: 27406 on the CPU, 0 rea swaps 12333  f63758b9ec91
+bench w9mtp-teacher expert cache hit rate 72.85% (126927 hits, 47313 misses: 47313 on the CPU, 0 rea swaps 7007 speculative: 121 rounds, 2.661 tokens per round, 2.00 drafts verified per round; f63758b9ec91
+bench wiki-sampled expert cache hit rate 93.38% (164049 hits, 11631 misses: 11631 on the CPU, 0 rea swaps 3392 speculative: 122 rounds, 2.098 tokens per round, 2.00 drafts verified per round; 8e56b10a11f2
+bench wiki-greedy-plain expert cache hit rate 87.65% (53854 hits, 7586 misses: 7586 on the CPU, 0 read o swaps 4216  16ed386cd612

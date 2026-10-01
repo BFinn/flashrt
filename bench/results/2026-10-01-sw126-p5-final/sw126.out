@@ -1,0 +1,75 @@
+ARGMAX FINGERPRINT-IDENTICAL
+fp16 keys, against sw122:
+1c1
+< kld fast 0.008960, 0.001178, 0.114769, 0.278077, 1.439771 5120:
+---
+> kld fast 0.008910, 0.001185, 0.104523, 0.343547, 0.788128 5120:
+9,10c9,10
+< 96.789% 159486 swaps
+< kld win3 0.008824, 0.001170, 0.109060, 0.262869, 0.593063 5120:
+---
+> 96.581% 159229 swaps
+> kld win3 0.008513, 0.001165, 0.107298, 0.255412, 0.472202 5120:
+18c18
+< 96.789% 84950 swaps
+---
+> 96.886% 85039 swaps
+28,31c28,31
+< bench w9-teacher expert cache hit rate 82.04% (126017 hits, 27583 misses: 27583 on the CPU, 0 rea swaps 12414  f63758b9ec91
+< bench w9mtp-teacher expert cache hit rate 72.91% (127033 hits, 47207 misses: 47207 on the CPU, 0 rea swaps 6992 speculative: 121 rounds, 2.661 tokens per round, 2.00 drafts verified per round; f63758b9ec91
+< bench wiki-sampled expert cache hit rate 92.03% (163012 hits, 14108 misses: 14108 on the CPU, 0 rea swaps 4046 speculative: 123 rounds, 2.098 tokens per round, 2.00 drafts verified per round; 0d35b14ed16c
+< bench wiki-greedy-plain expert cache hit rate 87.80% (53942 hits, 7498 misses: 7498 on the CPU, 0 read o swaps 4205  16ed386cd612
+---
+> bench w9-teacher expert cache hit rate 82.16% (126194 hits, 27406 misses: 27406 on the CPU, 0 rea swaps 12333  f63758b9ec91
+> bench w9mtp-teacher expert cache hit rate 72.85% (126927 hits, 47313 misses: 47313 on the CPU, 0 rea swaps 7007 speculative: 121 rounds, 2.661 tokens per round, 2.00 drafts verified per round; f63758b9ec91
+> bench wiki-sampled expert cache hit rate 93.38% (164049 hits, 11631 misses: 11631 on the CPU, 0 rea swaps 3392 speculative: 122 rounds, 2.098 tokens per round, 2.00 drafts verified per round; 8e56b10a11f2
+> bench wiki-greedy-plain expert cache hit rate 87.65% (53854 hits, 7586 misses: 7586 on the CPU, 0 read o swaps 4216  16ed386cd612
+old plain245 decode: 256 tokens at depth 245760 in 2.68 s: 95.63 tok/s (fast path, doorbell), | expert cache: 8674 slots
+old plain32 decode: 256 tokens at depth 32768 in 2.23 s: 114.72 tok/s (fast path, doorbell), | expert cache: 8918 slots
+old spec245 decode: 256 tokens at depth 245760 in 2.81 s: 91.18 tok/s (speculative, MTP draf | expert cache: 7833 slots
+old spec32 decode: 256 tokens at depth 32768 in 2.40 s: 106.68 tok/s (speculative, MTP draf | expert cache: 8103 slots
+arg plain245 decode: 256 tokens at depth 245760 in 2.70 s: 94.76 tok/s (fast path, doorbell), | expert cache: 8674 slots
+arg plain32 decode: 256 tokens at depth 32768 in 2.23 s: 114.62 tok/s (fast path, doorbell), | expert cache: 8918 slots
+arg spec245 decode: 256 tokens at depth 245760 in 2.96 s: 86.39 tok/s (speculative, MTP draf | expert cache: 7833 slots
+arg spec32 decode: 256 tokens at depth 32768 in 2.44 s: 105.10 tok/s (speculative, MTP draf | expert cache: 8103 slots
+new plain245 decode: 256 tokens at depth 245760 in 2.59 s: 98.97 tok/s (fast path, doorbell), | expert cache: 8819 slots
+new plain32 decode: 256 tokens at depth 32768 in 2.33 s: 109.76 tok/s (fast path, doorbell), | expert cache: 8936 slots
+new spec245 decode: 256 tokens at depth 245760 in 2.87 s: 89.16 tok/s (speculative, MTP draf | expert cache: 7991 slots
+new spec32 decode: 256 tokens at depth 32768 in 2.33 s: 109.85 tok/s (speculative, MTP draf | expert cache: 8123 slots
+arg plain245 decode: 256 tokens at depth 245760 in 2.66 s: 96.27 tok/s (fast path, doorbell), | expert cache: 8674 slots
+arg plain32 decode: 256 tokens at depth 32768 in 2.31 s: 110.74 tok/s (fast path, doorbell), | expert cache: 8918 slots
+arg spec245 decode: 256 tokens at depth 245760 in 2.90 s: 88.19 tok/s (speculative, MTP draf | expert cache: 7833 slots
+arg spec32 decode: 256 tokens at depth 32768 in 2.38 s: 107.45 tok/s (speculative, MTP draf | expert cache: 8103 slots
+new plain245 decode: 256 tokens at depth 245760 in 2.58 s: 99.21 tok/s (fast path, doorbell), | expert cache: 8819 slots
+new plain32 decode: 256 tokens at depth 32768 in 2.22 s: 115.40 tok/s (fast path, doorbell), | expert cache: 8936 slots
+new spec245 decode: 256 tokens at depth 245760 in 2.79 s: 91.92 tok/s (speculative, MTP draf | expert cache: 7991 slots
+new spec32 decode: 256 tokens at depth 32768 in 2.33 s: 109.71 tok/s (speculative, MTP draf | expert cache: 8123 slots
+old plain245 decode: 256 tokens at depth 245760 in 2.72 s: 94.17 tok/s (fast path, doorbell), | expert cache: 8674 slots
+old plain32 decode: 256 tokens at depth 32768 in 2.24 s: 114.51 tok/s (fast path, doorbell), | expert cache: 8918 slots
+old spec245 decode: 256 tokens at depth 245760 in 2.86 s: 89.40 tok/s (speculative, MTP draf | expert cache: 7833 slots
+old spec32 decode: 256 tokens at depth 32768 in 2.43 s: 105.31 tok/s (speculative, MTP draf | expert cache: 8103 slots
+new plain245 decode: 256 tokens at depth 245760 in 2.63 s: 97.22 tok/s (fast path, doorbell), | expert cache: 8819 slots
+new plain32 decode: 256 tokens at depth 32768 in 2.23 s: 114.72 tok/s (fast path, doorbell), | expert cache: 8936 slots
+new spec245 decode: 256 tokens at depth 245760 in 2.76 s: 92.71 tok/s (speculative, MTP draf | expert cache: 7991 slots
+new spec32 decode: 256 tokens at depth 32768 in 2.40 s: 106.55 tok/s (speculative, MTP draf | expert cache: 8123 slots
+old plain245 decode: 256 tokens at depth 245760 in 2.68 s: 95.58 tok/s (fast path, doorbell), | expert cache: 8674 slots
+old plain32 decode: 256 tokens at depth 32768 in 2.27 s: 112.97 tok/s (fast path, doorbell), | expert cache: 8918 slots
+old spec245 decode: 256 tokens at depth 245760 in 2.91 s: 88.07 tok/s (speculative, MTP draf | expert cache: 7833 slots
+old spec32 decode: 256 tokens at depth 32768 in 2.47 s: 103.47 tok/s (speculative, MTP draf | expert cache: 8103 slots
+arg plain245 decode: 256 tokens at depth 245760 in 2.66 s: 96.11 tok/s (fast path, doorbell), | expert cache: 8674 slots
+arg plain32 decode: 256 tokens at depth 32768 in 2.27 s: 112.97 tok/s (fast path, doorbell), | expert cache: 8918 slots
+arg spec245 decode: 256 tokens at depth 245760 in 2.81 s: 91.22 tok/s (speculative, MTP draf | expert cache: 7833 slots
+arg spec32 decode: 256 tokens at depth 32768 in 2.38 s: 107.71 tok/s (speculative, MTP draf | expert cache: 8103 slots
+old plain245 decode: 256 tokens at depth 245760 in 2.77 s: 92.56 tok/s (fast path, doorbell), | expert cache: 8674 slots
+old plain32 decode: 256 tokens at depth 32768 in 2.25 s: 113.68 tok/s (fast path, doorbell), | expert cache: 8918 slots
+old spec245 decode: 256 tokens at depth 245760 in 2.81 s: 90.94 tok/s (speculative, MTP draf | expert cache: 7833 slots
+old spec32 decode: 256 tokens at depth 32768 in 2.43 s: 105.51 tok/s (speculative, MTP draf | expert cache: 8103 slots
+arg plain245 decode: 256 tokens at depth 245760 in 2.67 s: 96.05 tok/s (fast path, doorbell), | expert cache: 8674 slots
+arg plain32 decode: 256 tokens at depth 32768 in 2.35 s: 108.86 tok/s (fast path, doorbell), | expert cache: 8918 slots
+arg spec245 decode: 256 tokens at depth 245760 in 2.88 s: 88.85 tok/s (speculative, MTP draf | expert cache: 7833 slots
+arg spec32 decode: 256 tokens at depth 32768 in 2.46 s: 104.12 tok/s (speculative, MTP draf | expert cache: 8103 slots
+new plain245 decode: 256 tokens at depth 245760 in 2.58 s: 99.14 tok/s (fast path, doorbell), | expert cache: 8819 slots
+new plain32 decode: 256 tokens at depth 32768 in 2.21 s: 115.60 tok/s (fast path, doorbell), | expert cache: 8936 slots
+new spec245 decode: 256 tokens at depth 245760 in 2.76 s: 92.67 tok/s (speculative, MTP draf | expert cache: 7991 slots
+new spec32 decode: 256 tokens at depth 32768 in 2.34 s: 109.57 tok/s (speculative, MTP draf | expert cache: 8123 slots
+ALLDONE
