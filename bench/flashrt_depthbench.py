@@ -9,8 +9,8 @@ bench/results/2026-09-27-w9-validation, strata_depthbench.py and depthbench.py).
 One growing conversation: each depth's prompt (the token ids of strata-ids.json, the same ids
 the reference engines got) extends the previous one, so only the new tokens are prefilled
 (prefix reuse). Each depth generates --gen tokens without stopping at end-of-sequence (as
-ignore_eos in the reference runs). The engine is started fresh for each run, in a scope capped
-at 56 GB.
+ignore_eos in the reference runs). The engine is started fresh for each run, in a systemd scope
+capped at 56 GB where systemd-run exists (--no-scope: a plain child process).
 
 The decode rate is timed two ways, as in strata_depthbench.py: wall clock between the first
 and the last streamed token, and the engine's own done event (generated tokens / decode_ms).
@@ -20,6 +20,7 @@ summary line.
 import argparse
 import json
 import random
+import shutil
 import subprocess
 import sys
 import threading
@@ -51,6 +52,7 @@ def main():
     ap.add_argument("--gen", type=int, default=384)
     ap.add_argument("--sampling", default="", help='e.g. "temperature=1.0 top_p=0.95 top_k=20" (default greedy)')
     ap.add_argument("--log", default="", help="engine stderr log (default: LABEL.log)")
+    ap.add_argument("--no-scope", action="store_true", help="run the engine without a systemd scope")
     a = ap.parse_args(argv[:cut])
     extra = argv[cut + 1:]
 
@@ -67,8 +69,9 @@ def main():
     log.write("CMD " + " ".join(cmd) + "\n")
     log.flush()
     t0 = time.time()
-    p = subprocess.Popen(["systemd-run", "--user", "--scope", "--quiet", "-p", "MemoryMax=56G", "-p", "MemorySwapMax=0", "--"] + cmd,
-                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log, text=True, bufsize=1)
+    scope = [] if a.no_scope or not shutil.which("systemd-run") else \
+        ["systemd-run", "--user", "--scope", "--quiet", "-p", "MemoryMax=56G", "-p", "MemorySwapMax=0", "--"]
+    p = subprocess.Popen(scope + cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log, text=True, bufsize=1)
 
     def read():
         line = p.stdout.readline()
