@@ -11,7 +11,7 @@ template, tokenizer, expert cache, MTP speculation) solves problems as well as t
   thinking off (`enable_thinking: false`). The prompt asks for step-by-step work and a last line
   `#### <answer>`. Greedy (temperature 0), at most 1,024 tokens, one request at a time.
 - Scored on the number after `####`, else the response's last number, against the gold answer.
-- **flashrt** (ef15269): `flashrt-server` with the engine as deployed: the MTP head, `--spec 2`
+- **flashrt** (efa5d3f): `flashrt-server` with the engine as deployed: the MTP head, `--spec 2`
   (greedy argmax drafts are exact), `--ctx 16384`.
 - **llama.cpp** (e4c893841 with the dev tree's uncommitted changes, the tree that produced the KLD
   base): `llama-server --jinja -ngl 99 -ot 'ffn_.*_exps=CPU' -fa on -c 8192 --parallel 1`, fp16 KV,

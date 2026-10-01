@@ -26,7 +26,7 @@ P n = 2 as a control):
 - Prefill, reuse and time to the first token are unchanged.
 
 **The agent session** (`agent.out`, `bench/agent_trace.py`, greedy, 2 runs per arm, the engine
-before the fix built from 78edc58^): before 126.3 / 125.9 tok/s at 83.7% hits, after 120.1 / 121.6
+before the fix built from 749cb02^): before 126.3 / 125.9 tok/s at 83.7% hits, after 120.1 / 121.6
 at 81.4%. Each arm repeats itself exactly, and the two arms part ways at turn 3 (different tool
 calls, 3,532 against 3,240 tokens), so the sessions differ in content. Over the first three turns,
 which are the same requests, the arms are level (118.7 / 98.6 / 126.5 against 125.6 / 95.6 / 123.2

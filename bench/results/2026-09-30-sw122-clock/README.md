@@ -4,7 +4,7 @@
 selection chose and then assigns victims for up to 1,024 missed blocks, with one thread stepping
 the CLOCK hand slot by slot.
 
-**Change** (the commit after 422f6fd). The sweep goes a chunk of the ring at a time (up to 1,024
+**Change** (the commit after 2a4f741). The sweep goes a chunk of the ring at a time (up to 1,024
 slots, no slot twice). A slot is a candidate when not referenced since the hand last passed and not
 pinned this step. A block scan ranks the chunk's candidates in clock order; the first `need` take
 the missed blocks in order; the hand stops after the last one taken, and the slots passed before it
@@ -14,7 +14,7 @@ cannot change either way.
 
 | Check | Result |
 |---|---|
-| sw112's fingerprint against sw121's build (422f6fd) | **identical** (`fp-new.txt`) |
+| sw112's fingerprint against sw121's build (2a4f741) | **identical** (`fp-new.txt`) |
 | ctest | 20 / 20 |
 | nsys, 245K plain (`p_plain_245_cuda_gpu_kern_sum.csv`) | `k_hot_select` 22.4 → **4.4 µs** per call; `k_idx_select` 103 → 25.5 µs (sw121) |
 

@@ -24,7 +24,7 @@ Runs are bit-reproducible (sw107, sw109), so a neutral refactor must reproduce e
   swaps, acceptance, and an md5 of the token line;
 - a sampled run (t = 1.0, seed 7) and a greedy run on wikitext.
 
-`before` ran on 88791c9, `after` on d8e8b51. Both are in this folder
+`before` ran on 4d31108, `after` on b23ba6a. Both are in this folder
 (`sw112-before.txt`, `sw112-after.txt`, raw logs under `before/` and `after/`).
 
 | Check | Result |
@@ -37,7 +37,7 @@ Runs are bit-reproducible (sw107, sw109), so a neutral refactor must reproduce e
 
 No speed was measured: the paths that run are the same code as before.
 
-## H-1: blocks.cu split (1e2eceb)
+## H-1: blocks.cu split (6147476)
 
 The same checks on phase 4's next step: `blocks.cu` (3,690 lines) split by block into `hc.cu`,
 `gdn.cu`, `qsa.cu`, `moe_ref.cu` (batch routing and the reference MoE) and `ple.cu`, with
@@ -54,7 +54,7 @@ PLE's three norms now call `rms_norm_rows` and its rewind `hist_rewind` (the sam
 
 Outputs of this second round are in `smoke-h1/`.
 
-## H-2 and H-7: Forward, and graphs invalidated by a version (ff92e3d)
+## H-2 and H-7: Forward, and graphs invalidated by a version (235b350)
 
 `ForwardRef` is now `Forward` (`forward.cu`, `forward.hpp`); `forward()` calls `begin_chunk`,
 `fetch_ple_rows`, `run_graphs` or `run_eager`, and `end_step`, in the old order. A captured graph

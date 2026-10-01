@@ -1,7 +1,7 @@
 #!/bin/bash
-# sw121: P-5's first kernel, the QSA block selection on an 8-CTA cluster per token (127693c..422f6fd).
+# sw121: P-5's first kernel, the QSA block selection on an 8-CTA cluster per token (06a0274..2a4f741).
 # Its output must equal the single-CTA kernel's: sw112's fingerprint on the build before it
-# (fbcf51a, exported and built here) and on the current one. Then teacher-forced A/B, old and new
+# (0a581c5, exported and built here) and on the current one. Then teacher-forced A/B, old and new
 # interleaved, 3 pairs: 245K plain and --spec 2, 32K plain, from the saved states.
 set -u
 M=$MODELS/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf
@@ -10,7 +10,7 @@ V=$BENCH/mtp-vocab/ranks.txt
 I=$BENCH/p0c-20260927/wiki.prompt_ids.txt
 O=$BENCH/sw121; mkdir -p $O; cd $FLASHRT
 if [ ! -x $O/base/build/fr_bench ]; then
-  rm -rf $O/base && mkdir -p $O/base && git -C $FLASHRT archive fbcf51a | tar -x -C $O/base
+  rm -rf $O/base && mkdir -p $O/base && git -C $FLASHRT archive 0a581c5 | tar -x -C $O/base
   cmake -S $O/base -B $O/base/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=120 -DFLASHRT_NATIVE=ON \
         -DCMAKE_CUDA_COMPILER=/usr/local/cuda-12.9/bin/nvcc > $O/base-build.log 2>&1
   cmake --build $O/base/build --target fr_bench fr_kld >> $O/base-build.log 2>&1 || { echo "base build failed"; exit 1; }

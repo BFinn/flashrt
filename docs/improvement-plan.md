@@ -1,6 +1,6 @@
 # Improvement plan (from the external reviews of 2026-09-29)
 
-Three reviews of commit `27856aa` are in `docs/feedback/`:
+Three reviews of commit `8689a7d` are in `docs/feedback/`:
 - `fable-...md`: a line-level review with a backlog. Item IDs below (R-1, E-1, ...) are its IDs.
 - `chatgpt-...txt` and `grok-...txt`: assessments of scope, generality, benchmarks and direction.
 
@@ -74,7 +74,7 @@ test for E-1 compares the state after the prompt by its logits, not by tokens: g
 depend on the expert cache's content, so they differ from a fresh engine's even when nothing
 failed (sw92). E-3 (a bounded host-side doorbell wait) was done with it.
 Found on the way: the fast-path KLD (window 3, hot set 512) moved from 0.008931 (sw78) to 0.009124
-before phase 1, still inside the gate band. **Bisected (sw94):** the step is a97bac1, the
+before phase 1, still inside the gate band. **Bisected (sw94):** the step is 2b074a9, the
 warp-per-token prefill routing, whose softmax sums in another order. A last-bit change in the
 routing probabilities changes the expert cache's first fill, and so which tokens hit on the GPU
 and which miss to the CPU. `FLASHRT_ROUTE_WARP=0` on the current build gives back 0.008931 and
@@ -235,7 +235,7 @@ In expected-value order. Each needs its KLD check and a `bench/results` folder.
 - X-2 is `bench/run.sh`, the `Dockerfile` and its workflow, and the README's "Will it run on my
   machine". run.sh passes end to end on the development box.
 - The server serves `/metrics`.
-- X-3: `v0.1.0` tags 2754e25 (2026-10-01). Result folders from here on can name a tag.
+- X-3: `v0.1.0` tags 85d9741 (2026-10-01). Result folders from here on can name a tag.
 
 - **X-1:** commit the window 9 token ids and the drafter vocabulary ranking, a script that
   rebuilds the KLD base, and the llama.cpp patch as a `.diff` with its base commit. Pin the

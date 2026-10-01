@@ -23,7 +23,7 @@ Both are inside the gate band (fast path 0.0087-0.0092 as recorded; the plain `-
 **Speed** (as sw104, teacher-forced, 3 runs; `sw107b.out`): window 9 plain 85.5 / 82.9 / 84.8 tok/s
 (81.4% hits), wikitext 107.2 / 106.8 / 106.1 (93.4%), window 9 with the head 103.3 / 102.3 / 101.1
 (71.8%). Against sw104 (another session) that looked like a cost with the head (108.5). **Measured
-in one session it is none** (`sw107c.out`: the timing-dependent build, 1c6fc82, built in a separate
+in one session it is none** (`sw107c.out`: the timing-dependent build, 9af6062, built in a separate
 clone, alternating with this one):
 
 | Build | Window 9 with the head, 3 runs | Mean |

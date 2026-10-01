@@ -1,6 +1,6 @@
 # sw113: named constants, doorbell flags on the memory model, build flags (2026-09-30)
 
-Phase 4 step 4 of `docs/improvement-plan.md` (H-4, H-5, H-6) and E-4, in c6dbe8f:
+Phase 4 step 4 of `docs/improvement-plan.md` (H-4, H-5, H-6) and E-4, in 8aedb6e:
 - **H-4:** the ggml type ids flashrt handles, its own converted types (Q3R, Q8P) and its file
   magics (state file, cache prior) are named in `core/formats.hpp`. Every bare number is gone.
 - **H-5:** the mailbox flags between the GPU and the miss server are system-scope atomics.
@@ -29,7 +29,7 @@ Phase 4 step 4 of `docs/improvement-plan.md` (H-4, H-5, H-6) and E-4, in c6dbe8f
 
 ## Speed (H-5 changes the decode's synchronization)
 
-`fr_bench --teacher` (same tokens every run), q8 KV with the hot set, old binary (c6dbe8f's
+`fr_bench --teacher` (same tokens every run), q8 KV with the hot set, old binary (8aedb6e's
 parent) against new, interleaved, one decode per run. Logs are in `ab/`.
 
 | tok/s, mean ± sd | old | new | change |

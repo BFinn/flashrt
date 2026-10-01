@@ -5,7 +5,7 @@
 weights from DRAM (`k_hc_up_mix2` 15.3 µs, above its bandwidth floor). Prefetching those weights into
 L2 during the wait should speed up the mix.
 
-**Tried** (e2a7567, 3f78eb9; `FLASHRT_L2_PREFETCH`, same binary, modes rotated; teacher-forced
+**Tried** (715d7b4, aecf8b4; `FLASHRT_L2_PREFETCH`, same binary, modes rotated; teacher-forced
 from the saved states, 256 tokens, n = 3; `sw123.out`, `sw123b.out`):
 
 | tok/s | off | 1: bulk prefetch (`cp.async.bulk.prefetch.L2`), attention mix | 2: bulk, both mixes | off (2nd run) | 3: per-line hints (`prefetch.global.L2`) over 168 CTAs |

@@ -1,6 +1,6 @@
 #!/bin/bash
 # sw122: P-5's second kernel, the hot set's CLOCK sweep in parallel (k_hot_select). Where a block
-# sits never changes a value, so the outputs must equal the build before (sw121's fp-new.txt, 422f6fd);
+# sits never changes a value, so the outputs must equal the build before (sw121's fp-new.txt, 2a4f741);
 # the current fr_bench is kept as the old arm, then teacher-forced A/B as sw121, and an nsys profile
 # of 245K plain for the kernel's time.
 set -u

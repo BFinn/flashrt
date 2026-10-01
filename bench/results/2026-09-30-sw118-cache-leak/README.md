@@ -19,7 +19,7 @@ applied: the table kept the second slot and the first stayed owned by it, never 
 evicted. One-token decode never repeats a key within a step, so only speculative decoding leaked.
 tools/cache_sim.py de-duplicates correctly, so the simulator never had this.
 
-**Fix** (78edc58): ties broken by key, so copies are adjacent and `unique` keeps one.
+**Fix** (749cb02): ties broken by key, so copies are adjacent and `unique` keeps one.
 
 ## Checks
 

@@ -14,7 +14,7 @@ prefetch kernel, which held the stream. This round moved the loads into the mix 
 - `k_hc_up_mix2` already chains off down2's trigger (sw75).
 
 So both kernels' weights could be in flight during the wait, with no extra kernel on the stream.
-Toggle `FLASHRT_HC_EARLY` (3799139); outputs unchanged by construction.
+Toggle `FLASHRT_HC_EARLY` (329ddb2); outputs unchanged by construction.
 
 **Unit test** (`test_hc_decode`, mixes back to back, weights rotated through > 256 MB): correct at
 T = 1..4. Per mix, off / on: T 1 16.9 / 15.5 µs, T 3 22.4 / 20.2 µs, T 1 with the combine
@@ -45,6 +45,6 @@ isolated: GPU DRAM traffic should not slow the CPU's misses, and without hardwar
 mapped-memory polling path cannot be observed directly. Nor is it known why down2's measured
 duration did not grow if it started early.
 
-**Conclusion.** Not adopted; the code is removed (7435a51). The fingerprint with the toggle on
+**Conclusion.** Not adopted; the code is removed (a298c05). The fingerprint with the toggle on
 equals sw122's (`fp-new.txt`). This closes the hc mix track in P-5: its ceiling is ~3%, and the
 wait it would have to hide under does not accept extra traffic.

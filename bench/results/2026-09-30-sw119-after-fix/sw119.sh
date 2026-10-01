@@ -1,7 +1,7 @@
 #!/bin/bash
 # sw119: the headline numbers after the expert-cache leak fix (sw118).
 # (1) The agent session (bench/agent_trace.py, greedy), the engine before the fix (built from
-#     78edc58^, exported, not a git worktree) against after, 2 runs each, alternating: agent runs read
+#     749cb02^, exported, not a git worktree) against after, 2 runs each, alternating: agent runs read
 #     this repository's source, so both arms run on the same state.
 # (2) Window 9's protocol as sw110 (the same script's arms), the head greedy (G) and temperature 1.0
 #     (S), 5 runs each, interleaved; the plain arm (P, no windows, so no leak) 2 runs as a control.
@@ -13,7 +13,7 @@ S=$FLASHRT/server/target/release/flashrt-server; O=$BENCH/sw119; mkdir -p $O; cd
 URL=http://127.0.0.1:8090
 # the engine before the fix
 if [ ! -x $O/old/build/flashrt-engine ]; then
-  rm -rf $O/old && mkdir -p $O/old && git -C $FLASHRT archive 78edc58^ | tar -x -C $O/old
+  rm -rf $O/old && mkdir -p $O/old && git -C $FLASHRT archive 749cb02^ | tar -x -C $O/old
   cmake -S $O/old -B $O/old/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=120 -DFLASHRT_NATIVE=ON \
         -DCMAKE_CUDA_COMPILER=/usr/local/cuda-12.9/bin/nvcc > $O/old-build.log 2>&1
   cmake --build $O/old/build --target flashrt-engine >> $O/old-build.log 2>&1 || { echo "old build failed"; exit 1; }

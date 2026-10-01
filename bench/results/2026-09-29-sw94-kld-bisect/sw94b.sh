@@ -1,5 +1,5 @@
 #!/bin/bash
-# sw94b: the bisect (sw94) put the fast-path KLD move at a97bac1, the prefill routing kernel with
+# sw94b: the bisect (sw94) put the fast-path KLD move at 2b074a9, the prefill routing kernel with
 # a warp per token, whose softmax sums in another order (p may differ in the last bit). On the
 # current build, FLASHRT_ROUTE_WARP=0 (the block kernel) must give back sw78's 0.008931 and 12,021
 # swaps exactly if nothing else moved it; the plain --fast configuration shows the size of the

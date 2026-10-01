@@ -1,6 +1,6 @@
 #!/bin/bash
-# sw126: P-5's last items. The argmax on an 8-CTA cluster (787f6af, FLASHRT_ARGMAX_CLUSTER) and the
-# indexer's pooled keys in fp16 (e926085). The base build (787f6af) is fingerprinted against
+# sw126: P-5's last items. The argmax on an 8-CTA cluster (325dea3, FLASHRT_ARGMAX_CLUSTER) and the
+# indexer's pooled keys in fp16 (d8a6e52). The base build (325dea3) is fingerprinted against
 # sw122's (the argmax must change nothing); the new build's fingerprint carries the KLD gate for
 # the fp16 keys. Then three arms interleaved, teacher-forced from the saved states, 256 tokens:
 # old (base, FLASHRT_ARGMAX_CLUSTER=0), argmax (base), new (this build); then nsys of new at 245K.
@@ -12,7 +12,7 @@ I=$BENCH/p0c-20260927/wiki.prompt_ids.txt
 O=$BENCH/sw126; mkdir -p $O/ab; cd $FLASHRT
 wait_vram() { for i in $(seq 300); do u=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits); [ "$u" -lt 600 ] && return; sleep 2; done; echo "VRAM busy"; exit 1; }
 if [ ! -x $O/base/build/fr_bench ]; then
-  rm -rf $O/base && mkdir -p $O/base && git -C $FLASHRT archive 787f6af | tar -x -C $O/base
+  rm -rf $O/base && mkdir -p $O/base && git -C $FLASHRT archive 325dea3 | tar -x -C $O/base
   cmake -S $O/base -B $O/base/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=120 -DFLASHRT_NATIVE=ON \
         -DCMAKE_CUDA_COMPILER=/usr/local/cuda-12.9/bin/nvcc > $O/base-build.log 2>&1
   cmake --build $O/base/build --target fr_bench fr_kld >> $O/base-build.log 2>&1 || { echo "base build failed"; exit 1; }

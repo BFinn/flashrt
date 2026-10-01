@@ -1,5 +1,5 @@
 data: 1319 items, sha256 3730d312f6e34405
-flashrt ef15269; llama.cpp e4c893841 (uncommitted changes)
+flashrt efa5d3f; llama.cpp e4c893841 (uncommitted changes)
 Running as unit: fr-server-sw116.service; invocation ID: a76f2fe5c9ee4c10af34eeb855bd4caa
 flashrt 35/500: 24/25 right this run, 3.9 s per item
 flashrt 60/500: 48/50 right this run, 4.2 s per item

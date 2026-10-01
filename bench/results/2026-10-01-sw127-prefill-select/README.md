@@ -22,7 +22,7 @@ each with a cluster barrier). At depth, one CTA's 61K keys no longer fit in its 
 and are read again each pass, and 4 CTAs per token balance the two.
 Decode keeps 8 (T = 1: 24 µs against 103 µs for one CTA).
 
-**Change** (38ac581, d4aeb23, 5e9860d). `k_idx_select` is a template on the cluster size.
+**Change** (7fc74f4, ee437b2, 6926308). `k_idx_select` is a template on the cluster size.
 - Prefill sub-batches of 64 tokens or more, outside graphs, take 1 CTA per token below 24,576
   blocks (98K positions) and 4 above.
 - Decode and verify windows keep 8.

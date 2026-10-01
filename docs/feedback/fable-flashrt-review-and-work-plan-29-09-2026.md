@@ -1,6 +1,6 @@
 # flashrt: external review and work plan (2026-09-29)
 
-**Repository:** https://github.com/BFinn/flashrt, reviewed at commit `27856aa` (main, 2026-09-29).
+**Repository:** https://github.com/BFinn/flashrt, reviewed at commit `8689a7d` (main, 2026-09-29).
 All file:line references are as of that commit.
 
 **Purpose of this document.** A code review of flashrt turned into a backlog that a coding agent
@@ -536,7 +536,7 @@ folders can name a build.
 | Prefill 5,570-5,950 | `sw91.out`, `sw91-summary.txt` | engine `prompt_ms`: 5,690-5,960; TTFT-delta: 5,565; two measures mixed |
 | Strata prefill 1,170-2,030 | Strata log lines 34-38 | per new token: 1,173 / 1,089 / 969; 2,031 counts reused tokens |
 
-## Appendix B. Size of the tree at `27856aa`
+## Appendix B. Size of the tree at `8689a7d`
 
 Own code 20,308 lines (C++/CUDA 16.4k, Rust 1.9k, tests 2.0k); vendored ggml 23,460 lines
 (unmodified, MIT); docs 1,853 lines; 97 result folders with 717 files and 85 READMEs; 279

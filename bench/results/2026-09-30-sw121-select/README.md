@@ -5,7 +5,7 @@
 token ran a 32-bit radix select (4 passes of 8 bits, then a pass to write the cells) over all
 61,440 block scores.
 
-**Change** (127693c, 98bb7b1, 422f6fd). One cluster of 8 CTAs per token (`__cluster_dims__`;
+**Change** (06a0274, 7e5824c, 2a4f741). One cluster of 8 CTAs per token (`__cluster_dims__`;
 sm_90+ thread-block clusters):
 - CTA k owns an eighth of the blocks and holds their keys in shared memory for all passes.
 - Each pass, every CTA builds its digit histogram, and after one cluster barrier every CTA sums
@@ -21,7 +21,7 @@ sm_90+ thread-block clusters):
 |---|---|
 | `test_idx_select` (new): 40 token selections, dense to 250K, T = 1, 3, 16, many exact ties, all scores equal | 40 / 40 match a CPU reference |
 | Its time at 245K (isolated) | 22.7 µs per call, T = 1 or 3 |
-| sw112's fingerprint (7 runs: KLD fast, windows, chunks; teacher-forced window 9 with and without the head; sampled and greedy wikitext) against the build before (fbcf51a, `fp-base.txt`) | **identical** |
+| sw112's fingerprint (7 runs: KLD fast, windows, chunks; teacher-forced window 9 with and without the head; sampled and greedy wikitext) against the build before (0a581c5, `fp-base.txt`) | **identical** |
 | ctest | 20 / 20 |
 
 **Speed** (teacher-forced from the saved states, 256 tokens, the build before and after

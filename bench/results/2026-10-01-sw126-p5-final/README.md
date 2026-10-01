@@ -7,11 +7,11 @@
   fp32 pooled keys of 512 bytes at ~840 GB/s, so it is bound by their bytes.
 
 **Changes:**
-- **Argmax on an 8-CTA cluster** (787f6af, `FLASHRT_ARGMAX_CLUSTER=0` restores the old kernel).
+- **Argmax on an 8-CTA cluster** (325dea3, `FLASHRT_ARGMAX_CLUSTER=0` restores the old kernel).
   Each thread takes every 8,192nd value with four loads in flight, in rising index order. CTA 0
   takes the CTAs' results in rank order through distributed shared memory. Same rule as before:
   the largest value, the lowest index on ties, never NaN.
-- **Pooled keys stored in fp16** (e926085).
+- **Pooled keys stored in fp16** (d8a6e52).
   - The prefill's tensor-core scores already rounded both queries and keys to fp16 before their
     mma. Storing the keys rounded the same way (round to nearest) leaves prefill bit-identical.
   - The decode kernel reads 256 bytes per key instead of 512, with the warp's four keys loaded
@@ -25,7 +25,7 @@
 | Check | Result |
 |---|---|
 | `test_argmax` (new): 262,144 and 40,001 values (unaligned), 33 and 1; random, many ties, the maximum at either end, NaN every 7th, all -inf | 24 / 24 equal the CPU reference; 5.4 µs per call against 39.0 (isolated) |
-| sw112's fingerprint, base build (787f6af: argmax only) against sw122 | **identical** (`fp-base.txt`) |
+| sw112's fingerprint, base build (325dea3: argmax only) against sw122 | **identical** (`fp-base.txt`) |
 | Fingerprint of the new build (fp16 keys) against sw122 (`fp-new.txt`) | KLD fast 0.008960 → **0.008910**; verify windows (win3, hot set 512) 0.008824 → **0.008513**; chunks (prefill path) **identical**; greedy wikitext tokens identical (`16ed386cd612`); teacher-forced hit rates ±0.15 points; the sampled text differs (it samples from changed logits) |
 | ctest | 21 / 21 (two need the model and skip) |
 
