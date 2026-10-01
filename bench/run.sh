@@ -13,14 +13,20 @@
 #         ec92815 with bench/reference/llama.cpp-flashnext.patch applied and built
 # RUNS    window 9's runs per arm (default 1; the published tables use 5)
 # CUDACXX nvcc (default /usr/local/cuda/bin/nvcc)
+# CUDA_ARCH  the GPU's architecture for the build (default 120)
+# PORT    the server step's port (default 8090)
 #
 # `all` is preflight, build, test, decode, window9 and server (about an hour, most of it window
 # 9's prefills). Each step prints what it measured and the published value to compare against.
-set -u
+set -u -o pipefail
+: "${MODELS:?set MODELS to the directory with the model GGUF shards and the MTP head}"
+abs() { mkdir -p "$1" && (cd "$1" && pwd); }   # relative paths are taken from where run.sh was started
+MODELS=$(cd "$MODELS" && pwd) || exit 1
+BENCH=$(abs "${BENCH:-$(dirname "$0")/../bench-out}") || exit 1
+[ -n "${DATA:-}" ] && { DATA=$(cd "$DATA" && pwd) || exit 1; }
+[ -n "${LLAMA_CPP:-}" ] && { LLAMA_CPP=$(cd "$LLAMA_CPP" && pwd) || exit 1; }
 cd "$(dirname "$0")/.." || exit 1
 FR=$PWD
-: "${MODELS:?set MODELS to the directory with the model GGUF shards and the MTP head}"
-BENCH=${BENCH:-$FR/bench-out}
 RUNS=${RUNS:-1}
 M=$MODELS/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf
 D=$MODELS/mtp-Flash-Next-Q8_0-noembd.gguf
@@ -66,7 +72,7 @@ preflight() {
     fi
     local missing=""
     for t in cmake ninja g++ cargo python3 curl "${CUDACXX:-/usr/local/cuda/bin/nvcc}"; do command -v "$t" > /dev/null || missing="$missing $t"; done
-    [ -n "$missing" ] && { echo "missing tools:$missing (CUDA 12.8+, CMake 3.28+, Ninja, GCC 12+, Rust 1.82+)"; ok=0; }
+    [ -n "$missing" ] && { echo "missing tools:$missing (CUDA 12.8+, CMake 3.24+, Ninja, GCC 12+, Rust 1.82+)"; ok=0; }
     [ $ok = 1 ] && echo "preflight: ok" || { echo "preflight: FAILED"; return 1; }
 }
 
@@ -101,10 +107,11 @@ EOF
     n=$(wc -w < "$BENCH/w9-32k.ids")
     local C=(--ids "$BENCH/w9-32k.ids" --n-prompt "$n" --gen 256 --prefill-chunk auto --kv q8 --kv-hot 4096)
     wait_vram
-    build/fr_bench "$M" "${C[@]}" > "$BENCH/decode-plain.txt" 2>&1
+    build/fr_bench "$M" "${C[@]}" > "$BENCH/decode-plain.txt" 2>&1 || { echo "fr_bench failed: see $BENCH/decode-plain.txt"; return 1; }
     grep -hE "^prefill:|^decode:|hit rate" "$BENCH/decode-plain.txt"
     wait_vram
-    build/fr_bench "$M" "${C[@]}" --mtp "$D" --spec 2 --draft-vocab "$V" > "$BENCH/decode-spec2.txt" 2>&1
+    build/fr_bench "$M" "${C[@]}" --mtp "$D" --spec 2 --draft-vocab "$V" > "$BENCH/decode-spec2.txt" 2>&1 ||
+        { echo "fr_bench failed: see $BENCH/decode-spec2.txt"; return 1; }
     grep -hE "^decode:|hit rate|speculative" "$BENCH/decode-spec2.txt"
 }
 
@@ -114,10 +121,11 @@ window9() {
     mkdir -p "$O"
     : > "$O/w9.out"
     for r in $(seq "$RUNS"); do
-        wait_vram; "${DB[@]}" --label run-P-plain-r$r --log "$O/P$r.log" | tee -a "$O/w9.out"
-        wait_vram; "${DB[@]}" --label run-G-spec2-greedy-r$r --log "$O/G$r.log" -- --mtp "$D" --spec 2 --draft-vocab "$V" | tee -a "$O/w9.out"
+        wait_vram; "${DB[@]}" --label run-P-plain-r$r --log "$O/P$r.log" | tee -a "$O/w9.out" || return 1
+        wait_vram; "${DB[@]}" --label run-G-spec2-greedy-r$r --log "$O/G$r.log" -- --mtp "$D" --spec 2 --draft-vocab "$V" |
+            tee -a "$O/w9.out" || return 1
         wait_vram; "${DB[@]}" --label run-S-spec2-t1.0-r$r --log "$O/S$r.log" --sampling "temperature=1.0 top_p=0.95 top_k=20" \
-            -- --mtp "$D" --spec 2 --draft-vocab "$V" | tee -a "$O/w9.out"
+            -- --mtp "$D" --spec 2 --draft-vocab "$V" | tee -a "$O/w9.out" || return 1
     done
     python3 bench/depthsum.py "$O/w9.out" | tee "$O/summary.txt" | head -6
     echo "published (sw128, n=5): P 103.5 / 95.5 / 93.9 / 91.9, G 127.9 / 111.3 / 103.7 / 104.9, S 118.8 / 95.5 / 106.7 / 106.4"
@@ -131,7 +139,8 @@ kld() {
         wait_vram; MODELS=$MODELS BENCH=$BENCH DATA=$DATA LLAMA_CPP=$LLAMA_CPP bash bench/reference/kld-base.sh || return 1
     fi
     wait_vram
-    (cd "$BENCH/kld" && "$FR/build/fr_kld" "$M" kl8k-f16.bin --ctx 8192 --chunks 2 --batch 64 --fast) > "$BENCH/kld-fast.log" 2>&1
+    (cd "$BENCH/kld" && "$FR/build/fr_kld" "$M" kl8k-f16.bin --ctx 8192 --chunks 2 --batch 64 --fast) > "$BENCH/kld-fast.log" 2>&1 ||
+        { echo "fr_kld failed: see $BENCH/kld-fast.log"; return 1; }
     grep -h "KLD mean\|same top" "$BENCH/kld-fast.log"
 }
 

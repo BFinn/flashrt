@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "arch/qwen4exp/mtp.hpp"
+#include "arch/qwen4exp/graph_capture.hpp"
 
 #include "core/fp16.hpp"
 #include "core/platform.hpp"
@@ -14,6 +15,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <memory>
 #include <regex>
 #include <stdexcept>
 #include <string>
@@ -461,32 +463,29 @@ void MtpHead::restore_checkpoint(float* h_dev) {
 
 void MtpHead::save_state(const std::string& path, int pos, const float* h_carry_dev) {
     ck(cudaStreamSynchronize(stream_), "MTP state");
-    FILE* f = std::fopen(path.c_str(), "wb");
+    std::unique_ptr<FILE, int (*)(FILE*)> fh(std::fopen(path.c_str(), "wb"), std::fclose);
+    FILE* f = fh.get();
     if (!f) throw std::runtime_error("cannot open " + path);
     const int64_t hdr[3] = {0x544d5246 /* "FRMT" */, pos, kv_.q8 ? 1 : 0};
-    std::fwrite(hdr, sizeof(hdr), 1, f);
+    if (std::fwrite(hdr, sizeof(hdr), 1, f) != 1) throw std::runtime_error("MTP state write failed: " + path);
     qsa_state_io(f, s_, kv_, pos, true, kv_.q8, stream_);
     std::vector<float> h(size_t(s_.hc_count) * s_.d_model);
     ck(cudaMemcpy(h.data(), h_carry_dev, h.size() * 4, cudaMemcpyDeviceToHost), "MTP h to host");
-    const bool ok = std::fwrite(h.data(), 4, h.size(), f) == h.size();
-    std::fclose(f);
-    if (!ok) throw std::runtime_error("MTP state write failed");
+    if (std::fwrite(h.data(), 4, h.size(), f) != h.size() || std::fclose(fh.release()) != 0)
+        throw std::runtime_error("MTP state write failed: " + path);
 }
 
 int MtpHead::load_state(const std::string& path, float* h_carry_dev) {
-    FILE* f = std::fopen(path.c_str(), "rb");
+    std::unique_ptr<FILE, int (*)(FILE*)> fh(std::fopen(path.c_str(), "rb"), std::fclose);
+    FILE* f = fh.get();
     if (!f) throw std::runtime_error("cannot open " + path);
     int64_t hdr[3] = {0, 0, 0};
-    if (std::fread(hdr, sizeof(hdr), 1, f) != 1 || hdr[0] != 0x544d5246 || hdr[1] > kv_.capacity) {
-        std::fclose(f);
+    if (std::fread(hdr, sizeof(hdr), 1, f) != 1 || hdr[0] != 0x544d5246 || hdr[1] < 0 || hdr[1] > kv_.capacity)
         throw std::runtime_error("not an MTP state file, or longer than the KV capacity: " + path);
-    }
     const int pos = int(hdr[1]);
     qsa_state_io(f, s_, kv_, pos, false, hdr[2] == 1, stream_);
     std::vector<float> h(size_t(s_.hc_count) * s_.d_model);
-    const bool ok = std::fread(h.data(), 4, h.size(), f) == h.size();
-    std::fclose(f);
-    if (!ok) throw std::runtime_error("MTP state file truncated");
+    if (std::fread(h.data(), 4, h.size(), f) != h.size()) throw std::runtime_error("MTP state file truncated: " + path);
     ck(cudaMemcpy(h_carry_dev, h.data(), h.size() * 4, cudaMemcpyHostToDevice), "MTP h to device");
     return pos;
 }
@@ -516,7 +515,7 @@ std::vector<int32_t> MtpHead::draft_chain(int row, int pos, int k) {
     chain_init_[1] = pos - 1;   // k_chain_next advances it to pos
     chain_init_[2] = chain_init_[3] = 0;
     ck(cudaMemcpyAsync(chain_dp_, chain_init_, sizeof(chain_init_), cudaMemcpyHostToDevice, stream_), "chain params");
-    // the first draft: from the logits of the last forward() row (mtp_logits_ must hold it)
+    // the first draft: from the logits of the last forward() row (chain_logits_ holds it)
     auto draft_step = [&] {   // the draft for position dp[1] + 1 into amax_dev_[1]
         if (sampled_) sample::draft_row(chain_logits_, vocab(), dcfg_dev_, chain_dp_, ids_dev, amax_dev_, q_ids_, q_p_, q_n_, stream_);
         else {
@@ -538,13 +537,15 @@ std::vector<int32_t> MtpHead::draft_chain(int row, int pos, int k) {
         }
         if (!graph) {   // one chained step: forward at (dp[0], dp[1]), its draft, the bookkeeping, h for the next
             qsa_scratch_reserve(s_, dec_.scratch, 1, kv_.capacity / s_.qsa_block);
-            cudaGraph_t g = nullptr;
-            ck(cudaStreamBeginCapture(stream_, cudaStreamCaptureModeThreadLocal), "begin MTP capture");
-            enqueue(h_in_, nullptr, 1, 0, 0, chain_logits_, chain_dp_);
-            draft_step();
-            k_chain_next<<<1, 1, 0, stream_>>>(amax_dev_, chain_dp_, chain_drafts_);
-            ck(cudaMemcpyAsync(h_in_, x_, size_t(hc) * n * 4, cudaMemcpyDeviceToDevice, stream_), "chain h");
-            ck(cudaStreamEndCapture(stream_, &g), "end MTP capture");
+            cudaGraph_t g = capture_graph(
+                stream_,
+                [&] {
+                    enqueue(h_in_, nullptr, 1, 0, 0, chain_logits_, chain_dp_);
+                    draft_step();
+                    k_chain_next<<<1, 1, 0, stream_>>>(amax_dev_, chain_dp_, chain_drafts_);
+                    ck(cudaMemcpyAsync(h_in_, x_, size_t(hc) * n * 4, cudaMemcpyDeviceToDevice, stream_), "chain h");
+                },
+                "MTP capture");
             ck(cudaGraphInstantiate(&graph, g, 0), "instantiate MTP graph");
             cudaGraphDestroy(g);
             chain_scratch_version_ = dec_.scratch.version;

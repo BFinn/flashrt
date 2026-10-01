@@ -3,7 +3,8 @@
 // file (the P1 correctness gate), on the same tokens and chunks.
 //
 //   fr_kld MODEL.gguf BASE.bin [--ctx N] [--chunks K] [--batch B] [--fast] [--reserve-mib R] [--static-cache]
-//          [--pcie-frac F] [--kv q8] [--kv-hot BLOCKS] [--window W] [--prefill-chunk C]
+//          [--pcie-frac F] [--kv q8|f16] [--kv-hot BLOCKS] [--window W] [--prefill-chunk C]
+//          [--swap-budget N] [--cache-seed-scale S]
 //
 // The base file holds: the magic "_logits_", int32 ctx, int32 n_vocab, int32 n_chunk, the
 // tokens of all chunks (n_chunk * ctx int32), then for every chunk the scored positions ctx/2 .. ctx-2, each as a float scale and a
@@ -42,15 +43,26 @@
 #include <numeric>
 #include <random>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 using namespace flashrt;
 using namespace flashrt::qwen4exp;
 
+namespace {
+// CUDA errors end the run: a failed call must not leave stale tokens or logits behind a number
+void ck(cudaError_t e, const char* what) {
+    if (e != cudaSuccess) throw std::runtime_error(std::string(what) + ": " + cudaGetErrorString(e));
+}
+}  // namespace
+
 int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IOLBF, 0);   // keep the log if the process dies
     if (argc < 3) {
-        std::fprintf(stderr, "usage: fr_kld MODEL.gguf BASE.bin --ctx N [--chunks K] [--batch B]\n");
+        std::fprintf(stderr,
+                     "usage: fr_kld MODEL.gguf BASE.bin [--ctx N] [--chunks K] [--batch B] [--fast] [--reserve-mib R] [--static-cache]\n"
+                     "       [--pcie-frac F] [--kv q8|f16] [--kv-hot BLOCKS] [--window W] [--prefill-chunk C]\n"
+                     "       [--swap-budget N] [--cache-seed-scale S]\n");
         return 2;
     }
     int ctx = 0, chunks = 0, batch = 64, reserve_mib = 1024;
@@ -60,7 +72,13 @@ int main(int argc, char** argv) {
     int kv_hot = 0, window = 0, pchunk = 0;
     CachePolicyConfig pol;   // the adaptive cache (--swap-budget, --cache-seed-scale)
     for (int i = 3; i < argc; ++i) {
-        auto next = [&]() -> const char* { return i + 1 < argc ? argv[++i] : "0"; };
+        auto next = [&]() -> const char* {   // a flag without its value is an error, not 0
+            if (i + 1 >= argc) {
+                std::fprintf(stderr, "%s needs a value\n", argv[i]);
+                std::exit(2);
+            }
+            return argv[++i];
+        };
         if (!std::strcmp(argv[i], "--ctx")) ctx = std::atoi(next());
         else if (!std::strcmp(argv[i], "--chunks")) chunks = std::atoi(next());
         else if (!std::strcmp(argv[i], "--batch")) batch = std::atoi(next());
@@ -68,7 +86,11 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--reserve-mib")) reserve_mib = std::atoi(next());
         else if (!std::strcmp(argv[i], "--static-cache")) adaptive = false;
         else if (!std::strcmp(argv[i], "--pcie-frac")) pcie_frac = float(std::atof(next()));
-        else if (!std::strcmp(argv[i], "--kv")) kv_q8 = !std::strcmp(next(), "q8");
+        else if (!std::strcmp(argv[i], "--kv")) {
+            const char* v = next();
+            if (std::strcmp(v, "q8") && std::strcmp(v, "f16")) { std::fprintf(stderr, "--kv takes q8 or f16, not %s\n", v); return 2; }
+            kv_q8 = !std::strcmp(v, "q8");
+        }
         else if (!std::strcmp(argv[i], "--kv-hot")) kv_hot = std::atoi(next());
         else if (!std::strcmp(argv[i], "--window")) window = std::atoi(next());
         else if (!std::strcmp(argv[i], "--prefill-chunk")) pchunk = std::atoi(next());
@@ -113,7 +135,7 @@ int main(int argc, char** argv) {
 
     float* logits_dev = nullptr;
     const int pstep = pchunk > 0 ? pchunk : batch;   // prefill step
-    cudaMalloc(&logits_dev, size_t(std::max(batch, pstep)) * n_vocab * 4);
+    ck(cudaMalloc(&logits_dev, size_t(std::max(batch, pstep)) * n_vocab * 4), "cudaMalloc");
     std::vector<float> logits(size_t(std::max(batch, pstep)) * n_vocab);
     std::vector<uint16_t> base(nv);
     std::vector<double> klds;
@@ -153,9 +175,11 @@ int main(int argc, char** argv) {
             if (fast && p0 == first && !cache.slots) {   // the prefill is done: fill the cache, start the fast path
                 fwd.release_chunk_buffers();   // the expert cache takes that VRAM
                 size_t free_b = 0, total_b = 0;
-                cudaMemGetInfo(&free_b, &total_b);
+                ck(cudaMemGetInfo(&free_b, &total_b), "cudaMemGetInfo");
                 const size_t eb = q2_0::expert_bytes({s.d_model, s.d_ff_expert});
-                const int slots = int((free_b - size_t(reserve_mib) * 1048576) / eb);
+                const size_t keep = size_t(reserve_mib) << 20;
+                if (free_b < keep + 256 * eb) throw std::runtime_error("not enough VRAM left for the expert cache");
+                const int slots = int((free_b - keep) / eb);
                 std::vector<uint32_t>& cnt = fwd.counts();
                 std::vector<int> idx(cnt.size());
                 std::iota(idx.begin(), idx.end(), 0);
@@ -196,7 +220,7 @@ int main(int argc, char** argv) {
             }
             if (lo > hi) continue;
             const int R = T - out_from;
-            cudaMemcpy(logits.data(), logits_dev, size_t(R) * n_vocab * 4, cudaMemcpyDeviceToHost);
+            ck(cudaMemcpy(logits.data(), logits_dev, size_t(R) * n_vocab * 4, cudaMemcpyDeviceToHost), "cudaMemcpy");
             for (int p = lo; p <= hi; ++p) {
                 const float* lg = logits.data() + size_t(p - lo) * n_vocab;
                 const long rec = long(ch) * n_scored + (p - first);

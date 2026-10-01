@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "arch/qwen4exp/forward.hpp"
+#include "arch/qwen4exp/graph_capture.hpp"
 
 #include "core/formats.hpp"
 #include "core/gguf.hpp"
@@ -10,6 +11,7 @@
 #include <cstdio>
 #include <cstring>
 #include <future>
+#include <memory>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -96,50 +98,49 @@ void Forward::load_state(const std::string& path) { state_file(path, false); }
 
 void Forward::state_file(const std::string& path, bool save) {
     ck(cudaStreamSynchronize(stream_), "state");
-    FILE* f = std::fopen(path.c_str(), save ? "wb" : "rb");
+    std::unique_ptr<FILE, int (*)(FILE*)> fh(std::fopen(path.c_str(), save ? "wb" : "rb"), std::fclose);
+    FILE* f = fh.get();
     if (!f) throw std::runtime_error("cannot open state file " + path);
     const Spec& s = s_;
     // header: magic, n_layer, pos, n_counts, and (version 2) the KV format (0 fp16, 1 q8)
     const int64_t magic1 = kStateMagicV1, magic2 = kStateMagicV2;
     const bool q8 = kv_[s.qsa_layers.front()].q8;
     bool file_q8 = q8;
+    int pos = pos_;   // a load takes effect only once the whole file has been read
     if (save) {
         const int64_t hdr[5] = {magic2, s.n_layer, pos_, int64_t(counts_.size()), q8 ? 1 : 0};
-        std::fwrite(hdr, sizeof(hdr), 1, f);
+        if (std::fwrite(hdr, sizeof(hdr), 1, f) != 1) throw std::runtime_error("state file write failed: " + path);
     } else {
         int64_t h[5] = {0, 0, 0, 0, 0};
         const bool ok4 = std::fread(h, sizeof(int64_t), 4, f) == 4;
         if (ok4 && h[0] == magic2 && std::fread(&h[4], sizeof(int64_t), 1, f) != 1) h[0] = 0;
-        if (!ok4 || (h[0] != magic1 && h[0] != magic2) || h[1] != s.n_layer || h[3] != int64_t(counts_.size())) {
-            std::fclose(f);
+        if (!ok4 || (h[0] != magic1 && h[0] != magic2) || h[1] != s.n_layer || h[3] != int64_t(counts_.size()))
             throw std::runtime_error("state file does not match this model");
-        }
         file_q8 = h[0] == magic2 && h[4] == 1;
-        if (file_q8 && !q8) {
-            std::fclose(f);
-            throw std::runtime_error("state file has a q8 KV cache; this cache is fp16");
+        if (file_q8 && !q8) throw std::runtime_error("state file has a q8 KV cache; this cache is fp16");
+        if (h[2] < 0 || h[2] > kv_[s.qsa_layers.front()].capacity)
+            throw std::runtime_error("state file holds " + std::to_string(h[2]) + " positions; the KV capacity is " +
+                                     std::to_string(kv_[s.qsa_layers.front()].capacity));
+        pos = int(h[2]);
+    }
+    try {
+        std::vector<uint8_t> bounce;
+        const int gch = 2 * s.ssm_groups * s.ssm_state + s.ssm_heads * s.ssm_state;
+        for (int il : s.gdn_layers) {
+            state_io(f, gdn_[il].S, size_t(s.ssm_heads) * s.ssm_state * s.ssm_state * 4, save, bounce);
+            state_io(f, gdn_[il].conv, size_t(s.ssm_conv - 1) * gch * 4, save, bounce);
         }
-        pos_ = int(h[2]);
-        if (pos_ > kv_[s.qsa_layers.front()].capacity) {
-            std::fclose(f);
-            throw std::runtime_error("state file holds more positions than the KV capacity");
-        }
+        for (int il : s.qsa_layers) qsa_state_io(f, s, kv_[il], pos, save, file_q8, stream_);
+        for (int il : s.ple_layers) state_io(f, ple_state_[il].hist, size_t(ple_.ngram) * 3 * size_t(s.hc_count) * s.d_model * 4 + 4, save, bounce);
+        if (save ? std::fwrite(counts_.data(), 4, counts_.size(), f) != counts_.size()
+                 : std::fread(counts_.data(), 4, counts_.size(), f) != counts_.size())
+            throw std::runtime_error(save ? "state file write failed: " + path : "state file truncated: " + path);
+    } catch (...) {
+        if (!save) reset();   // half a state is no state
+        throw;
     }
-    std::vector<uint8_t> bounce;
-    const int gch = 2 * s.ssm_groups * s.ssm_state + s.ssm_heads * s.ssm_state;
-    for (int il : s.gdn_layers) {
-        state_io(f, gdn_[il].S, size_t(s.ssm_heads) * s.ssm_state * s.ssm_state * 4, save, bounce);
-        state_io(f, gdn_[il].conv, size_t(s.ssm_conv - 1) * gch * 4, save, bounce);
-    }
-    for (int il : s.qsa_layers) qsa_state_io(f, s, kv_[il], pos_, save, file_q8, stream_);
-    for (int il : s.ple_layers) state_io(f, ple_state_[il].hist, size_t(ple_.ngram) * 3 * size_t(s.hc_count) * s.d_model * 4 + 4, save, bounce);
-    if (save) {
-        std::fwrite(counts_.data(), 4, counts_.size(), f);
-    } else if (std::fread(counts_.data(), 4, counts_.size(), f) != counts_.size()) {
-        std::fclose(f);
-        throw std::runtime_error("state file truncated");
-    }
-    std::fclose(f);
+    if (std::fclose(fh.release()) != 0 && save) throw std::runtime_error("state file write failed: " + path);
+    if (!save) pos_ = pos;
 }
 
 int32_t Forward::argmax(const float* logits_row_dev) {
@@ -355,11 +356,8 @@ Forward::Graphs& Forward::capture_graphs(int T, float* logits_dev) {
         throw std::runtime_error("capture_graphs: the PLE buffers are smaller than the step");
     const BlockCtx cg{s_, w_, dec_.scratch, stream_, params_dev_};
     auto capture = [&](auto&& body) {
-        cudaGraph_t g = nullptr;
+        cudaGraph_t g = capture_graph(stream_, body, "capture");
         cudaGraphExec_t ge = nullptr;
-        ck(cudaStreamBeginCapture(stream_, cudaStreamCaptureModeThreadLocal), "begin capture");
-        body();
-        ck(cudaStreamEndCapture(stream_, &g), "end capture");
         ck(cudaGraphInstantiate(&ge, g, 0), "instantiate graph");
         cudaGraphDestroy(g);
         return ge;
@@ -415,7 +413,7 @@ void Forward::release_chunk_buffers() {
     look_seq_ = nullptr;
     look_n_ = 0;
     if (x_ == chunk_.x) use_bufs(dec_);
-    cudaStreamSynchronize(stream_);
+    ck(cudaStreamSynchronize(stream_), "prefill end");   // a fault in the prefill surfaces here, not later
     for (int il : s_.qsa_layers) qsa_mirror_end(kv_[il]);
     free_bufs(chunk_);
     destroy_expert_stream(estream_);

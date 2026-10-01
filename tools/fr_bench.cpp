@@ -71,12 +71,20 @@
 #include <map>
 #include <memory>
 #include <numeric>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
 using namespace flashrt;
 using namespace flashrt::qwen4exp;
 using Clock = std::chrono::steady_clock;
+
+namespace {
+// CUDA errors end the run: a failed call must not leave stale tokens or logits behind a number
+void ck(cudaError_t e, const char* what) {
+    if (e != cudaSuccess) throw std::runtime_error(std::string(what) + ": " + cudaGetErrorString(e));
+}
+}  // namespace
 
 int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IOLBF, 0);   // keep the log if the process dies
@@ -108,7 +116,13 @@ int main(int argc, char** argv) {
     int spin_us = 2000;
     for (int i = 2; i < argc; ++i) {
         const std::string a = argv[i];
-        auto next = [&]() -> const char* { return i + 1 < argc ? argv[++i] : ""; };
+        auto next = [&]() -> const char* {   // a flag without its value is an error, not 0
+            if (i + 1 >= argc) {
+                std::fprintf(stderr, "%s needs a value\n", argv[i]);
+                std::exit(2);
+            }
+            return argv[++i];
+        };
         if (a == "--ids") ids_path = next();
         else if (a == "--n-prompt") n_prompt = std::atoi(next());
         else if (a == "--gen") gen = std::atoi(next());
@@ -131,7 +145,11 @@ int main(int argc, char** argv) {
         else if (a == "--save-state") save_state = next();
         else if (a == "--no-q3r") q3r = false;
         else if (a == "--no-graphs") graphs = false;
-        else if (a == "--kv") kv_q8 = std::string(next()) == "q8";
+        else if (a == "--kv") {
+            const std::string v = next();
+            if (v != "q8" && v != "f16") { std::fprintf(stderr, "--kv takes q8 or f16, not %s\n", v.c_str()); return 2; }
+            kv_q8 = v == "q8";
+        }
         else if (a == "--kv-hot") kv_hot = std::atoi(next());
         else if (a == "--count-half-life") half_life = std::atoi(next());
         else if (a == "--load-state") load_state = next();
@@ -175,6 +193,11 @@ int main(int argc, char** argv) {
 
     const Gguf g = Gguf::open(argv[1]);
     const Spec s = parse(g);
+    for (const int32_t t : text)   // an id outside the vocabulary would read past the embedding table
+        if (t < 0 || t >= s.n_vocab) {
+            std::fprintf(stderr, "token id %d in %s is outside the vocabulary (%d)\n", t, ids_path.c_str(), s.n_vocab);
+            return 1;
+        }
     const WeightPlan plan = qwen4exp::plan(g, s);
     GpuWeights w;
     w.load(g, plan, q3r);
@@ -197,16 +220,16 @@ int main(int argc, char** argv) {
                 kv_hot > 0 ? (", host-resident, hot set of " + std::to_string(kv_hot) + " blocks per layer").c_str() : "");
 
     float* logits_dev = nullptr;
-    cudaMalloc(&logits_dev, size_t(s.n_vocab) * 4);
+    ck(cudaMalloc(&logits_dev, size_t(s.n_vocab) * 4), "cudaMalloc");
     int32_t *tok_dev = nullptr, *tok_host = nullptr;
-    cudaMalloc(&tok_dev, 64 * 4);
-    cudaHostAlloc(&tok_host, 64 * 4, cudaHostAllocDefault);
+    ck(cudaMalloc(&tok_dev, 64 * 4), "cudaMalloc");
+    ck(cudaHostAlloc(&tok_host, 64 * 4, cudaHostAllocDefault), "cudaHostAlloc");
     // the tokens of rows [0, R) of logits, rows at positions pos0 .. (greedy: argmax)
     // (--teacher: the ids file's own tokens at those positions instead, so every run routes alike)
     auto pick = [&](const float* lg, int R, int64_t pos0) {
         sample::sample_rows(lg, R, s.n_vocab, sp, seed, pos0, tok_dev, fwd.stream());
-        cudaMemcpyAsync(tok_host, tok_dev, size_t(R) * 4, cudaMemcpyDeviceToHost, fwd.stream());
-        cudaStreamSynchronize(fwd.stream());
+        ck(cudaMemcpyAsync(tok_host, tok_dev, size_t(R) * 4, cudaMemcpyDeviceToHost, fwd.stream()), "cudaMemcpyAsync");
+        ck(cudaStreamSynchronize(fwd.stream()), "cudaStreamSynchronize");
         std::vector<int32_t> y(tok_host, tok_host + R);
         if (teacher)
             for (int j = 0; j < R; ++j) y[j] = text[size_t(pos0) + j];
@@ -217,8 +240,8 @@ int main(int argc, char** argv) {
     // number of drafts kept (the first rejection's residual sample, or the last row's sample)
     auto spec_pick = [&](const float* lg, int R, int64_t pos0, const MtpHead& head, int& a) {
         sample::spec_verify(lg, R, s.n_vocab, sp, seed, pos0, head.drafts_dev(), head.q_ids(), head.q_p(), head.q_n(), tok_dev, fwd.stream());
-        cudaMemcpyAsync(tok_host, tok_dev, size_t(2 * R) * 4, cudaMemcpyDeviceToHost, fwd.stream());
-        cudaStreamSynchronize(fwd.stream());
+        ck(cudaMemcpyAsync(tok_host, tok_dev, size_t(2 * R) * 4, cudaMemcpyDeviceToHost, fwd.stream()), "cudaMemcpyAsync");
+        ck(cudaStreamSynchronize(fwd.stream()), "cudaStreamSynchronize");
         a = 0;
         while (a < R - 1 && tok_host[R + a]) ++a;
         return std::vector<int32_t>(tok_host, tok_host + a + 1);
@@ -241,10 +264,10 @@ int main(int argc, char** argv) {
         g_mtp = std::make_unique<Gguf>(Gguf::open(mtp_path));
         mtp = std::make_unique<MtpHead>(*g_mtp, s, w, fwd.stream(), n_prompt + windows * gen + 16 + draft_k, 64, kv_q8 || kv_hot > 0, kv_hot,
                                         mtp_bits);
-        cudaMalloc(&h_carry, hrow * 4);
-        cudaMemset(h_carry, 0, hrow * 4);
-        cudaMalloc(&h_buf, 64 * hrow * 4);
-        cudaMalloc(&mtp_logits, size_t(s.n_vocab) * 4);
+        ck(cudaMalloc(&h_carry, hrow * 4), "cudaMalloc");
+        ck(cudaMemset(h_carry, 0, hrow * 4), "cudaMemset");
+        ck(cudaMalloc(&h_buf, 64 * hrow * 4), "cudaMalloc");
+        ck(cudaMalloc(&mtp_logits, size_t(s.n_vocab) * 4), "cudaMalloc");
         std::printf("MTP draft head: layer %d, %.0f MiB of weights in VRAM, %d drafts %s\n", mtp->layer(),
                     mtp->weight_bytes() / 1048576.0, draft_k, spec_k > 0 ? "per verify round" : "per token (probe)");
     }
@@ -255,19 +278,19 @@ int main(int argc, char** argv) {
             const int Tj = std::min(64, T - j);
             const float* h = fwd.streams() + size_t(j - 1) * hrow;   // rows j-1 .. j+Tj-2
             if (j == 0) {
-                cudaMemcpyAsync(h_buf, h_carry, hrow * 4, cudaMemcpyDeviceToDevice, st);
-                if (Tj > 1) cudaMemcpyAsync(h_buf + hrow, fwd.streams(), size_t(Tj - 1) * hrow * 4, cudaMemcpyDeviceToDevice, st);
+                ck(cudaMemcpyAsync(h_buf, h_carry, hrow * 4, cudaMemcpyDeviceToDevice, st), "cudaMemcpyAsync");
+                if (Tj > 1) ck(cudaMemcpyAsync(h_buf + hrow, fwd.streams(), size_t(Tj - 1) * hrow * 4, cudaMemcpyDeviceToDevice, st), "cudaMemcpyAsync");
                 h = h_buf;
             }
             mtp->forward(h, seq.data() + p0 + j, Tj, p0 + j, Tj, nullptr);
         }
-        cudaMemcpyAsync(h_carry, fwd.streams() + size_t(T - 1) * hrow, hrow * 4, cudaMemcpyDeviceToDevice, st);
+        ck(cudaMemcpyAsync(h_carry, fwd.streams() + size_t(T - 1) * hrow, hrow * 4, cudaMemcpyDeviceToDevice, st), "cudaMemcpyAsync");
     };
 
     // prefill
     {
         size_t fr = 0, tot = 0;
-        cudaMemGetInfo(&fr, &tot);
+        ck(cudaMemGetInfo(&fr, &tot), "cudaMemGetInfo");
         std::printf("VRAM before prefill: %zu MiB free\n", fr >> 20);
         if (chunk == 0) {
             chunk = fwd.pick_chunk(n_prompt, n_prompt, fr);
@@ -323,7 +346,7 @@ int main(int argc, char** argv) {
     }
     if (chunk > 64) {   // what the chunk path held at its peak (sizes the chunk for a depth)
         size_t fr = 0, tot = 0;
-        cudaMemGetInfo(&fr, &tot);
+        ck(cudaMemGetInfo(&fr, &tot), "cudaMemGetInfo");
         std::printf("VRAM after prefill: %zu MiB used, %zu MiB free (chunk buffers %zu MiB)\n", (tot - fr) >> 20, fr >> 20,
                     fwd.chunk_buffer_bytes() >> 20);
     }
@@ -363,9 +386,13 @@ int main(int argc, char** argv) {
     CacheManager* mgr = nullptr;
     if (!reference) {
         size_t free_b = 0, total_b = 0;
-        cudaMemGetInfo(&free_b, &total_b);
+        ck(cudaMemGetInfo(&free_b, &total_b), "cudaMemGetInfo");
         const size_t eb = q2_0::expert_bytes({s.d_model, s.d_ff_expert});
-        if (slots <= 0) slots = int((free_b - size_t(reserve_mib) * 1048576) / eb);
+        if (slots <= 0) {
+            const size_t keep = size_t(reserve_mib) << 20;
+            if (free_b < keep + 256 * eb) throw std::runtime_error("not enough VRAM left for the expert cache");
+            slots = int((free_b - keep) / eb);
+        }
         const std::vector<uint32_t> cnt = fwd.fill_counts(tail_weight);
         std::vector<int> idx(cnt.size());
         std::iota(idx.begin(), idx.end(), 0);
@@ -412,9 +439,9 @@ int main(int argc, char** argv) {
     // speculative decoding state: the MTP rows still to run (positions p - pend + 1 .. p, their h
     // in h_buf), and statistics
     int pend = 1;
-    if (spec_k > 0) cudaMemcpy(h_buf, h_carry, hrow * 4, cudaMemcpyDeviceToDevice);
+    if (spec_k > 0) ck(cudaMemcpy(h_buf, h_carry, hrow * 4, cudaMemcpyDeviceToDevice), "cudaMemcpy");
     float* logits_win = nullptr;
-    if (spec_k > 0) cudaMalloc(&logits_win, size_t(spec_k + 1) * s.n_vocab * 4);
+    if (spec_k > 0) ck(cudaMalloc(&logits_win, size_t(spec_k + 1) * s.n_vocab * 4), "cudaMalloc");
     std::vector<long> acc_hist(spec_k + 1, 0);
     long rounds = 0, drafted = 0;
     double draft_s = 0, verify_s = 0, commit_s = 0;
@@ -558,7 +585,7 @@ int main(int argc, char** argv) {
                 mtp->forward(h_buf, seq.data() + p - pend + 1, pend, p - pend + 1, pend - 1, mtp->chain_logits());
                 if (accept_probe) {
                     pr_q.resize(size_t(mtp->vocab()));
-                    cudaMemcpy(pr_q.data(), mtp->chain_logits(), pr_q.size() * 4, cudaMemcpyDefault);
+                    ck(cudaMemcpy(pr_q.data(), mtp->chain_logits(), pr_q.size() * 4, cudaMemcpyDefault), "cudaMemcpy");
                 }
                 const std::vector<int32_t> dr = mtp->draft_chain(pend - 1, p + 1, spec_k);
                 win.insert(win.end(), dr.begin(), dr.end());
@@ -573,7 +600,7 @@ int main(int argc, char** argv) {
             std::vector<int32_t> y_s;
             if (sampled) y_s = spec_pick(logits_win, kd + 1, p + 1, *mtp, a_s);
             if (accept_probe && draft_pmin <= 0) {
-                cudaMemcpy(pr_t.data(), logits_win, pr_t.size() * 4, cudaMemcpyDefault);
+                ck(cudaMemcpy(pr_t.data(), logits_win, pr_t.size() * 4, cudaMemcpyDefault), "cudaMemcpy");
                 const std::vector<int32_t>& vid = mtp->vocab_ids();
                 auto tok = [&](int i) { return vid.empty() ? i : vid[size_t(i)]; };
                 std::vector<std::pair<int, double>> pd, qc;
@@ -613,7 +640,7 @@ int main(int argc, char** argv) {
             // 3. keep x_p, d1 .. da; emit y_0 .. y_a
             const auto t2 = Clock::now();
             fwd.commit(a + 1);
-            cudaMemcpyAsync(h_buf, fwd.streams(), size_t(a + 1) * hrow * 4, cudaMemcpyDeviceToDevice, fwd.stream());
+            ck(cudaMemcpyAsync(h_buf, fwd.streams(), size_t(a + 1) * hrow * 4, cudaMemcpyDeviceToDevice, fwd.stream()), "cudaMemcpyAsync");
             pend = a + 1;
             for (int j = 0; j <= a; ++j) {
                 seq.push_back(y[j]);
@@ -650,7 +677,7 @@ int main(int argc, char** argv) {
                 mtp_s += std::chrono::duration<double>(Clock::now() - tm).count();
             }
             fwd.forward(seq.data(), 1, 0, logits_dev);
-            if (mtp) cudaMemcpyAsync(h_carry, fwd.streams(), hrow * 4, cudaMemcpyDeviceToDevice, fwd.stream());
+            if (mtp) ck(cudaMemcpyAsync(h_carry, fwd.streams(), hrow * 4, cudaMemcpyDeviceToDevice, fwd.stream()), "cudaMemcpyAsync");
             seq.push_back(argmax());
             out.push_back(seq.back());
             if (!reference && !trace_path.empty())

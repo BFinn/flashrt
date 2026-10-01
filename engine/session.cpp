@@ -252,6 +252,7 @@ struct Session::Impl {
         ck(cudaMemGetInfo(&free_b, &total_b), "cudaMemGetInfo");
         const size_t eb = cache.slot_bytes, keep = size_t(o.reserve_mib) << 20;
         const int slots = int(std::min<size_t>(size_t(cache.owner.size()), (free_b - std::min(free_b, keep)) / eb));
+        if (slots < 256) throw std::runtime_error("not enough VRAM left to rebuild the expert cache after the prefill");
         ck(cudaMalloc(&cache.slots, size_t(slots) * eb + gemv::kWeightTailPad), "cudaMalloc expert cache");
         ck(cudaMemset(cache.slots, 0, size_t(slots) * eb + gemv::kWeightTailPad), "memset expert cache");
         cache.n_slots = slots;

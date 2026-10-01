@@ -212,7 +212,7 @@ if(FLASHRT_CUDA)
   target_link_libraries(test_spec_sample PRIVATE flashrt_qwen4exp_gpu flashrt_gemv flashrt_ggml_stubs)
   add_test(NAME spec_sample COMMAND test_spec_sample)
   # these need the GPU; CI compiles them and runs `ctest -L cpu`
-  set_tests_properties(moe_hits moe_q gemm gdn gdn_decode linear_multi hc_decode route_topk idx_select moe_q2 mtp_convert sample spec_sample PROPERTIES LABELS gpu)
+  set_tests_properties(moe_hits moe_q gemm gdn gdn_decode linear_multi hc_decode route_topk idx_select argmax moe_q2 mtp_convert sample spec_sample PROPERTIES LABELS gpu)
   if(FLASHRT_LLAMA_DIR)
     set_tests_properties(gemv PROPERTIES LABELS gpu)
   endif()

@@ -246,8 +246,6 @@ void qsa_select(const float* scores, int ld, int32_t* cells, int32_t* counts, in
 // slot position % qsa_block). file_q8 is the file's KV format; an fp16 file loads into a q8
 // cache (converted on the GPU), not the other way.
 void qsa_state_io(FILE* f, const Spec& s, QsaCache& kv, int pos, bool save, bool file_q8, cudaStream_t stream);
-// Bytes of one cell's K (or V) over all KV heads, values plus scales.
-size_t qsa_cell_bytes(const Spec& s, bool q8);
 void free_qsa_cache(QsaCache& kv);
 
 // QSA mixer for T consecutive tokens at positions pos0 .. pos0+T-1: projections, q/k RMS

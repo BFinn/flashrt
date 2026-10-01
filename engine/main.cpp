@@ -2,8 +2,10 @@
 // flashrt-engine: the engine process. Speaks the JSON-lines protocol of docs/design.md on stdin
 // and stdout (one object per line); logs go to stderr.
 //
-//   flashrt-engine MODEL.gguf [--mtp DRAFT.gguf [--spec K] [--draft-vocab RANKS] [--mtp-bits B]]
-//                  [--ctx N] [--kv-hot BLOCKS] [--kv f16|q8] [--workers W] [--reserve-mib R] [--cache-prior FILE]
+//   flashrt-engine MODEL.gguf [--mtp DRAFT.gguf [--spec K] [--draft-vocab RANKS] [--draft-vocab-n N] [--mtp-bits B]]
+//                  [--ctx N] [--kv-hot BLOCKS] [--kv q8|f16 (f16 needs --kv-hot 0)] [--workers W] [--reserve-mib R]
+//                  [--swap-budget N] [--cache-admit A] [--cache-margin M] [--cache-seed-scale S]
+//                  [--cache-tail-tokens N --cache-tail-weight W] [--cache-prior FILE] [--cache-check]
 //                  [--prefill-chunk C (0: the longest that fits VRAM)] [--prefill-chunk-max C] [--chunk-min N]
 //                  [--ckpts N (host checkpoints for prefix reuse; 0: off)] [--ckpt-interval T] [--ckpt-tail T]
 //
@@ -118,14 +120,26 @@ GenerateRequest to_request(const Json& op) {
 int main(int argc, char** argv) {
     std::ios::sync_with_stdio(false);
     if (argc < 2) {
-        std::fprintf(stderr, "usage: flashrt-engine MODEL.gguf [--mtp DRAFT.gguf [--spec K] [--draft-vocab RANKS]] [--ctx N] ...\n");
+        std::fprintf(stderr,
+                     "usage: flashrt-engine MODEL.gguf [--mtp DRAFT.gguf [--spec K] [--draft-vocab RANKS] [--draft-vocab-n N] [--mtp-bits 2|4|8]]\n"
+                     "       [--ctx N] [--kv q8|f16] [--kv-hot BLOCKS] [--workers N] [--reserve-mib MIB]\n"
+                     "       [--swap-budget N] [--cache-admit A] [--cache-margin M] [--cache-seed-scale S]\n"
+                     "       [--cache-tail-tokens N --cache-tail-weight W] [--cache-prior FILE] [--cache-check]\n"
+                     "       [--prefill-chunk N] [--prefill-chunk-max N] [--chunk-min N] [--ckpts N] [--ckpt-interval N] [--ckpt-tail N]\n"
+                     "then JSON lines on stdin (docs/design.md, \"Engine protocol\")\n");
         return 2;
     }
     SessionOptions o;
     o.model = argv[1];
     for (int i = 2; i < argc; ++i) {
         const std::string a = argv[i];
-        auto next = [&]() -> const char* { return i + 1 < argc ? argv[++i] : ""; };
+        auto next = [&]() -> const char* {   // a flag without its value is an error, not 0
+            if (i + 1 >= argc) {
+                std::fprintf(stderr, "%s needs a value\n", argv[i]);
+                std::exit(2);
+            }
+            return argv[++i];
+        };
         if (a == "--mtp") o.mtp = next();
         else if (a == "--spec") o.spec_k = std::atoi(next());
         else if (a == "--draft-vocab") o.draft_vocab = next();
@@ -133,7 +147,11 @@ int main(int argc, char** argv) {
         else if (a == "--mtp-bits") o.mtp_bits = std::atoi(next());
         else if (a == "--ctx") o.max_ctx = std::atoi(next());
         else if (a == "--kv-hot") o.kv_hot = std::atoi(next());
-        else if (a == "--kv") o.kv_q8 = std::string(next()) == "q8";
+        else if (a == "--kv") {
+            const std::string v = next();
+            if (v != "q8" && v != "f16") { std::fprintf(stderr, "--kv takes q8 or f16, not %s\n", v.c_str()); return 2; }
+            o.kv_q8 = v == "q8";
+        }
         else if (a == "--workers") o.workers = std::atoi(next());
         else if (a == "--reserve-mib") o.reserve_mib = std::atoi(next());
         else if (a == "--swap-budget") o.swap_budget = std::atoi(next());
@@ -151,6 +169,10 @@ int main(int argc, char** argv) {
         else if (a == "--ckpt-tail") o.ckpt_tail = std::atoi(next());
         else if (a == "--cache-check") o.cache_check = true;
         else { std::fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
+    }
+    if (!o.kv_q8 && o.kv_hot > 0) {   // the hot set keeps the KV in host RAM as q8
+        std::fprintf(stderr, "--kv f16 needs --kv-hot 0 (the hot set's host KV is q8)\n");
+        return 2;
     }
     std::unique_ptr<Session> session;
     try {
@@ -208,7 +230,11 @@ int main(int argc, char** argv) {
         {
             std::unique_lock<std::mutex> lk(q.mu);
             q.cv.wait(lk, [&] { return q.quit || !q.ops.empty(); });
-            if (q.ops.empty()) break;   // quit
+            if (q.quit) {   // quit (or stdin closed): the running request was cancelled; drop the queued ones
+                for (const Json& queued : q.ops) emit(event("done", queued["id"].str()).set("generated", 0).set("finish", "cancelled"));
+                q.ops.clear();
+                break;
+            }
             op = std::move(q.ops.front());
             q.ops.pop_front();
             q.running = op["id"].str();

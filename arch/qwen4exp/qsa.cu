@@ -24,7 +24,7 @@ namespace {
 // at position pos0 + token; src rows are `src_stride` floats apart per token and `head_stride`
 // per head, dst is [T][heads][dim]
 
-// round_fp16: store values rounded to fp16 (the KV cache format of the parity reference)
+// store_out: a float as is, or rounded to fp16 (the KV cache format of the parity reference)
 __device__ __forceinline__ void store_out(float* p, float v) { *p = v; }
 __device__ __forceinline__ void store_out(__half* p, float v) { *p = __float2half(v); }
 
@@ -1125,11 +1125,6 @@ void qsa_state_io(FILE* f, const Spec& s, QsaCache& kv, int pos, bool save, bool
         for (int p = std::max(0, pos - r); p < pos; ++p) std::memcpy(&ring[size_t(p % R) * row], &file[size_t(p % r) * row], row);
         ck(cudaMemcpy(kv.idx_ring, ring.data(), ring.size(), cudaMemcpyHostToDevice), "ring to device");
     }
-}
-
-size_t qsa_cell_bytes(const Spec& s, bool q8) {
-    const size_t n = size_t(s.n_head_kv) * s.head_dim_k;
-    return q8 ? n + n / 32 * 2 : n * 2;
 }
 
 void qsa_mirror_begin(const Spec& s, QsaCache& kv, int pos, int cells, cudaStream_t stream) {
