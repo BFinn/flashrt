@@ -1,0 +1,9 @@
+.git
+build
+bench-out
+server/target
+bench/results
+docs/feedback
+CLAUDE.local.md
+.scrub.local
+.codegraph

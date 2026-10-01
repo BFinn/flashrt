@@ -1,0 +1,18 @@
+# The container build (Dockerfile) on GitHub's runners: no GPU, so it proves the image builds,
+# that the binaries start, and that they find their libraries. Runs when the container's inputs
+# change, and by hand.
+name: docker
+on:
+  push:
+    branches: [main]
+    paths: [Dockerfile, .dockerignore, .github/workflows/docker.yml, CMakeLists.txt, server/Cargo.lock]
+  workflow_dispatch:
+
+jobs:
+  image:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t flashrt .
+      - run: docker run --rm --entrypoint flashrt-server flashrt --help
+      - run: docker run --rm --entrypoint sh flashrt -c 'ldd /opt/flashrt/bin/flashrt-engine | grep "not found" && exit 1 || true'
