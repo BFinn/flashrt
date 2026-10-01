@@ -2,14 +2,16 @@
 # SPDX-License-Identifier: Apache-2.0
 """Smoke test of flashrt-engine's JSON-lines protocol (docs/design.md), with token ids.
 
-Runs four requests against one engine process and prints each one's events summary:
+Runs four requests against one engine process, prints each one's events summary and checks
+what each must show (exits 1 when a check fails):
   1. a prompt of N tokens from an ids file;
   2. that prompt plus the tokens request 1 generated plus a few more prompt tokens (the engine
      should reuse the whole previous sequence: "reused" close to the old length);
   3. request 2's prompt plus different tokens than request 2 generated (the engine should restore
      the checkpoint taken at the end of request 2's prompt: "reused" = that prompt's length);
   4. request 1's prompt with a "stop" sent after a few tokens (finish "cancelled"; it reuses a
-     host checkpoint from request 1's prefill, a chunk end).
+     host checkpoint from request 1's prefill, a chunk end);
+then "quit", after which the engine must exit with status 0.
 
 With --faults it instead checks that bad and failing requests leave the engine serving (the
 engine runs with FLASHRT_TEST_HOOKS=1). A greedy reference request A comes first; then:
@@ -103,25 +105,39 @@ def main():
                 print(f"{rid}: prompt {ev['prompt_tokens']} (reused {ev['reused']}) in {ev['prompt_ms'] / 1000:.1f} s, "
                       f"{ev['generated']} tokens in {dec:.2f} s ({ev['generated'] / max(dec, 1e-9):.1f} tok/s), finish {ev['finish']}, "
                       f"drafts {ev['drafts']}, first tokens {toks[:8]}")
-                return toks
+                return toks, ev
             elif ev.get("ev") == "error":
                 print(f"{rid}: error {ev['msg']}")
-                return toks
+                return toks, ev
 
     if a.faults:
         sys.exit(faults(a, ids, ready, p, read))
     if a.reuse:
         sys.exit(reuse(a, ids, p, read))
+    failed = []
+
+    def check(name, ok, detail):
+        print(f"{'PASS' if ok else 'FAIL'} {name}: {detail}")
+        if not ok:
+            failed.append(name)
+
     prompt1 = ids[:a.n]
-    t1 = run("r1", prompt1)
+    t1, e1 = run("r1", prompt1)
+    check("r1 generates", e1.get("ev") == "done" and e1["generated"] >= 1, f"{e1.get('generated')} tokens, finish {e1.get('finish')}")
     prompt2 = prompt1 + t1 + ids[a.n:a.n + 32]
-    run("r2", prompt2)
-    run("r3", prompt2 + ids[a.n + 32:a.n + 48])
-    run("r4", prompt1, stop_after=5)
+    _, e2 = run("r2", prompt2)
+    # the whole previous sequence: r1's prompt and its tokens but the last, which was sampled, not run
+    want2 = len(prompt1) + len(t1) - 1
+    check("r2 reuses the previous sequence", e2.get("reused") == want2, f"reused {e2.get('reused')}, want {want2}")
+    _, e3 = run("r3", prompt2 + ids[a.n + 32:a.n + 48])
+    check("r3 reuses r2's prompt", e3.get("reused") == len(prompt2), f"reused {e3.get('reused')}, want {len(prompt2)}")
+    _, e4 = run("r4", prompt1, stop_after=5)
+    check("r4 is cancelled", e4.get("finish") == "cancelled", f"finish {e4.get('finish')}")
     p.stdin.write(json.dumps({"op": "quit"}) + "\n")
     p.stdin.flush()
     p.wait(timeout=60)
-    print(f"engine exited with {p.returncode}")
+    check("quit", p.returncode == 0, f"engine exited with {p.returncode}")
+    sys.exit(1 if failed else 0)
 
 
 def compare_state(ref_top, ev, kl_tol):
