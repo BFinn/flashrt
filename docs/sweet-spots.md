@@ -121,6 +121,7 @@ Ranked by expected value. None of these has been implemented or measured end to 
 | ~~N-gram / prompt-lookup drafts stacked with the MTP head~~ | **Tried (sw115, simulated with measured window costs): −8% to +5% by text, about +1% on a code edit.** The head already keeps 100% of its drafts on copied code, and each extra window token costs a union of CPU misses (about 5 ms on code, 2 ms on 32K prose). | Windows that cost less per token would change it. | |
 | **Expert-cache warm-up for answers that route unlike the prompt** (done: sw100-sw109, window 9 with the head +8-25%, agent session +12%; left: uploads that cost less DRAM, or a prime that predicts the answer) | Up to the 1.5-9% gap to Strata at 32K-250K on window 9's protocol; per-turn in agent sessions (sw97: 73 tok/s at 44% hits, 125 at 86%) | sw99's simulator (`tools/cache_sim.py --policies engine`) reproduces the engine's hit rate: the loss is the first ~128 tokens, the optimum ~90%. Tail-weighted primes and generation priors trade one text against the other there. | Medium; try in the simulator first |
 | ~~The MTP head's pass over the prompt on the chunk path~~ | **Done: the head's KV mirror (sw98) and calls of 1,024 rows with grouped expert GEMMs (sw102): 131K prompt with the head 35.3 → 23.6 s; the head costs 5-7% of prefill at depth (was 27-60%)** | | |
+| **A larger KV hot set at depth** (fewer promotions over PCIe) | up to ~3% at 245K, less the slots it takes | `k_hot_copy` 31 µs per call at 245K, 12 per token (3.5% of GPU time, sw122), PCIe-bound. Each hot block costs VRAM the expert cache would use (about +0.3% speed per +1% of slots). | Small to try (`--kv-hot`); needs 6+ windows at 245K |
 | **Worker count per mode** (6 for one token, 8-11 for windows) | ~1-2% | Plain decode with 6 workers measured best but within noise (sw79). | Small. |
 | **The grouped window hit kernels** | Only zero-miss layers of verify rounds | 39 µs at T = 2 against 25 µs at T = 1 for the same 10 experts (`test_moe_hits`). | Small-medium. |
 | **GDN prep traffic** (raw Q/K^T per key group; V and T applied in the state step) | ~1-2% of prefill | Prep is DRAM-bound at ~70 MB per 512-token slab (sw71). | Medium. |
@@ -147,3 +148,7 @@ What remains:
 | `FLASHRT_MOE_AB64` | off | per-64 activation scales (faster, fails KLD) | sw57 |
 | `FLASHRT_HC_Q8` | down | hc matrices as Q8P (down; up costs KLD) | sw66-sw68 |
 | `FLASHRT_ARGMAX_DRAFTS` | off | `1`: argmax drafts in sampled runs (as `--argmax-drafts`) | sw85 |
+| `FLASHRT_ARGMAX_CLUSTER` | on | `0`: the one-CTA argmax (same output; 79 µs against 5 µs) | sw126 |
+| `FLASHRT_SELECT_CL1` | on | `0`: prefill sub-batches select on 8-CTA clusters as decode does (same output; prefill −11%) | sw127 |
+
+Both new toggles are exact and won; the next H-3 pass deletes them with their old paths.

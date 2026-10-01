@@ -207,11 +207,23 @@ In expected-value order. Each needs its KLD check and a `bench/results` folder.
    text and about +1% on a code edit: the head already predicts copied text, and long windows cost
    a union of CPU misses per token.
 4. **P-5:** multi-CTA `k_idx_select`, a parallel hot-set CLOCK, Q3R and LM-head bandwidth. A few
-   percent each at depth. **Done in part (sw120-sw124):** the selection on an 8-CTA cluster (245K
-   +9.9%) and the parallel CLOCK (+1.9%), both output-identical; an L2 prefetch of the next hc mix
-   was rejected (sw123), as were the mix's weights loaded under the miss wait (sw125: flat; the
-   mix's ceiling is ~3%, so the hc track is closed). Left: BF16 indexer keys (~2% at 245K,
-   output-changing), the hot-set copy (PCIe).
+   percent each at depth. **Done (sw120-sw128).**
+   - **Adopted:**
+     - the selection on an 8-CTA cluster for decode (245K +9.9%, sw121);
+     - the parallel CLOCK (+1.9%, sw122);
+     - the argmax on a cluster (79 → 5 µs, sw126);
+     - the indexer's pooled keys in fp16 (245K plain +4.4%, KLD within the band, sw126);
+     - the selection by depth for prefill sub-batches (sw127). This undid an unmeasured prefill loss
+       of sw121's (prefill +11.5-12%).
+   - **Rejected:** an L2 prefetch of the next hc mix (sw123), and the mix's weights loaded under
+     the miss wait (sw125). The hc track is closed: its ceiling is ~3%.
+   - **Closed without work:**
+     - The LM head runs at ~770 GB/s, at bandwidth (sw126 profile).
+     - Q3R runs at ~600 GB/s, and decode arithmetic is its limit (sw10, sw16). It would gain at
+       most ~1.4%.
+     - The hot-set copy is PCIe-bound. Its lever, a larger hot set, costs expert slots; it stays
+       in the untested list of `sweet-spots.md`.
+   - Window 9 after P-5: sw128.
 5. **Quality beyond KLD** (Grok): a few hundred items of a reasoning eval (for example GSM8K)
    through flashrt and llama.cpp on the same GGUF, with a matching score expected. KLD is
    necessary but not sufficient.

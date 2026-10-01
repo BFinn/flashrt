@@ -249,6 +249,9 @@ cache after, from the prefill's routing counts and the startup prior.
 | **Deterministic indexer selection** (block order, no float atomics anywhere) | Atomic slot order made the attention sum order, and so the output, vary from run to run. | sw5: runs bit-reproducible since |
 | **Select: 8-bit radix, warp-aggregated histogram, segmented ordered output** | At 245K (61K blocks, one CTA per layer) selection took 1.2 ms per token. | sw20: 1.21 → 0.85 ms; selection unchanged (`fr_parity qsa`) |
 | **Select on an 8-CTA cluster per token** (histograms summed through distributed shared memory, keys held in shared memory, offsets from the CTAs before, one cluster barrier per pass) | One CTA still took 103 µs per call at 245K (sw120: 10.7% of GPU time). The output is the single CTA's, cell for cell. | sw121: 103 → 25 µs per call; 245K plain +9.9%, `--spec 2` +3.7%, 32K +2.9%; fingerprint identical; `test_idx_select` |
+| **Select for prefill sub-batches: 1 CTA per token below 98K positions, 4 above** | A 128-token sub-batch fills the GPU with tokens already; on 8-CTA clusters it took 275 µs at 32K and 398 µs at 245K, against 33 and 213. sw121 had measured decode only, and prefill had lost 9.5-12% (sw124). | sw127: prefill +11.6% / +12.0% / +11.5% at 32K / 128K / 245K; fingerprint identical; `test_idx_select` (sizes 8, 4, 2, 1) |
+| **Argmax on an 8-CTA cluster** | One CTA read the 1 MB logits row at 13 GB/s: 79 µs per token. | sw126: 5.2 µs; fingerprint identical; `test_argmax` |
+| **Indexer pooled keys in fp16** | The decode scores read the fp32 keys at bandwidth (37 µs per call at 245K). The prefill scores rounded them to fp16 already, so prefill is bit-identical. The buffer is sized for the whole context: about 200 MB more for expert slots. | sw126: 21 µs per call, +145 slots; KLD fast 0.008910, windows 0.008513 (were 0.008960 / 0.008824); 245K plain +4.4%, `--spec 2` +1.9-3.5% |
 | **Hot-set CLOCK in parallel** (a chunk of the ring per block scan) | One thread stepped the hand slot by slot. Same victims, pairing and hand as the serial sweep. | sw122: 22.4 → 4.4 µs per call; 245K plain +1.9%; fingerprint identical |
 | **fp16 KV storage** | The values were fp16-rounded already. Half the VRAM, same numerics. | sw12: parity identical line for line |
 | **q8_0 KV** (`--kv q8`) | llama.cpp's own q8_0 cache is the noise floor (KLD 0.0078). It frees about 2,000 expert slots at 245K. | sw18: KLD 0.0092; 245K 61-64 → 63-71 tok/s |
@@ -480,8 +483,8 @@ The scripts run with `set -u`, so they stop if one is unset.
 - **Hot set:** the copy costs about 31 µs per layer at 245K (`k_hot_copy`: the promoted blocks
   over PCIe; about 180 per token). A larger hot set would promote fewer, at the expert cache's
   expense.
-- **The indexer scores** (`k_idx_scores128`, 37 µs per layer at 245K) read fp32 pooled keys at
-  bandwidth; BF16 keys would halve that, but change the scores (needs the KLD gate).
+- **The indexer scores** (`k_idx_scores128`, 21 µs per layer at 245K) read the fp16 pooled keys
+  at bandwidth (sw126).
 - **Failed requests** reset the session to an empty sequence, so the next request starts cold
   (sw92). A doorbell timeout or a sticky CUDA error ends the process (status 3).
 - **Server limits:** text only (no images); tool_choice "required" or a named tool is not
