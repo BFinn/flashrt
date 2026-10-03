@@ -384,6 +384,39 @@ fn sampling_of(st: &AppState, req: &ChatRequest) -> Result<(f32, f32, u32, f32, 
 /// Renders, tokenizes and queues a chat request; events arrive on the receiver. Also returns
 /// the prompt's length in tokens. Errors are the request's fault (HTTP 400), except
 /// `engine::EngineDown` (503).
+/// Adds an event the client is sent to the trace's output (`--trace-dir`).
+fn record(t: &mut Value, ev: &ChatEvent) {
+    let append = |t: &mut Value, k: &str, s: &str| {
+        if let Some(Value::String(cur)) = t["output"].get_mut(k) {
+            cur.push_str(s);
+        }
+    };
+    match ev {
+        ChatEvent::Reasoning(s) => append(t, "reasoning", s),
+        ChatEvent::Content(s) => append(t, "content", s),
+        ChatEvent::ToolCall { id, name, arguments } => {
+            push_array(t, "tool_calls", json!({"id": id, "name": name, "arguments": arguments}))
+        }
+        ChatEvent::Done { .. } | ChatEvent::Error(_) => {}
+    }
+}
+
+fn push_array(t: &mut Value, k: &str, v: Value) {
+    if let Some(Value::Array(a)) = t["output"].get_mut(k) {
+        a.push(v);
+    }
+}
+
+/// Writes a finished trace off the async workers (a long prompt's text is megabytes).
+fn write_trace(st: &Arc<AppState>, t: Value) {
+    let st = st.clone();
+    tokio::task::spawn_blocking(move || {
+        if let Some(tr) = &st.trace {
+            tr.write(t);
+        }
+    });
+}
+
 pub async fn start(st: Arc<AppState>, req: ChatRequest) -> Result<(mpsc::Receiver<ChatEvent>, u32)> {
     let raw = req.raw_prompt.is_some();
     let (temperature, top_p, top_k, min_p, seed) = sampling_of(&st, &req)?;
@@ -416,6 +449,19 @@ pub async fn start(st: Arc<AppState>, req: ChatRequest) -> Result<(mpsc::Receive
         stop_ids: st.stop_ids.clone(),
     };
     let (id, mut rx) = st.engine.generate(&params).await?;
+    // --trace-dir: what was asked, as rendered (trace.rs); the output is added as it is parsed
+    let mut trace = st.trace.as_ref().map(|_| {
+        json!({
+            "id": id,
+            "request": {
+                "messages": req.messages, "tools": req.tools, "template_vars": req.template_vars,
+                "raw_prompt": req.raw_prompt, "max_tokens": req.max_tokens, "stop": req.stop,
+            },
+            "sampling": {"temperature": temperature, "top_p": top_p, "top_k": top_k, "min_p": min_p, "seed": seed, "max_new": max_new},
+            "prompt": {"text": prompt_text, "tokens": prompt.len()},
+            "output": {"reasoning": "", "content": "", "tool_calls": [], "unparsed_tool_calls": []},
+        })
+    });
     let thinking = !raw && prompt_text.ends_with("<think>\n");
     let (tx, out) = mpsc::channel(512);
     let n_prompt = prompt.len() as u32;
@@ -437,12 +483,16 @@ pub async fn start(st: Arc<AppState>, req: ChatRequest) -> Result<(mpsc::Receive
         let mut stopped: Option<String> = None;
         let mut gone = false;   // the client went away
         macro_rules! send {
-            ($ev:expr) => {
-                if !gone && tx.send($ev).await.is_err() {
+            ($ev:expr) => {{
+                let ev = $ev;
+                if let Some(t) = trace.as_mut() {
+                    record(t, &ev);
+                }
+                if !gone && tx.send(ev).await.is_err() {
                     gone = true;
                     st.engine.stop(&id).await;
                 }
-            };
+            }};
         }
         loop {
             let ev = tokio::select! {
@@ -489,6 +539,8 @@ pub async fn start(st: Arc<AppState>, req: ChatRequest) -> Result<(mpsc::Receive
                         if let Some((name, arguments)) = parse_tool_call(&tool_buf, &types) {
                             n_tools += 1;
                             send!(ChatEvent::ToolCall { id: new_id("call_"), name, arguments });
+                        } else if let Some(t) = trace.as_mut() {
+                            push_array(t, "unparsed_tool_calls", Value::String(tool_buf.clone()));
                         }
                         mode = Mode::Content;
                         continue;
@@ -570,6 +622,13 @@ pub async fn start(st: Arc<AppState>, req: ChatRequest) -> Result<(mpsc::Receive
                         finish
                     );
                     st.metrics.record_done(&ev, finish.as_str());
+                    if let Some(mut t) = trace.take() {
+                        t["output"]["finish"] = json!(finish.as_str());
+                        t["output"]["stop_sequence"] = json!(stopped);
+                        t["engine"] = ev.clone();
+                        t["client_gone"] = json!(gone);
+                        write_trace(&st, t);
+                    }
                     // the request is over: a client that has gone needs no stop
                     if !gone {
                         let _ = tx
@@ -589,6 +648,11 @@ pub async fn start(st: Arc<AppState>, req: ChatRequest) -> Result<(mpsc::Receive
                     let msg = ev.get("msg").and_then(Value::as_str).unwrap_or("engine error").to_string();
                     tracing::error!("{id}: engine error: {msg}");
                     st.metrics.record_error();
+                    if let Some(mut t) = trace.take() {
+                        t["error"] = json!(msg);
+                        t["client_gone"] = json!(gone);
+                        write_trace(&st, t);
+                    }
                     if !gone {
                         let _ = tx.send(ChatEvent::Error(msg)).await;
                     }
@@ -640,6 +704,10 @@ mod tests {
     /// An AppState over a fake engine (a shell script speaking the protocol) and the test
     /// tokenizer; the template joins the messages' contents.
     async fn fake_state(script: &str) -> Arc<AppState> {
+        fake_state_traced(script, None).await
+    }
+
+    async fn fake_state_traced(script: &str, trace: Option<crate::trace::Tracer>) -> Arc<AppState> {
         let engine = crate::engine::Engine::spawn("sh", &["-c".into(), script.to_string()]).await.unwrap();
         Arc::new(AppState {
             engine,
@@ -654,6 +722,7 @@ mod tests {
             api_key: None,
             metrics: Default::default(),
             special_in_text: false,
+            trace,
         })
     }
 
@@ -685,6 +754,47 @@ mod tests {
             }
         }
         assert_eq!(text, "Hi!");
+    }
+
+    #[tokio::test]
+    async fn trace_holds_the_request_the_output_and_the_engine_figures() {
+        // H i, then a tool call whose body does not parse, then done: one line in the day's file
+        let dir = std::env::temp_dir().join(format!("flashrt-chat-trace-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let tok = |t: u32| format!(r#"echo '{{"ev":"token","id":"r0","tok":{t}}}'; "#);
+        let script = format!(
+            r#"{READY}; read line; {}{}{}{}{} echo '{{"ev":"done","id":"r0","generated":5,"prompt_tokens":1,"reused":0,"prompt_ms":2.0,"decode_ms":3.0,"finish":"stop","cache":{{"hits":7,"misses":1}}}}'; read line"#,
+            tok(72), tok(105), tok(258), tok(120), tok(259)
+        );
+        let st = fake_state_traced(&script, Some(crate::trace::Tracer::new(&dir).unwrap())).await;
+        let (mut rx, _) = start(st, request("x")).await.unwrap();
+        while let Some(ev) = rx.recv().await {
+            if matches!(ev, ChatEvent::Done { .. }) {
+                break;
+            }
+        }
+        // the write runs on a blocking thread after the done is sent
+        let (day, _) = crate::trace::now_utc();
+        let path = dir.join(format!("trace-{day}.jsonl"));
+        let mut text = String::new();
+        for _ in 0..200 {
+            text = std::fs::read_to_string(&path).unwrap_or_default();
+            if !text.is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let t: Value = serde_json::from_str(text.lines().next().expect("a trace line")).unwrap();
+        assert_eq!(t["id"], "r0");
+        assert_eq!(t["request"]["messages"][0]["content"], "x");
+        assert_eq!(t["prompt"]["text"], "x");
+        assert_eq!(t["output"]["content"], "Hi");
+        assert_eq!(t["output"]["unparsed_tool_calls"], json!(["x"]));
+        assert_eq!(t["output"]["finish"], "stop");
+        assert_eq!(t["engine"]["cache"]["hits"], 7);
+        assert_eq!(t["client_gone"], false);
+        assert!(t["ts"].is_string() && t["sampling"]["max_new"].is_u64());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

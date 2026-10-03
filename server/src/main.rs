@@ -22,6 +22,7 @@ mod metrics;
 mod openai;
 mod template;
 mod tokenizer;
+mod trace;
 
 use std::sync::Arc;
 
@@ -65,6 +66,11 @@ struct Args {
     /// Require the key in this file (its first line), so it does not appear in the process list.
     #[arg(long)]
     api_key_file: Option<std::path::PathBuf>,
+    /// Write one JSON line per generation (request, rendered prompt, parsed output, engine
+    /// figures) to a file per UTC day in this directory (trace.rs). Off by default: the lines
+    /// hold whole conversations.
+    #[arg(long)]
+    trace_dir: Option<std::path::PathBuf>,
     /// Default output limit when a request sets none.
     #[arg(long, default_value_t = 32768)]
     max_tokens: u32,
@@ -115,6 +121,8 @@ pub struct AppState {
     pub metrics: metrics::Metrics,
     /// --special-in-text: special-token strings in message text are special tokens (chat::prompt_of).
     pub special_in_text: bool,
+    /// --trace-dir: the request traces (trace.rs), if on
+    pub trace: Option<trace::Tracer>,
 }
 
 /// A request that failed for the server's reasons, not the request's (a chat template that cannot
@@ -199,7 +207,8 @@ fn check_tokenizer(tok: &tokenizer::Tokenizer, text: &str, ids: &str) -> Result<
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt::init();
+    // plain text when stderr is not a terminal (a journal, a file): no colour escapes
+    tracing_subscriber::fmt().with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr())).init();
     let args = Args::parse();
     let api_key = match (&args.api_key, &args.api_key_file) {
         (Some(k), _) => Some(k.clone()),
@@ -275,6 +284,14 @@ async fn main() -> Result<()> {
         api_key,
         metrics: metrics::Metrics::default(),
         special_in_text: args.special_in_text,
+        trace: match &args.trace_dir {
+            Some(dir) => {
+                let t = trace::Tracer::new(dir)?;
+                tracing::info!("writing request traces to {}", dir.display());
+                Some(t)
+            }
+            None => None,
+        },
     });
     let app = Router::new()
         .route("/v1/models", get(models))
