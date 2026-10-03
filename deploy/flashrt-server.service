@@ -8,6 +8,10 @@
 #   systemctl --user daemon-reload && systemctl --user enable --now flashrt-server
 #   sudo loginctl enable-linger $USER      # to start at boot without a login
 #
+# Request traces (one JSON line per generation, whole conversations included): add
+#   --trace-dir "$HOME/.local/state/flashrt/traces"
+# to the server's arguments (before --engine). They are off by default.
+#
 # KillMode=mixed: a stop signals the server alone, which asks the engine to quit (a plain stop
 # would signal both at once, docs/engine.md). The server exits when the engine dies, so
 # Restart=on-failure restarts the pair.
