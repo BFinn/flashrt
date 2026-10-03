@@ -1,0 +1,37 @@
+# SPDX-License-Identifier: Apache-2.0
+# flashrt as a systemd user service: the OpenAI/Anthropic server, which starts the engine.
+#
+#   install -D -m 644 deploy/flashrt-server.service ~/.config/systemd/user/flashrt-server.service
+#   # edit the paths below (FLASHRT_HOME: an installed copy of build/flashrt-engine,
+#   # server/target/release/flashrt-server and bench/reference/mtp-vocab-ranks.txt; MODELS: the GGUFs)
+#   install -D -m 600 /dev/null ~/.config/flashrt/api-key && openssl rand -hex 32 > ~/.config/flashrt/api-key
+#   systemctl --user daemon-reload && systemctl --user enable --now flashrt-server
+#   sudo loginctl enable-linger $USER      # to start at boot without a login
+#
+# KillMode=mixed: a stop signals the server alone, which asks the engine to quit (a plain stop
+# would signal both at once, docs/engine.md). The server exits when the engine dies, so
+# Restart=on-failure restarts the pair.
+[Unit]
+Description=flashrt server (Qwen3.8-Flash-Next; OpenAI and Anthropic APIs)
+After=network-online.target
+
+[Service]
+Type=simple
+Environment=FLASHRT_HOME=%h/opt/flashrt/current
+Environment=MODELS=%h/models/flashnext-gsq-q2_0
+ExecStart=/bin/sh -c 'exec "$FLASHRT_HOME/flashrt-server" \
+  --model "$MODELS/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf" \
+  --host 0.0.0.0 --port 8082 --api-key-file "$HOME/.config/flashrt/api-key" \
+  --engine "$FLASHRT_HOME/flashrt-engine" \
+  --engine-arg "$MODELS/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf" \
+  --engine-arg --mtp --engine-arg "$MODELS/mtp-Flash-Next-Q8_0-noembd.gguf" \
+  --engine-arg --spec --engine-arg 2 \
+  --engine-arg --draft-vocab --engine-arg "$FLASHRT_HOME/mtp-vocab-ranks.txt"'
+KillMode=mixed
+TimeoutStopSec=60
+Restart=on-failure
+RestartSec=10
+MemoryMax=56G
+
+[Install]
+WantedBy=default.target

@@ -3,7 +3,7 @@
 # Shared by the measurement-window scripts: take the GPU and RAM, and give the live server
 # back on exit if it was running. Source it, then call `take_gpu`. (Its variables are for the
 # scripts that source it.)
-LIVE_UNITS="strata-server flashnext-262k-server"   # none should run since 2026-09-27
+LIVE_UNITS="flashrt-server strata-server flashnext-262k-server"   # flashrt-server is the live service since 2026-10-03
 FR=$FLASHRT/build
 LLAMA=$LLAMA_CPP/build/bin
 MODEL=$MODELS/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf

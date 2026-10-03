@@ -60,8 +60,11 @@ struct Args {
     #[arg(long, default_value = "flashrt")]
     model_name: String,
     /// Require this key (Authorization: Bearer KEY, or x-api-key: KEY).
-    #[arg(long)]
+    #[arg(long, conflicts_with = "api_key_file")]
     api_key: Option<String>,
+    /// Require the key in this file (its first line), so it does not appear in the process list.
+    #[arg(long)]
+    api_key_file: Option<std::path::PathBuf>,
     /// Default output limit when a request sets none.
     #[arg(long, default_value_t = 32768)]
     max_tokens: u32,
@@ -198,6 +201,18 @@ fn check_tokenizer(tok: &tokenizer::Tokenizer, text: &str, ids: &str) -> Result<
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
     let args = Args::parse();
+    let api_key = match (&args.api_key, &args.api_key_file) {
+        (Some(k), _) => Some(k.clone()),
+        (None, Some(path)) => {
+            let text = std::fs::read_to_string(path).with_context(|| format!("reading the API key file {}", path.display()))?;
+            let key = text.lines().next().unwrap_or("").trim().to_string();
+            if key.is_empty() {
+                bail!("the API key file {} is empty", path.display());
+            }
+            Some(key)
+        }
+        (None, None) => None,
+    };
     let kv = gguf::read_metadata(&args.model)?;
     let tok = tokenizer::Tokenizer::from_gguf(&kv)?;
     if let Some(c) = &args.check_tokenizer {
@@ -257,7 +272,7 @@ async fn main() -> Result<()> {
         sampling,
         stop_ids,
         ids,
-        api_key: args.api_key.clone(),
+        api_key,
         metrics: metrics::Metrics::default(),
         special_in_text: args.special_in_text,
     });
