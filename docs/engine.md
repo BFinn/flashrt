@@ -484,6 +484,16 @@ The scripts run with `set -u`, so they stop if one is unset.
 - **Another machine:** `MODELS=... bench/run.sh [preflight|build|test|decode|window9|kld|server|all]`,
   in plain bash, on the committed inputs in `bench/reference/` (sw129). The `Dockerfile` builds the
   same binaries.
+- **Request traces:** `flashrt-server --trace-dir DIR` writes one JSON line per generation to
+  `DIR/trace-YYYY-MM-DD.jsonl` (UTC; files 0600, directory 0700):
+  - the request as the server normalized it, the sampling used, the rendered prompt and its
+    token count;
+  - the output as parsed (reasoning, text, tool calls, and tool-call text that did not parse);
+  - the engine's `done` event (reuse, timings, drafts, expert-cache hits).
+
+  The lines hold whole conversations, so the flag is off by default, and old files are not
+  removed. Read them with `tools/trace_view.py FILE [--last N] [--id rN] [--full]`; request ids
+  restart at `r0` when the server starts.
 - **Server metrics:** `GET /metrics` (behind `--api-key` like the APIs) in Prometheus's text
   format, summed over the engine's `done` events: requests by finish, tokens, prompt and decode
   time, drafts, expert-cache hits and misses, the CPU miss time and the slot count, then the last
